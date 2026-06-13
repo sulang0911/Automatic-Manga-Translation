@@ -94,12 +94,15 @@ def run_ocr():
                 results = paddle_ocr.ocr(img, cls=True)
 
             if results and results[0]:
+                print(f"[DEBUG] results[0] type: {type(results[0])}", flush=True)
                 if isinstance(results[0], dict):
-                    # 3.x 格式: [{'rec_texts': [...], 'rec_scores': [...], 'rec_polys': [...]}]
                     res_dict = results[0]
                     rec_texts = res_dict.get('rec_texts', [])
                     rec_scores = res_dict.get('rec_scores', [])
                     rec_polys = res_dict.get('rec_polys', [])
+                    print(f"[DEBUG] 3.x format: rec_texts length={len(rec_texts)}", flush=True)
+                    if len(rec_texts) > 0:
+                        print(f"[DEBUG] Sample texts: {rec_texts[:3]}", flush=True)
                     for i in range(len(rec_texts)):
                         text = rec_texts[i]
                         confidence = rec_scores[i] if i < len(rec_scores) else 1.0
