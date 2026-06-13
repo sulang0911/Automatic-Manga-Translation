@@ -1,7 +1,20 @@
 import React, { useState, useEffect, useRef } from 'react';
 import type { ImageItem, TranslationBlock, StyleConfig } from '../types';
 import { renderTranslatedCanvas, wrapText } from '../utils/canvasExporter';
-import { Download, Edit3, Image as ImageIcon, Eye, RefreshCw } from 'lucide-react';
+import { 
+  Download, 
+  Edit3, 
+  Image as ImageIcon, 
+  Eye, 
+  RefreshCw, 
+  ChevronLeft, 
+  ChevronRight, 
+  ZoomIn, 
+  ZoomOut, 
+  Maximize, 
+  Trash2, 
+  Plus 
+} from 'lucide-react';
 
 const getOptimizedFontSize = (
   text: string,
@@ -127,6 +140,9 @@ interface ImageViewerProps {
   onUpdateBlocks: (imageId: string, blocks: TranslationBlock[]) => void;
   onTranslateSingle: (imageId: string) => Promise<void>;
   isProcessing: boolean;
+  onNavigate?: (direction: 'prev' | 'next') => void;
+  hasPrev?: boolean;
+  hasNext?: boolean;
 }
 
 export const ImageViewer: React.FC<ImageViewerProps> = ({
@@ -134,27 +150,69 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
   styleConfig,
   onUpdateBlocks,
   onTranslateSingle,
-  isProcessing
+  isProcessing,
+  onNavigate,
+  hasPrev,
+  hasNext
 }) => {
   const [viewMode, setViewMode] = useState<'overlay' | 'original'>('overlay');
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   const [imgHeight, setImgHeight] = useState(500);
   const [isExporting, setIsExporting] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [zoomScale, setZoomScale] = useState(1.0);
   
+  // Local blocks for fast editing/dragging feedback
+  const [localBlocks, setLocalBlocks] = useState<TranslationBlock[]>([]);
+  
+  // Panning & Dragging States
+  const [isPanning, setIsPanning] = useState(false);
+  const [draggingBlockId, setDraggingBlockId] = useState<string | null>(null);
+  const [resizingBlockId, setResizingBlockId] = useState<string | null>(null);
+
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const canvasContainerRef = useRef<HTMLDivElement>(null);
   const blockRefs = useRef<{ [key: string]: HTMLDivElement | null }>({});
+  const dragStartRef = useRef<{ x: number; y: number; xmin: number; xmax: number; ymin: number; ymax: number } | null>(null);
+  const panStartRef = useRef<{ x: number; y: number; scrollLeft: number; scrollTop: number } | null>(null);
+
+  // Sync parent blocks to local blocks
+  useEffect(() => {
+    setLocalBlocks(image.blocks || []);
+  }, [image.blocks, image.id]);
 
   const handleForceRender = () => {
     setIsRefreshing(true);
-    if (image.blocks) {
-      // Re-trigger blocks state to force a render refresh across all preview endpoints
-      onUpdateBlocks(image.id, [...image.blocks]);
+    if (localBlocks.length > 0) {
+      onUpdateBlocks(image.id, [...localBlocks]);
     }
     setTimeout(() => {
       setIsRefreshing(false);
     }, 450);
   };
+
+  // Smooth scroll target block into view on selection
+  useEffect(() => {
+    if (!selectedBlockId || localBlocks.length === 0) return;
+    const block = localBlocks.find(b => b.id === selectedBlockId);
+    if (!block || !canvasContainerRef.current) return;
+    
+    const container = canvasContainerRef.current;
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+    
+    const xPct = (block.xmin + block.xmax) / 2;
+    const yPct = (block.ymin + block.ymax) / 2;
+    
+    const targetX = (xPct / 100) * wrapper.clientWidth - container.clientWidth / 2;
+    const targetY = (yPct / 100) * wrapper.clientHeight - container.clientHeight / 2;
+    
+    container.scrollTo({
+      left: Math.max(0, targetX),
+      top: Math.max(0, targetY),
+      behavior: 'smooth'
+    });
+  }, [selectedBlockId, image.id]);
 
   // ResizeObserver to calculate real image height for responsive font scaling
   useEffect(() => {
@@ -163,7 +221,6 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
 
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        // Find the img tag inside to get its actual rendered height
         const img = element.querySelector('img');
         if (img) {
           setImgHeight(img.clientHeight || 500);
@@ -175,7 +232,6 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
 
     observer.observe(element);
     
-    // Also trigger on image load
     const img = element.querySelector('img');
     const handleLoad = () => {
       if (img) setImgHeight(img.clientHeight || 500);
@@ -186,35 +242,266 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
       observer.disconnect();
       img?.removeEventListener('load', handleLoad);
     };
-  }, [image.id, viewMode]);
+  }, [image.id, viewMode, zoomScale]);
+
+  // Mouse wheel zoom with Ctrl key
+  useEffect(() => {
+    const container = canvasContainerRef.current;
+    if (!container) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      if (e.ctrlKey) {
+        e.preventDefault();
+        const delta = e.deltaY < 0 ? 0.1 : -0.1;
+        setZoomScale(prev => Math.min(3.0, Math.max(0.5, prev + delta)));
+      }
+    };
+
+    container.addEventListener('wheel', handleWheel, { passive: false });
+    return () => {
+      container.removeEventListener('wheel', handleWheel);
+    };
+  }, []);
+
+  // Keyboard navigation shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const activeEl = document.activeElement;
+      const isInputFocused = activeEl && (
+        activeEl.tagName === 'INPUT' || 
+        activeEl.tagName === 'TEXTAREA' || 
+        activeEl.tagName === 'SELECT'
+      );
+
+      if (e.key === 'Escape') {
+        setSelectedBlockId(null);
+        if (isInputFocused && activeEl instanceof HTMLElement) {
+          activeEl.blur();
+        }
+      }
+
+      if (isInputFocused) return;
+
+      if (e.key === '[' && onNavigate && hasPrev) {
+        onNavigate('prev');
+      } else if (e.key === ']' && onNavigate && hasNext) {
+        onNavigate('next');
+      } else if (e.key === 'ArrowUp' && localBlocks.length > 0) {
+        e.preventDefault();
+        const idx = selectedBlockId ? localBlocks.findIndex(b => b.id === selectedBlockId) : -1;
+        if (idx > 0) {
+          selectBlock(localBlocks[idx - 1].id);
+        } else if (idx === -1) {
+          selectBlock(localBlocks[0].id);
+        }
+      } else if (e.key === 'ArrowDown' && localBlocks.length > 0) {
+        e.preventDefault();
+        const idx = selectedBlockId ? localBlocks.findIndex(b => b.id === selectedBlockId) : -1;
+        if (idx < localBlocks.length - 1) {
+          selectBlock(localBlocks[idx + 1].id);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [selectedBlockId, localBlocks, onNavigate, hasPrev, hasNext]);
+
+  // Drag block and resize block event listeners
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!dragStartRef.current || !wrapperRef.current) return;
+      const start = dragStartRef.current;
+      const wrapper = wrapperRef.current;
+      const wrapperRect = wrapper.getBoundingClientRect();
+      
+      const deltaX = ((e.clientX - start.x) / wrapperRect.width) * 100;
+      const deltaY = ((e.clientY - start.y) / wrapperRect.height) * 100;
+      
+      if (draggingBlockId) {
+        let newXmin = start.xmin + deltaX;
+        let newXmax = start.xmax + deltaX;
+        let newYmin = start.ymin + deltaY;
+        let newYmax = start.ymax + deltaY;
+        
+        const w = start.xmax - start.xmin;
+        const h = start.ymax - start.ymin;
+        
+        if (newXmin < 0) { newXmin = 0; newXmax = w; }
+        if (newXmax > 100) { newXmax = 100; newXmin = 100 - w; }
+        if (newYmin < 0) { newYmin = 0; newYmax = h; }
+        if (newYmax > 100) { newYmax = 100; newYmin = 100 - h; }
+        
+        const updated = localBlocks.map(b => 
+          b.id === draggingBlockId ? { ...b, xmin: newXmin, xmax: newXmax, ymin: newYmin, ymax: newYmax } : b
+        );
+        setLocalBlocks(updated);
+      } else if (resizingBlockId) {
+        let newXmax = Math.min(100, Math.max(start.xmin + 2, start.xmax + deltaX));
+        let newYmax = Math.min(100, Math.max(start.ymin + 2, start.ymax + deltaY));
+        
+        const updated = localBlocks.map(b => 
+          b.id === resizingBlockId ? { ...b, xmax: newXmax, ymax: newYmax } : b
+        );
+        setLocalBlocks(updated);
+      }
+    };
+    
+    const handleMouseUp = () => {
+      if (draggingBlockId || resizingBlockId) {
+        setDraggingBlockId(null);
+        setResizingBlockId(null);
+        dragStartRef.current = null;
+        
+        // Save the coordinates to parent state only after user stops dragging
+        onUpdateBlocks(image.id, [...localBlocks]);
+      }
+    };
+    
+    if (draggingBlockId || resizingBlockId) {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+    }
+    
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [draggingBlockId, resizingBlockId, localBlocks, image.id]);
+
+  // Drag-to-pan event listener
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isPanning || !panStartRef.current || !canvasContainerRef.current) return;
+      const start = panStartRef.current;
+      const container = canvasContainerRef.current;
+      
+      const dx = e.clientX - start.x;
+      const dy = e.clientY - start.y;
+      
+      container.scrollLeft = start.scrollLeft - dx;
+      container.scrollTop = start.scrollTop - dy;
+    };
+
+    const handleMouseUp = () => {
+      setIsPanning(false);
+      panStartRef.current = null;
+    };
+
+    if (isPanning) {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+    }
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isPanning]);
+
+  // Mouse handlers inside components
+  const handleDragStart = (e: React.MouseEvent, block: TranslationBlock, action: 'drag' | 'resize') => {
+    e.stopPropagation();
+    e.preventDefault();
+    setSelectedBlockId(block.id);
+    
+    dragStartRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      xmin: block.xmin,
+      xmax: block.xmax,
+      ymin: block.ymin,
+      ymax: block.ymax
+    };
+    
+    if (action === 'drag') {
+      setDraggingBlockId(block.id);
+    } else {
+      setResizingBlockId(block.id);
+    }
+  };
+
+  const handleContainerMouseDown = (e: React.MouseEvent) => {
+    if (e.target === canvasContainerRef.current || (e.target as HTMLElement).tagName === 'IMG') {
+      if (draggingBlockId || resizingBlockId) return;
+      
+      setIsPanning(true);
+      const container = canvasContainerRef.current;
+      if (!container) return;
+      panStartRef.current = {
+        x: e.clientX,
+        y: e.clientY,
+        scrollLeft: container.scrollLeft,
+        scrollTop: container.scrollTop
+      };
+    }
+  };
 
   const handleBlockTextChange = (blockId: string, newText: string) => {
-    if (!image.blocks) return;
-    const updated = image.blocks.map((b) =>
+    const updated = localBlocks.map((b) =>
       b.id === blockId ? { ...b, translated_text: newText } : b
     );
+    setLocalBlocks(updated);
     onUpdateBlocks(image.id, updated);
   };
 
-  const handleBlockTypeChange = (blockId: string, newType: 'bubble' | 'onomatopoeia' | 'other') => {
-    if (!image.blocks) return;
-    const updated = image.blocks.map((b) =>
+  const handleBlockTypeChange = (blockId: string, newType: 'bubble' | 'onomatopoeia') => {
+    const updated = localBlocks.map((b) =>
       b.id === blockId ? { ...b, type: newType } : b
     );
+    setLocalBlocks(updated);
     onUpdateBlocks(image.id, updated);
   };
 
   const handleBlockColorChange = (blockId: string, type: 'text' | 'bg', value: string) => {
-    if (!image.blocks) return;
-    const updated = image.blocks.map((b) =>
+    const updated = localBlocks.map((b) =>
       b.id === blockId ? (type === 'text' ? { ...b, text_color: value } : { ...b, bg_color: value }) : b
     );
+    setLocalBlocks(updated);
     onUpdateBlocks(image.id, updated);
+  };
+
+  const handleDeleteBlock = (blockId: string) => {
+    const updated = localBlocks.filter(b => b.id !== blockId);
+    setLocalBlocks(updated);
+    onUpdateBlocks(image.id, updated);
+    if (selectedBlockId === blockId) {
+      setSelectedBlockId(null);
+    }
+  };
+
+  const handleCreateBlock = () => {
+    const newBlock: TranslationBlock = {
+      id: `block_${Date.now()}_${Math.random()}`,
+      original_text: '',
+      translated_text: '新文字框',
+      xmin: 40,
+      xmax: 60,
+      ymin: 40,
+      ymax: 48,
+      text_color: '#FFFFFF',
+      bg_color: '#000000',
+      font_size_pct: 2.2,
+      type: 'bubble'
+    };
+    
+    const updated = [...localBlocks, newBlock];
+    setLocalBlocks(updated);
+    onUpdateBlocks(image.id, updated);
+    setSelectedBlockId(newBlock.id);
+    
+    setTimeout(() => {
+      const ref = blockRefs.current[newBlock.id];
+      if (ref) {
+        ref.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }, 100);
   };
 
   const selectBlock = (blockId: string) => {
     setSelectedBlockId(blockId);
-    // Scroll editor item into view
     const ref = blockRefs.current[blockId];
     if (ref) {
       ref.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -222,10 +509,10 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
   };
 
   const handleDownload = async () => {
-    if (!image.blocks) return;
+    if (localBlocks.length === 0) return;
     setIsExporting(true);
     try {
-      const dataUrl = await renderTranslatedCanvas(image.previewUrl, image.blocks, styleConfig);
+      const dataUrl = await renderTranslatedCanvas(image.previewUrl, localBlocks, styleConfig);
       const link = document.createElement('a');
       link.download = `translated_${image.name}`;
       link.href = dataUrl;
@@ -247,9 +534,42 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
       <div className="viewer-pane">
         <div className="glass-card viewer-card">
           <div className="viewer-header">
-            <h3 style={{ fontSize: '1rem', fontWeight: 600, maxWidth: '250px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {image.name}
-            </h3>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              {onNavigate && (
+                <>
+                  <button
+                    className="btn btn-secondary"
+                    disabled={!hasPrev}
+                    onClick={() => onNavigate('prev')}
+                    style={{ padding: '0.35rem', display: 'inline-flex', alignItems: 'center', minWidth: 'auto', border: 'none', background: 'rgba(255,255,255,0.03)', cursor: 'pointer' }}
+                    title="上一张图片"
+                  >
+                    <ChevronLeft size={16} />
+                  </button>
+                  <button
+                    className="btn btn-secondary"
+                    disabled={!hasNext}
+                    onClick={() => onNavigate('next')}
+                    style={{ padding: '0.35rem', display: 'inline-flex', alignItems: 'center', minWidth: 'auto', border: 'none', background: 'rgba(255,255,255,0.03)', cursor: 'pointer' }}
+                    title="下一张图片"
+                  >
+                    <ChevronRight size={16} />
+                  </button>
+                </>
+              )}
+              <h3 style={{ 
+                fontSize: '0.95rem', 
+                fontWeight: 600, 
+                maxWidth: '180px', 
+                overflow: 'hidden', 
+                textOverflow: 'ellipsis', 
+                whiteSpace: 'nowrap',
+                margin: 0,
+                color: 'var(--text-main)'
+              }}>
+                {image.name}
+              </h3>
+            </div>
             
             <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
               <div className="viewer-tabs">
@@ -267,7 +587,7 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
                 </button>
               </div>
 
-              {image.blocks && image.blocks.length > 0 && (
+              {localBlocks.length > 0 && (
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
                   <button
                     className="btn btn-secondary"
@@ -300,26 +620,40 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
             </div>
           </div>
 
-          <div className="image-canvas-container">
+          <div 
+            ref={canvasContainerRef} 
+            className="image-canvas-container" 
+            onMouseDown={handleContainerMouseDown}
+            style={{ 
+              position: 'relative',
+              cursor: isPanning ? 'grabbing' : (zoomScale > 1.05 ? 'grab' : 'default')
+            }}
+          >
             <div
               ref={wrapperRef}
               className="workspace-image-wrapper"
               style={{ 
                 position: 'relative', 
                 display: 'inline-block',
+                margin: 'auto',
                 '--img-height': `${imgHeight}px`
               } as React.CSSProperties}
             >
-              <img src={image.previewUrl} alt="Workspace Image" className="workspace-image" />
+              <img 
+                src={image.previewUrl} 
+                alt="Workspace Image" 
+                className="workspace-image" 
+                style={{ maxHeight: `${500 * zoomScale}px` }} 
+                draggable={false}
+              />
               
-              {viewMode === 'overlay' && image.blocks && (
+              {viewMode === 'overlay' && localBlocks.length > 0 && (
                 <div className="translation-overlay-layer">
                   {/* Pass 1: Background Masks (Drawn at the bottom) */}
-                  {image.blocks.map((block) => {
+                  {localBlocks.map((block) => {
                     const w = block.xmax - block.xmin;
                     const h = block.ymax - block.ymin;
                     
-                    // Skip background mask if it's onomatopoeia and mode is ignore or transparent
                     if (block.type === 'onomatopoeia' && (styleConfig.onomatopoeiaMode === 'ignore' || styleConfig.onomatopoeiaMode === 'transparent')) {
                       return null;
                     }
@@ -354,21 +688,19 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
                   })}
 
                   {/* Pass 2: Text Overlays (Drawn on top) */}
-                  {image.blocks.map((block) => {
+                  {localBlocks.map((block) => {
                     const w = block.xmax - block.xmin;
                     const h = block.ymax - block.ymin;
                     
-                    // Skip text layer if it's onomatopoeia and mode is ignore
                     if (block.type === 'onomatopoeia' && styleConfig.onomatopoeiaMode === 'ignore') {
                       return null;
                     }
                     
-                    // Style variables
                     const textColor = styleConfig.textColorMode === 'original' 
                       ? block.text_color 
                       : styleConfig.customTextColor;
 
-                    const baseFontSize = (block.font_size_pct || 2.0) * imgHeight / 100;
+                    const baseFontSize = (block.font_size_pct || 2.0) * (imgHeight || 500) / 100;
                     const fontSize = getOptimizedFontSize(
                       block.translated_text,
                       w,
@@ -389,19 +721,19 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
                       width: `${w}%`,
                       height: `${h}%`,
                       color: textColor,
-                      backgroundColor: 'transparent', // No background on text layer so it doesn't cover adjacent text
+                      backgroundColor: 'transparent',
                       fontFamily: styleConfig.fontFamily,
                       fontSize: `${fontSize}px`,
                       fontWeight: styleConfig.fontBold ? 'bold' : 'normal',
                       fontStyle: styleConfig.fontItalic ? 'italic' : 'normal',
                       textShadow: styleConfig.textShadow ? '1px 1px 2px rgba(0,0,0,0.8)' : 'none',
                       WebkitTextStroke: styleConfig.textStroke ? `${styleConfig.strokeWidth}px ${styleConfig.strokeColor}` : 'none',
-                      // Support vertical CJK rendering in live HTML preview
                       writingMode: isVertical ? 'vertical-rl' : 'horizontal-tb',
                       WebkitWritingMode: isVertical ? 'vertical-rl' : 'horizontal-tb',
                       flexDirection: isVertical ? 'row' : 'column',
                       justifyContent: 'center',
                       alignItems: 'center',
+                      cursor: draggingBlockId === block.id ? 'grabbing' : 'grab',
                     };
 
                     return (
@@ -409,7 +741,7 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
                         key={block.id}
                         className={`overlay-block ${selectedBlockId === block.id ? 'selected' : ''}`}
                         style={blockStyle}
-                        onClick={() => selectBlock(block.id)}
+                        onMouseDown={(e) => handleDragStart(e, block, 'drag')}
                       >
                         <span 
                           className="overlay-text-span"
@@ -417,11 +749,84 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
                         >
                           {block.translated_text}
                         </span>
+
+                        {/* Resize Handle (Bottom Right corner) */}
+                        {selectedBlockId === block.id && (
+                          <div
+                            className="block-resize-handle"
+                            onMouseDown={(e) => handleDragStart(e, block, 'resize')}
+                            style={{
+                              position: 'absolute',
+                              bottom: '-4px',
+                              right: '-4px',
+                              width: '10px',
+                              height: '10px',
+                              backgroundColor: 'var(--color-primary, #6366f1)',
+                              border: '1.5px solid #ffffff',
+                              borderRadius: '50%',
+                              cursor: 'nwse-resize',
+                              zIndex: 50,
+                            }}
+                            title="拖动调整大小"
+                          />
+                        )}
                       </div>
                     );
                   })}
                 </div>
               )}
+            </div>
+
+            {/* Floating Zoom Controls */}
+            <div style={{
+              position: 'absolute',
+              bottom: '1rem',
+              right: '1rem',
+              display: 'flex',
+              gap: '0.25rem',
+              background: 'rgba(11, 15, 26, 0.85)',
+              border: '1px solid var(--border-color)',
+              padding: '0.25rem',
+              borderRadius: 'var(--radius-md)',
+              backdropFilter: 'blur(10px)',
+              zIndex: 50,
+              boxShadow: '0 4px 12px rgba(0,0,0,0.5)'
+            }}>
+              <button
+                className="btn btn-secondary"
+                onClick={() => setZoomScale(prev => Math.max(0.5, prev - 0.25))}
+                style={{ padding: '0.35rem', minWidth: 'auto', border: 'none', display: 'flex', alignItems: 'center', cursor: 'pointer' }}
+                title="缩小 (Ctrl + 滚轮向下)"
+              >
+                <ZoomOut size={14} />
+              </button>
+              <span style={{ 
+                fontSize: '0.75rem', 
+                alignSelf: 'center', 
+                padding: '0 0.5rem',
+                minWidth: '45px',
+                textAlign: 'center',
+                color: 'var(--text-main)',
+                fontWeight: 600
+              }}>
+                {Math.round(zoomScale * 100)}%
+              </span>
+              <button
+                className="btn btn-secondary"
+                onClick={() => setZoomScale(prev => Math.min(3.0, prev + 0.25))}
+                style={{ padding: '0.35rem', minWidth: 'auto', border: 'none', display: 'flex', alignItems: 'center', cursor: 'pointer' }}
+                title="放大 (Ctrl + 滚轮向上)"
+              >
+                <ZoomIn size={14} />
+              </button>
+              <button
+                className="btn btn-secondary"
+                onClick={() => setZoomScale(1.0)}
+                style={{ padding: '0.35rem', minWidth: 'auto', border: 'none', display: 'flex', alignItems: 'center', cursor: 'pointer' }}
+                title="适应屏幕 (Reset)"
+              >
+                <Maximize size={14} />
+              </button>
             </div>
           </div>
         </div>
@@ -434,27 +839,35 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
             <h3 style={{ fontSize: '1rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <Edit3 size={16} /> 文字块细修与校对
             </h3>
-            {(!image.blocks || image.blocks.length === 0) && (
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <button
+                className="btn btn-secondary"
+                onClick={handleCreateBlock}
+                style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '4px' }}
+                title="手动绘制并添加一个新的译文框"
+              >
+                <Plus size={12} /> 添加文本框
+              </button>
               <button
                 className="btn btn-primary"
                 onClick={() => onTranslateSingle(image.id)}
                 disabled={isProcessing}
                 style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem' }}
               >
-                {isProcessing ? '翻译中...' : '单张翻译'}
+                {isProcessing ? '翻译中...' : (localBlocks.length > 0 ? '重新翻译' : '单张翻译')}
               </button>
-            )}
+            </div>
           </div>
 
           <div className="blocks-list-container" style={{ marginTop: '1rem' }}>
-            {!image.blocks || image.blocks.length === 0 ? (
+            {localBlocks.length === 0 ? (
               <div className="empty-state" style={{ height: '100%', padding: '2rem 0' }}>
                 <ImageIcon size={32} />
                 <p style={{ fontSize: '0.9rem' }}>暂无文本框数据</p>
                 <p style={{ fontSize: '0.8rem', maxWidth: '200px' }}>点击上方“单张翻译”或侧边栏“开始批量翻译”进行分析</p>
               </div>
             ) : (
-              image.blocks.map((block, index) => (
+              localBlocks.map((block, index) => (
                 <div
                   key={block.id}
                   ref={(el) => { blockRefs.current[block.id] = el; }}
@@ -483,39 +896,61 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
                       </select>
                     </div>
                     
-                    <div className="block-colors">
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                        <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>字</span>
-                        <input
-                          type="color"
-                          value={block.text_color}
-                          onChange={(e) => handleBlockColorChange(block.id, 'text', e.target.value)}
-                          style={{
-                            width: '18px',
-                            height: '18px',
-                            border: 'none',
-                            cursor: 'pointer',
-                            borderRadius: '3px',
-                            background: 'none'
-                          }}
-                        />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <div className="block-colors">
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>字</span>
+                          <input
+                            type="color"
+                            value={block.text_color}
+                            onChange={(e) => handleBlockColorChange(block.id, 'text', e.target.value)}
+                            style={{
+                              width: '18px',
+                              height: '18px',
+                              border: 'none',
+                              cursor: 'pointer',
+                              borderRadius: '3px',
+                              background: 'none'
+                            }}
+                          />
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>底</span>
+                          <input
+                            type="color"
+                            value={block.bg_color}
+                            onChange={(e) => handleBlockColorChange(block.id, 'bg', e.target.value)}
+                            style={{
+                              width: '18px',
+                              height: '18px',
+                              border: 'none',
+                              cursor: 'pointer',
+                              borderRadius: '3px',
+                              background: 'none'
+                            }}
+                          />
+                        </div>
                       </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                        <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>底</span>
-                        <input
-                          type="color"
-                          value={block.bg_color}
-                          onChange={(e) => handleBlockColorChange(block.id, 'bg', e.target.value)}
-                          style={{
-                            width: '18px',
-                            height: '18px',
-                            border: 'none',
-                            cursor: 'pointer',
-                            borderRadius: '3px',
-                            background: 'none'
-                          }}
-                        />
-                      </div>
+
+                      <button
+                        className="image-card-delete"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (confirm('确认删除该文本块吗？')) {
+                            handleDeleteBlock(block.id);
+                          }
+                        }}
+                        style={{
+                          padding: '4px',
+                          background: 'none',
+                          border: 'none',
+                          cursor: 'pointer',
+                          opacity: 0.6
+                        }}
+                        title="删除该文本块"
+                      >
+                        <Trash2 size={14} />
+                      </button>
                     </div>
                   </div>
 

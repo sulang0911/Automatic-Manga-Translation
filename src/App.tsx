@@ -23,7 +23,9 @@ import {
   Clock,
   FolderOpen,
   Grid,
-  List
+  List,
+  Settings,
+  Menu
 } from 'lucide-react';
 
 
@@ -78,6 +80,10 @@ export default function App() {
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [directoryHandle, setDirectoryHandle] = useState<FileSystemDirectoryHandle | null>(null);
   const [queueViewMode, setQueueViewMode] = useState<'grid' | 'list'>('list');
+  const [showSettings, setShowSettings] = useState(true);
+  const [showSidebar, setShowSidebar] = useState(() => {
+    return window.innerWidth > 900;
+  });
   
   const cancelRef = useRef(false);
 
@@ -571,14 +577,33 @@ export default function App() {
   const selectedImage = images.find(img => img.id === selectedImageId);
 
   return (
-    <div className="app-container">
+    <div className={`app-container ${!showSidebar ? 'no-sidebar' : ''}`}>
       {/* Sidebar Navigation */}
       <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-icon">
-            <Sparkles size={22} />
+        <div className="brand" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '3rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <div className="brand-icon">
+              <Sparkles size={22} />
+            </div>
+            <span className="brand-name">AetherLens Trans</span>
           </div>
-          <span className="brand-name">AetherLens Trans</span>
+          <button
+            onClick={() => setShowSidebar(false)}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: 'var(--text-muted)',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              padding: '0.25rem',
+              borderRadius: '4px',
+              transition: 'var(--transition-fast)'
+            }}
+            title="折叠导航栏"
+          >
+            <ChevronLeft size={18} />
+          </button>
         </div>
 
         <ul className="nav-menu">
@@ -616,32 +641,57 @@ export default function App() {
       {/* Main Content Pane */}
       <main className="main-content">
         <header className="page-header">
-          <div>
-            <h1 className="page-title">
-              {selectedImageId ? '译文精细化校对' : 'AI 批量图片翻译'}
-            </h1>
-            <p className="page-description">
-              {selectedImageId 
-                ? '双击文本框进行二次修改，调整字号及背景遮罩颜色，实时保存并下载。' 
-                : '拖入图片、文件夹，使用大模型多模态视觉能力自动 OCR、翻译并还原排版。'}
-            </p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1.25rem' }}>
+            {!showSidebar && (
+              <button
+                className="btn btn-secondary"
+                onClick={() => setShowSidebar(true)}
+                style={{
+                  padding: '0.6rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  minWidth: 'auto',
+                  borderRadius: 'var(--radius-md)',
+                  background: 'rgba(255, 255, 255, 0.04)',
+                  borderColor: 'var(--border-color)',
+                  boxShadow: '0 4px 12px rgba(0,0,0,0.1)'
+                }}
+                title="展开导航栏"
+              >
+                <Menu size={18} />
+              </button>
+            )}
+            <div>
+              <h1 className="page-title">
+                {selectedImageId ? '译文精细化校对' : 'AI 批量图片翻译'}
+              </h1>
+              <p className="page-description">
+                {selectedImageId 
+                  ? '双击文本框进行二次修改，调整字号及背景遮罩颜色，实时保存并下载。' 
+                  : '拖入图片、文件夹，使用大模型多模态视觉能力自动 OCR、翻译并还原排版。'}
+              </p>
+            </div>
           </div>
+          <button
+            className="btn btn-secondary"
+            onClick={() => setShowSettings(!showSettings)}
+            style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '0.5rem 1rem', fontSize: '0.85rem' }}
+            title={showSettings ? "收起右侧设置面板，为修图区域腾出更多空间" : "展开右侧设置面板"}
+          >
+            <Settings size={14} />
+            {showSettings ? '折叠设置栏' : '展开设置栏'}
+          </button>
         </header>
 
         {/* Dashboard Grid Layout */}
-        <div className="dashboard-grid">
+        <div className={`dashboard-grid ${!showSettings ? 'full-width' : ''}`}>
           {/* Main workspace center */}
           <div className="workspace-main-area" style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
             
             {/* Batch stats panel (Only shown in main list) */}
             {!selectedImageId && (
-              <div 
-                style={{ 
-                  display: 'grid', 
-                  gridTemplateColumns: 'repeat(4, 1fr)', 
-                  gap: '1rem' 
-                }}
-              >
+              <div className="stats-grid">
                 <div className="glass-card" style={{ padding: '1rem 1.25rem', display: 'flex', alignItems: 'center', gap: '1rem' }}>
                   <div style={{ background: 'rgba(255,255,255,0.03)', padding: '0.5rem', borderRadius: '8px' }}>
                     <BarChart3 size={20} className="text-primary" style={{ color: 'var(--color-primary)' }} />
@@ -700,6 +750,16 @@ export default function App() {
                   onUpdateBlocks={handleUpdateBlocks}
                   onTranslateSingle={handleTranslateSingle}
                   isProcessing={selectedImage.status === 'processing'}
+                  onNavigate={(dir) => {
+                    const idx = images.findIndex(img => img.id === selectedImageId);
+                    if (dir === 'prev' && idx > 0) {
+                      setSelectedImageId(images[idx - 1].id);
+                    } else if (dir === 'next' && idx < images.length - 1) {
+                      setSelectedImageId(images[idx + 1].id);
+                    }
+                  }}
+                  hasPrev={images.findIndex(img => img.id === selectedImageId) > 0}
+                  hasNext={images.findIndex(img => img.id === selectedImageId) < images.length - 1}
                 />
               </div>
             ) : (

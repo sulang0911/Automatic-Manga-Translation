@@ -35,12 +35,13 @@ const LANGUAGES = [
 ];
 
 const FONTS = [
-  { value: 'Inter', name: 'Inter (Clean Sans)' },
-  { value: 'Outfit', name: 'Outfit (Modern Geometrics)' },
-  { value: 'system-ui', name: 'System Default' },
-  { value: 'sans-serif', name: 'Standard Sans-Serif' },
-  { value: 'serif', name: 'Classic Serif' },
-  { value: 'monospace', name: 'Monospace / Code' }
+  { value: 'system-ui', name: '系统默认 (System Default)' },
+  { value: '"Microsoft YaHei", "微软雅黑", sans-serif', name: '微软雅黑 (YaHei Sans)' },
+  { value: 'SimHei, "黑体", sans-serif', name: '黑体 (SimHei Bold)' },
+  { value: 'KaiTi, "楷体", serif', name: '楷体 (KaiTi Serif)' },
+  { value: 'FangSong, "仿宋", serif', name: '仿宋 (FangSong)' },
+  { value: 'Inter, sans-serif', name: 'Inter (English Sans)' },
+  { value: 'Outfit, sans-serif', name: 'Outfit (English Geometrics)' }
 ];
 
 export const SettingsPanel: React.FC<SettingsPanelProps> = ({
