@@ -134,9 +134,20 @@ const getOptimizedFontSize = (
   }
 };
 
+const FONTS = [
+  { value: 'system-ui', name: '系统默认 (System Default)' },
+  { value: 'Microsoft YaHei', name: '微软雅黑 (YaHei Sans)' },
+  { value: 'SimHei', name: '黑体 (SimHei Bold)' },
+  { value: 'KaiTi', name: '楷体 (KaiTi Serif)' },
+  { value: 'FangSong', name: '仿宋 (FangSong)' },
+  { value: 'Inter', name: 'Inter (English Sans)' },
+  { value: 'Outfit', name: 'Outfit (English Geometrics)' }
+];
+
 interface ImageViewerProps {
   image: ImageItem;
   styleConfig: StyleConfig;
+  setStyleConfig?: React.Dispatch<React.SetStateAction<StyleConfig>>;
   onUpdateBlocks: (imageId: string, blocks: TranslationBlock[]) => void;
   onTranslateSingle: (imageId: string) => Promise<void>;
   isProcessing: boolean;
@@ -148,6 +159,7 @@ interface ImageViewerProps {
 export const ImageViewer: React.FC<ImageViewerProps> = ({
   image,
   styleConfig,
+  setStyleConfig,
   onUpdateBlocks,
   onTranslateSingle,
   isProcessing,
@@ -161,6 +173,13 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
   const [isExporting, setIsExporting] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [zoomScale, setZoomScale] = useState(1.0);
+  const [activeEditorTab, setActiveEditorTab] = useState<'blocks' | 'style'>('blocks');
+
+  const updateStyle = (key: keyof StyleConfig, value: any) => {
+    if (setStyleConfig) {
+      setStyleConfig(prev => ({ ...prev, [key]: value }));
+    }
+  };
   
   // Local blocks for fast editing/dragging feedback
   const [localBlocks, setLocalBlocks] = useState<TranslationBlock[]>([]);
@@ -839,137 +858,401 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
       {/* Right Pane: Blocks Editor */}
       <div className="viewer-pane">
         <div className="glass-card blocks-list-card">
-          <div className="viewer-header">
-            <h3 style={{ fontSize: '1rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <Edit3 size={16} /> 文字块细修与校对
-            </h3>
-            <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <div className="viewer-header" style={{ flexDirection: 'column', alignItems: 'stretch', gap: '0.75rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 style={{ fontSize: '1rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem', margin: 0 }}>
+                <Edit3 size={16} /> 文字块细修与校对
+              </h3>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                {activeEditorTab === 'blocks' && (
+                  <button
+                    className="btn btn-secondary"
+                    onClick={handleCreateBlock}
+                    style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '4px' }}
+                    title="手动绘制并添加一个新的译文框"
+                  >
+                    <Plus size={12} /> 添加文本框
+                  </button>
+                )}
+                <button
+                  className="btn btn-primary"
+                  onClick={() => onTranslateSingle(image.id)}
+                  disabled={isProcessing}
+                  style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem' }}
+                >
+                  {isProcessing ? '翻译中...' : (localBlocks.length > 0 ? '重新翻译' : '单张翻译')}
+                </button>
+              </div>
+            </div>
+
+            {/* Tab Selector */}
+            <div className="viewer-tabs" style={{ width: '100%', display: 'flex' }}>
               <button
-                className="btn btn-secondary"
-                onClick={handleCreateBlock}
-                style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '4px' }}
-                title="手动绘制并添加一个新的译文框"
+                className={`viewer-tab ${activeEditorTab === 'blocks' ? 'active' : ''}`}
+                onClick={() => setActiveEditorTab('blocks')}
+                style={{ flex: 1, justifyContent: 'center' }}
               >
-                <Plus size={12} /> 添加文本框
+                译文内容 ({localBlocks.length})
               </button>
               <button
-                className="btn btn-primary"
-                onClick={() => onTranslateSingle(image.id)}
-                disabled={isProcessing}
-                style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem' }}
+                className={`viewer-tab ${activeEditorTab === 'style' ? 'active' : ''}`}
+                onClick={() => setActiveEditorTab('style')}
+                style={{ flex: 1, justifyContent: 'center' }}
               >
-                {isProcessing ? '翻译中...' : (localBlocks.length > 0 ? '重新翻译' : '单张翻译')}
+                排版与文字样式
               </button>
             </div>
           </div>
 
           <div className="blocks-list-container" style={{ marginTop: '1rem' }}>
-            {localBlocks.length === 0 ? (
-              <div className="empty-state" style={{ height: '100%', padding: '2rem 0' }}>
-                <ImageIcon size={32} />
-                <p style={{ fontSize: '0.9rem' }}>暂无文本框数据</p>
-                <p style={{ fontSize: '0.8rem', maxWidth: '200px' }}>点击上方“单张翻译”或侧边栏“开始批量翻译”进行分析</p>
-              </div>
-            ) : (
-              localBlocks.map((block, index) => (
-                <div
-                  key={block.id}
-                  ref={(el) => { blockRefs.current[block.id] = el; }}
-                  className={`block-editor-item ${selectedBlockId === block.id ? 'selected' : ''}`}
-                  onClick={() => setSelectedBlockId(block.id)}
-                >
-                  <div className="block-editor-header">
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <span className="block-index"># {index + 1}</span>
-                      <select
-                        value={block.type || 'bubble'}
-                        onChange={(e) => handleBlockTypeChange(block.id, e.target.value as any)}
-                        style={{
-                          fontSize: '0.75rem',
-                          padding: '2px 4px',
-                          borderRadius: '4px',
-                          border: '1px solid var(--border-color, rgba(255,255,255,0.1))',
-                          backgroundColor: 'rgba(0,0,0,0.3)',
-                          color: 'var(--text-color, #fff)',
-                          cursor: 'pointer',
-                          outline: 'none'
-                        }}
-                      >
-                        <option value="bubble">气泡内文字</option>
-                        <option value="onomatopoeia">气泡外文字/拟声/旁注</option>
-                      </select>
-                    </div>
-                    
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <div className="block-colors">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>字</span>
-                          <input
-                            type="color"
-                            value={block.text_color}
-                            onChange={(e) => handleBlockColorChange(block.id, 'text', e.target.value)}
-                            style={{
-                              width: '18px',
-                              height: '18px',
-                              border: 'none',
-                              cursor: 'pointer',
-                              borderRadius: '3px',
-                              background: 'none'
-                            }}
-                          />
-                        </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>底</span>
-                          <input
-                            type="color"
-                            value={block.bg_color}
-                            onChange={(e) => handleBlockColorChange(block.id, 'bg', e.target.value)}
-                            style={{
-                              width: '18px',
-                              height: '18px',
-                              border: 'none',
-                              cursor: 'pointer',
-                              borderRadius: '3px',
-                              background: 'none'
-                            }}
-                          />
-                        </div>
+            {activeEditorTab === 'blocks' ? (
+              localBlocks.length === 0 ? (
+                <div className="empty-state" style={{ height: '100%', padding: '2rem 0' }}>
+                  <ImageIcon size={32} />
+                  <p style={{ fontSize: '0.9rem' }}>暂无文本框数据</p>
+                  <p style={{ fontSize: '0.8rem', maxWidth: '200px' }}>点击上方“单张翻译”或侧边栏“开始批量翻译”进行分析</p>
+                </div>
+              ) : (
+                localBlocks.map((block, index) => (
+                  <div
+                    key={block.id}
+                    ref={(el) => { blockRefs.current[block.id] = el; }}
+                    className={`block-editor-item ${selectedBlockId === block.id ? 'selected' : ''}`}
+                    onClick={() => setSelectedBlockId(block.id)}
+                  >
+                    <div className="block-editor-header">
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span className="block-index"># {index + 1}</span>
+                        <select
+                          value={block.type || 'bubble'}
+                          onChange={(e) => handleBlockTypeChange(block.id, e.target.value as any)}
+                          style={{
+                            fontSize: '0.75rem',
+                            padding: '2px 4px',
+                            borderRadius: '4px',
+                            border: '1px solid var(--border-color, rgba(255,255,255,0.1))',
+                            backgroundColor: 'rgba(0,0,0,0.3)',
+                            color: 'var(--text-color, #fff)',
+                            cursor: 'pointer',
+                            outline: 'none'
+                          }}
+                        >
+                          <option value="bubble">气泡内文字</option>
+                          <option value="onomatopoeia">气泡外文字/拟声/旁注</option>
+                        </select>
                       </div>
+                      
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <div className="block-colors">
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>字</span>
+                            <input
+                              type="color"
+                              value={block.text_color}
+                              onChange={(e) => handleBlockColorChange(block.id, 'text', e.target.value)}
+                              style={{
+                                width: '18px',
+                                height: '18px',
+                                border: 'none',
+                                cursor: 'pointer',
+                                borderRadius: '3px',
+                                background: 'none'
+                              }}
+                            />
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>底</span>
+                            <input
+                              type="color"
+                              value={block.bg_color}
+                              onChange={(e) => handleBlockColorChange(block.id, 'bg', e.target.value)}
+                              style={{
+                                width: '18px',
+                                height: '18px',
+                                border: 'none',
+                                cursor: 'pointer',
+                                borderRadius: '3px',
+                                background: 'none'
+                              }}
+                            />
+                          </div>
+                        </div>
 
-                      <button
-                        className="image-card-delete"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (confirm('确认删除该文本块吗？')) {
-                            handleDeleteBlock(block.id);
-                          }
-                        }}
-                        style={{
-                          padding: '4px',
-                          background: 'none',
-                          border: 'none',
-                          cursor: 'pointer',
-                          opacity: 0.6
-                        }}
-                        title="删除该文本块"
-                      >
-                        <Trash2 size={14} />
-                      </button>
+                        <button
+                          className="image-card-delete"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (confirm('确认删除该文本块吗？')) {
+                              handleDeleteBlock(block.id);
+                            }
+                          }}
+                          style={{
+                            padding: '4px',
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
+                            opacity: 0.6
+                          }}
+                          title="删除该文本块"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
                     </div>
+
+                    <p className="block-original-text">
+                      {block.original_text || '(空白)'}
+                    </p>
+
+                    <textarea
+                      className="block-translate-textarea"
+                      placeholder="输入译文..."
+                      value={block.translated_text}
+                      onChange={(e) => handleBlockTextChange(block.id, e.target.value)}
+                    />
                   </div>
+                ))
+              )
+            ) : (
+              // Embedded Style Settings Panel
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', padding: '0.25rem' }}>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">渲染字体 (Font Family)</label>
+                  <select
+                    className="form-select"
+                    value={styleConfig.fontFamily}
+                    onChange={e => updateStyle('fontFamily', e.target.value)}
+                  >
+                    {FONTS.map(f => (
+                      <option key={f.value} value={f.value}>
+                        {f.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-                  <p className="block-original-text">
-                    {block.original_text || '(空白)'}
-                  </p>
+                <div className="switch-group" style={{ marginBottom: 0 }}>
+                  <div className="switch-label-container">
+                    <span className="form-label" style={{ marginBottom: 0 }}>字号智能自适应 (Auto-Fit)</span>
+                    <span className="switch-sublabel">当译文超出气泡框高度时自动缩小字号</span>
+                  </div>
+                  <label className="switch">
+                    <input
+                      type="checkbox"
+                      checked={styleConfig.autoFitFontSize}
+                      onChange={e => updateStyle('autoFitFontSize', e.target.checked)}
+                    />
+                    <span className="slider"></span>
+                  </label>
+                </div>
 
-                  <textarea
-                    className="block-translate-textarea"
-                    placeholder="输入译文..."
-                    value={block.translated_text}
-                    onChange={(e) => handleBlockTextChange(block.id, e.target.value)}
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+                    <label className="form-label">字体大小缩放 (Font Scale)</label>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--color-primary)', fontWeight: 'bold' }}>
+                      {styleConfig.fontSizeScale.toFixed(1)}x
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.5"
+                    max="2.0"
+                    step="0.1"
+                    value={styleConfig.fontSizeScale}
+                    onChange={e => updateStyle('fontSizeScale', parseFloat(e.target.value))}
                   />
                 </div>
-              ))
+
+                <div className="form-row" style={{ marginBottom: 0 }}>
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <label className="form-label">文本颜色模式</label>
+                    <select
+                      className="form-select"
+                      value={styleConfig.textColorMode}
+                      onChange={e => updateStyle('textColorMode', e.target.value)}
+                    >
+                      <option value="original">自动检测 (原文颜色)</option>
+                      <option value="custom">自定义固定颜色</option>
+                    </select>
+                  </div>
+
+                  {styleConfig.textColorMode === 'custom' && (
+                    <div className="form-group" style={{ marginBottom: 0 }}>
+                      <label className="form-label">自定义文本颜色</label>
+                      <div className="color-picker-input-container">
+                        <input
+                          type="color"
+                          className="color-dot-picker"
+                          value={styleConfig.customTextColor}
+                          onChange={e => updateStyle('customTextColor', e.target.value)}
+                        />
+                        <input
+                          type="text"
+                          className="form-input"
+                          value={styleConfig.customTextColor}
+                          onChange={e => updateStyle('customTextColor', e.target.value)}
+                          style={{ textTransform: 'uppercase', padding: '0.4rem 0.6rem', fontSize: '0.85rem' }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="form-row" style={{ marginBottom: 0 }}>
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <label className="form-label">遮罩底色模式</label>
+                    <select
+                      className="form-select"
+                      value={styleConfig.bgColorMode}
+                      onChange={e => updateStyle('bgColorMode', e.target.value)}
+                    >
+                      <option value="original">自动检测 (背景克隆)</option>
+                      <option value="custom">自定义固定遮罩</option>
+                      <option value="none">无遮罩 (纯文本覆盖)</option>
+                    </select>
+                  </div>
+
+                  {styleConfig.bgColorMode === 'custom' && (
+                    <div className="form-group" style={{ marginBottom: 0 }}>
+                      <label className="form-label">自定义遮罩颜色</label>
+                      <div className="color-picker-input-container">
+                        <input
+                          type="color"
+                          className="color-dot-picker"
+                          value={styleConfig.customBgColor}
+                          onChange={e => updateStyle('customBgColor', e.target.value)}
+                        />
+                        <input
+                          type="text"
+                          className="form-input"
+                          value={styleConfig.customBgColor}
+                          onChange={e => updateStyle('customBgColor', e.target.value)}
+                          style={{ textTransform: 'uppercase', padding: '0.4rem 0.6rem', fontSize: '0.85rem' }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">气泡外拟声词/语气词处理</label>
+                  <select
+                    className="form-select"
+                    value={styleConfig.onomatopoeiaMode}
+                    onChange={e => updateStyle('onomatopoeiaMode', e.target.value)}
+                  >
+                    <option value="ignore">保持原样 (不翻译且不绘制遮罩)</option>
+                    <option value="transparent">翻译但去除遮罩 (透明底文本覆盖)</option>
+                    <option value="normal">正常翻译 (保留常规挡板遮罩)</option>
+                  </select>
+                </div>
+
+                {styleConfig.bgColorMode !== 'none' && (
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+                      <label className="form-label">遮罩底色不透明度</label>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--color-primary)', fontWeight: 'bold' }}>
+                        {styleConfig.bgOpacity}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      step="5"
+                      value={styleConfig.bgOpacity}
+                      onChange={e => updateStyle('bgOpacity', parseInt(e.target.value))}
+                    />
+                  </div>
+                )}
+
+                <div style={{ height: '1px', background: 'var(--border-color)', margin: '0.5rem 0' }} />
+
+                <div className="switch-group" style={{ marginBottom: 0 }}>
+                  <div className="switch-label-container">
+                    <span className="form-label" style={{ marginBottom: 0 }}>文字描边 (Text Stroke)</span>
+                  </div>
+                  <label className="switch">
+                    <input
+                      type="checkbox"
+                      checked={styleConfig.textStroke}
+                      onChange={e => updateStyle('textStroke', e.target.checked)}
+                    />
+                    <span className="slider"></span>
+                  </label>
+                </div>
+
+                {styleConfig.textStroke && (
+                  <div className="form-row" style={{ marginBottom: 0 }}>
+                    <div className="form-group" style={{ marginBottom: 0 }}>
+                      <label className="form-label">描边颜色</label>
+                      <input
+                        type="color"
+                        className="color-dot-picker"
+                        style={{ width: '100%', height: '32px' }}
+                        value={styleConfig.strokeColor}
+                        onChange={e => updateStyle('strokeColor', e.target.value)}
+                      />
+                    </div>
+                    <div className="form-group" style={{ marginBottom: 0 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+                        <label className="form-label">描边宽度</label>
+                        <span style={{ fontSize: '0.8rem' }}>{styleConfig.strokeWidth}px</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="1"
+                        max="6"
+                        step="1"
+                        value={styleConfig.strokeWidth}
+                        onChange={e => updateStyle('strokeWidth', parseInt(e.target.value))}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div className="switch-group" style={{ marginBottom: 0 }}>
+                  <div className="switch-label-container">
+                    <span className="form-label" style={{ marginBottom: 0 }}>文字阴影 (Drop Shadow)</span>
+                  </div>
+                  <label className="switch">
+                    <input
+                      type="checkbox"
+                      checked={styleConfig.textShadow}
+                      onChange={e => updateStyle('textShadow', e.target.checked)}
+                    />
+                    <span className="slider"></span>
+                  </label>
+                </div>
+
+                <div className="switch-group" style={{ marginBottom: 0 }}>
+                  <div className="switch-label-container">
+                    <span className="form-label" style={{ marginBottom: 0 }}>粗体字 (Bold)</span>
+                  </div>
+                  <label className="switch">
+                    <input
+                      type="checkbox"
+                      checked={styleConfig.fontBold}
+                      onChange={e => updateStyle('fontBold', e.target.checked)}
+                    />
+                    <span className="slider"></span>
+                  </label>
+                </div>
+
+                <div className="switch-group" style={{ marginBottom: 0 }}>
+                  <div className="switch-label-container">
+                    <span className="form-label" style={{ marginBottom: 0 }}>斜体字 (Italic)</span>
+                  </div>
+                  <label className="switch">
+                    <input
+                      type="checkbox"
+                      checked={styleConfig.fontItalic}
+                      onChange={e => updateStyle('fontItalic', e.target.checked)}
+                    />
+                    <span className="slider"></span>
+                  </label>
+                </div>
+              </div>
             )}
           </div>
         </div>

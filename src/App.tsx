@@ -819,6 +819,7 @@ export default function App() {
                 <ImageViewer
                   image={selectedImage}
                   styleConfig={styleConfig}
+                  setStyleConfig={setStyleConfig}
                   onUpdateBlocks={handleUpdateBlocks}
                   onTranslateSingle={handleTranslateSingle}
                   isProcessing={selectedImage.status === 'processing'}
@@ -966,14 +967,16 @@ export default function App() {
           </div>
 
           {/* Right settings sidebar */}
-          <div className="workspace-sidebar-area">
-            <SettingsPanel
-              config={config}
-              setConfig={setConfig}
-              styleConfig={styleConfig}
-              setStyleConfig={setStyleConfig}
-            />
-          </div>
+          {showSettings && (
+            <div className="workspace-sidebar-area">
+              <SettingsPanel
+                config={config}
+                setConfig={setConfig}
+                styleConfig={styleConfig}
+                setStyleConfig={setStyleConfig}
+              />
+            </div>
+          )}
         </div>
       </main>
 

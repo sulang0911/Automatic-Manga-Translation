@@ -264,6 +264,20 @@ h1, h2, h3, h4, h5, h6 {
   display: none !important;
 }
 
+.workspace-sidebar-area {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 200px);
+  min-height: 600px;
+}
+
+.workspace-sidebar-area > .glass-card {
+  height: 100%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
 /* Glass Card */
 .glass-card {
   background: var(--bg-card);
