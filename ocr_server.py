@@ -33,7 +33,9 @@ try:
         except Exception:
             pass
         has_cuda = paddle.device.is_compiled_with_cuda()
-        device_str = "gpu" if has_cuda else "cpu"
+        # 针对 1080 Ti (Pascal架构) 显卡，Paddle 3.x 在 CUDA 12 下存在底层计算Bug，会导致GPU输出乱码。
+        # 这里强制使用 CPU 推理以确保识别精度。CPU 推理通常只需 1 秒左右，非常稳定。
+        device_str = "cpu"
         paddle_ocr = PaddleOCR(
             lang="japan", 
             device=device_str, 
@@ -65,7 +67,7 @@ except Exception as e:
     print(f"[-] 未安装或初始化 PaddleOCR 失败: {e}")
     sys.exit(1)
 
-device = "GPU (CUDA)" if has_cuda else "CPU"
+device = "CPU (已为 1080 Ti 兼容性强制切换)"
 print(f"[*] 当前活动引擎: PaddleOCR，计算后端: {device}")
 
 @app.route('/ocr', methods=['POST'])
