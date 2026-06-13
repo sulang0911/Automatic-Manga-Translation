@@ -3,12 +3,17 @@ import { UploadCloud, FolderOpen } from 'lucide-react';
 
 interface UploadAreaProps {
   onFilesSelected: (files: FileList) => void;
+  onSelectLocalDirectory: () => void;
+  selectedDirectoryName: string | null;
 }
 
-export const UploadArea: React.FC<UploadAreaProps> = ({ onFilesSelected }) => {
+export const UploadArea: React.FC<UploadAreaProps> = ({ 
+  onFilesSelected, 
+  onSelectLocalDirectory,
+  selectedDirectoryName
+}) => {
   const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const folderInputRef = useRef<HTMLInputElement>(null);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -47,7 +52,14 @@ export const UploadArea: React.FC<UploadAreaProps> = ({ onFilesSelected }) => {
         </div>
         <div>
           <p className="upload-text">拖拽图片到这里，或者 <span style={{ color: 'var(--color-primary)', textDecoration: 'underline' }}>点击浏览</span></p>
-          <p className="upload-subtext" style={{ marginTop: '4px' }}>支持 PNG, JPG, JPEG, WEBP 格式图片批量翻译</p>
+          <p className="upload-subtext" style={{ marginTop: '4px' }}>
+            支持 PNG, JPG, JPEG, WEBP 格式图片批量翻译
+            {selectedDirectoryName && (
+              <span style={{ display: 'block', color: '#10B981', marginTop: '4px', fontWeight: 'bold' }}>
+                已关联本地工作文件夹: {selectedDirectoryName} (磁盘缓存已启用)
+              </span>
+            )}
+          </p>
         </div>
         
         {/* Hidden inputs */}
@@ -58,14 +70,6 @@ export const UploadArea: React.FC<UploadAreaProps> = ({ onFilesSelected }) => {
           multiple
           accept="image/*"
           onChange={handleFileChange}
-        />
-        <input
-          type="file"
-          ref={folderInputRef}
-          style={{ display: 'none' }}
-          multiple
-          onChange={handleFileChange}
-          {...{ webkitdirectory: "", directory: "" }}
         />
       </div>
 
@@ -81,16 +85,17 @@ export const UploadArea: React.FC<UploadAreaProps> = ({ onFilesSelected }) => {
           <UploadCloud size={16} /> 选择多张图片
         </button>
         <button
-          className="btn btn-secondary"
+          className={`btn ${selectedDirectoryName ? 'btn-primary' : 'btn-secondary'}`}
           style={{ flex: 1, padding: '0.5rem 1rem', fontSize: '0.85rem' }}
           onClick={(e) => {
             e.stopPropagation();
-            folderInputRef.current?.click();
+            onSelectLocalDirectory();
           }}
         >
-          <FolderOpen size={16} /> 导入整文件夹
+          <FolderOpen size={16} /> {selectedDirectoryName ? '切换本地文件夹' : '选择本地文件夹'}
         </button>
       </div>
     </div>
   );
 };
+

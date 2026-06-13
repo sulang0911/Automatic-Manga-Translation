@@ -21,7 +21,6 @@ import {
   CheckCircle, 
   AlertCircle,
   Clock,
-  FolderOpen,
   Grid,
   List,
   Settings,
@@ -141,6 +140,108 @@ export default function App() {
     setToasts(prev => prev.filter(t => t.id !== id));
   };
 
+  const checkFileCache = async (
+    fileName: string,
+    dirHandle: FileSystemDirectoryHandle
+  ): Promise<{
+    blocks?: TranslationBlock[];
+    hasOcrCache: boolean;
+    hasErasedCache: boolean;
+    translatedPreviewUrl?: string;
+  }> => {
+    let blocks: TranslationBlock[] = [];
+    let hasOcrCache = false;
+    let hasErasedCache = false;
+    let translatedPreviewUrl: string | undefined = undefined;
+
+    let cacheDirHandle: FileSystemDirectoryHandle | null = null;
+    try {
+      cacheDirHandle = await dirHandle.getDirectoryHandle('translation_cache', { create: false });
+    } catch (e) {
+      // translation_cache folder does not exist
+    }
+
+    // Try loading JSON blocks cache
+    try {
+      let jsonHandle;
+      if (cacheDirHandle) {
+        try {
+          jsonHandle = await cacheDirHandle.getFileHandle(`${fileName}_blocks.json`);
+        } catch (err) {
+          // Fallback to root directory
+          jsonHandle = await dirHandle.getFileHandle(`${fileName}_blocks.json`);
+        }
+      } else {
+        jsonHandle = await dirHandle.getFileHandle(`${fileName}_blocks.json`);
+      }
+      const jsonFile = await jsonHandle.getFile();
+      const text = await jsonFile.text();
+      blocks = JSON.parse(text);
+      hasOcrCache = true;
+    } catch (e) {
+      // No JSON cache
+    }
+
+    // Try loading translated or erased preview image cache
+    try {
+      let translatedHandle;
+      if (cacheDirHandle) {
+        try {
+          translatedHandle = await cacheDirHandle.getFileHandle(`${fileName}_translated.png`);
+        } catch (err) {
+          translatedHandle = await dirHandle.getFileHandle(`${fileName}_translated.png`);
+        }
+      } else {
+        translatedHandle = await dirHandle.getFileHandle(`${fileName}_translated.png`);
+      }
+      const translatedFile = await translatedHandle.getFile();
+      translatedPreviewUrl = URL.createObjectURL(translatedFile);
+    } catch (e) {
+      try {
+        let erasedHandle;
+        if (cacheDirHandle) {
+          try {
+            erasedHandle = await cacheDirHandle.getFileHandle(`${fileName}_erased.png`);
+          } catch (err) {
+            erasedHandle = await dirHandle.getFileHandle(`${fileName}_erased.png`);
+          }
+        } else {
+          erasedHandle = await dirHandle.getFileHandle(`${fileName}_erased.png`);
+        }
+        const erasedFile = await erasedHandle.getFile();
+        translatedPreviewUrl = URL.createObjectURL(erasedFile);
+        hasErasedCache = true;
+      } catch (err) {
+        // No erased cache
+      }
+    }
+
+    return {
+      blocks: hasOcrCache ? blocks : undefined,
+      hasOcrCache,
+      hasErasedCache: hasErasedCache || !!translatedPreviewUrl,
+      translatedPreviewUrl
+    };
+  };
+
+  const verifyWritePermission = async (handle: FileSystemDirectoryHandle): Promise<boolean> => {
+    // @ts-ignore
+    if (typeof handle.queryPermission === 'function') {
+      // @ts-ignore
+      const status = await handle.queryPermission({ mode: 'readwrite' });
+      if (status === 'granted') {
+        return true;
+      }
+    }
+    // @ts-ignore
+    if (typeof handle.requestPermission === 'function') {
+      // @ts-ignore
+      const status = await handle.requestPermission({ mode: 'readwrite' });
+      return status === 'granted';
+    }
+    return true; // Fallback
+  };
+
   const handleFilesSelected = async (files: FileList) => {
     const newItems: ImageItem[] = [];
     const imageFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
@@ -150,16 +251,42 @@ export default function App() {
       return;
     }
 
+    // Sort naturally by name (1, 2, ..., 10)
+    const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+    imageFiles.sort((a, b) => collator.compare(a.name, b.name));
+
     addToast(`正在导入 ${imageFiles.length} 张图片...`, 'info');
 
     for (const file of imageFiles) {
+      let cache: {
+        blocks?: TranslationBlock[];
+        hasOcrCache: boolean;
+        hasErasedCache: boolean;
+        translatedPreviewUrl?: string;
+      } = {
+        hasOcrCache: false,
+        hasErasedCache: false
+      };
+
+      if (directoryHandle) {
+        try {
+          cache = await checkFileCache(file.name, directoryHandle);
+        } catch (e) {
+          console.error(`Failed to check cache for manually selected file: ${file.name}`, e);
+        }
+      }
+
       newItems.push({
         id: `img_${Date.now()}_${Math.random()}`,
         name: file.name,
         file,
         previewUrl: URL.createObjectURL(file),
-        status: 'idle',
-        progress: 0
+        translatedPreviewUrl: cache.translatedPreviewUrl,
+        status: cache.hasOcrCache ? 'completed' : 'idle',
+        progress: cache.hasOcrCache ? 100 : 0,
+        blocks: cache.blocks,
+        hasOcrCache: cache.hasOcrCache,
+        hasErasedCache: cache.hasErasedCache
       });
     }
 
@@ -171,18 +298,17 @@ export default function App() {
     try {
       // @ts-ignore
       const handle = await window.showDirectoryPicker();
+      
+      // Request write permission under user gesture
+      const hasPermission = await verifyWritePermission(handle);
+      if (!hasPermission) {
+        addToast('未获得文件夹的写入权限，翻译缓存将无法写入本地！', 'error');
+      }
+      
       setDirectoryHandle(handle);
       addToast('正在扫描工作文件夹中的图片与缓存...', 'info');
       
-      const newItems: ImageItem[] = [];
-      
-      // Get cache directory handle if it exists
-      let cacheDirHandle: FileSystemDirectoryHandle | null = null;
-      try {
-        cacheDirHandle = await handle.getDirectoryHandle('translation_cache', { create: false });
-      } catch (e) {
-        // translation_cache folder does not exist yet
-      }
+      const entries: FileSystemFileHandle[] = [];
       
       for await (const entry of handle.values()) {
         if (entry.kind === 'file' && /\.(jpe?g|png|webp|bmp)$/i.test(entry.name)) {
@@ -190,82 +316,31 @@ export default function App() {
           if (entry.name.endsWith('_erased.png') || entry.name.endsWith('_translated.png') || entry.name.endsWith('_blocks.json')) {
             continue;
           }
-
-          const file = await entry.getFile();
-          
-          let blocks: TranslationBlock[] = [];
-          let hasOcrCache = false;
-          let hasErasedCache = false;
-          let translatedPreviewUrl: string | undefined = undefined;
-          
-          // Try loading JSON blocks cache
-          try {
-            let jsonHandle;
-            if (cacheDirHandle) {
-              try {
-                jsonHandle = await cacheDirHandle.getFileHandle(`${entry.name}_blocks.json`);
-              } catch (err) {
-                // Fallback to root directory
-                jsonHandle = await handle.getFileHandle(`${entry.name}_blocks.json`);
-              }
-            } else {
-              jsonHandle = await handle.getFileHandle(`${entry.name}_blocks.json`);
-            }
-            const jsonFile = await jsonHandle.getFile();
-            const text = await jsonFile.text();
-            blocks = JSON.parse(text);
-            hasOcrCache = true;
-          } catch (e) {
-            // No JSON cache
-          }
-          
-          // Try loading translated or erased preview image cache
-          try {
-            let translatedHandle;
-            if (cacheDirHandle) {
-              try {
-                translatedHandle = await cacheDirHandle.getFileHandle(`${entry.name}_translated.png`);
-              } catch (err) {
-                translatedHandle = await handle.getFileHandle(`${entry.name}_translated.png`);
-              }
-            } else {
-              translatedHandle = await handle.getFileHandle(`${entry.name}_translated.png`);
-            }
-            const translatedFile = await translatedHandle.getFile();
-            translatedPreviewUrl = URL.createObjectURL(translatedFile);
-          } catch (e) {
-            try {
-              let erasedHandle;
-              if (cacheDirHandle) {
-                try {
-                  erasedHandle = await cacheDirHandle.getFileHandle(`${entry.name}_erased.png`);
-                } catch (err) {
-                  erasedHandle = await handle.getFileHandle(`${entry.name}_erased.png`);
-                }
-              } else {
-                erasedHandle = await handle.getFileHandle(`${entry.name}_erased.png`);
-              }
-              const erasedFile = await erasedHandle.getFile();
-              translatedPreviewUrl = URL.createObjectURL(erasedFile);
-              hasErasedCache = true;
-            } catch (err) {
-              // No erased cache
-            }
-          }
-          
-          newItems.push({
-            id: `img_${Date.now()}_${Math.random()}`,
-            name: entry.name,
-            file,
-            previewUrl: URL.createObjectURL(file),
-            translatedPreviewUrl,
-            status: hasOcrCache ? 'completed' : 'idle',
-            progress: hasOcrCache ? 100 : 0,
-            blocks: hasOcrCache ? blocks : undefined,
-            hasOcrCache,
-            hasErasedCache: hasErasedCache || !!translatedPreviewUrl
-          });
+          entries.push(entry as FileSystemFileHandle);
         }
+      }
+
+      // Sort naturally by name (1, 2, ..., 10)
+      const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+      entries.sort((a, b) => collator.compare(a.name, b.name));
+
+      const newItems: ImageItem[] = [];
+      for (const entry of entries) {
+        const file = await entry.getFile();
+        const cache = await checkFileCache(entry.name, handle);
+        
+        newItems.push({
+          id: `img_${Date.now()}_${Math.random()}`,
+          name: entry.name,
+          file,
+          previewUrl: URL.createObjectURL(file),
+          translatedPreviewUrl: cache.translatedPreviewUrl,
+          status: cache.hasOcrCache ? 'completed' : 'idle',
+          progress: cache.hasOcrCache ? 100 : 0,
+          blocks: cache.blocks,
+          hasOcrCache: cache.hasOcrCache,
+          hasErasedCache: cache.hasErasedCache
+        });
       }
       
       setImages(prev => {
@@ -333,21 +408,24 @@ export default function App() {
         
         if (directoryHandle) {
           try {
-            const cacheDirHandle = await directoryHandle.getDirectoryHandle('translation_cache', { create: true });
+            const hasPermission = await verifyWritePermission(directoryHandle);
+            if (hasPermission) {
+              const cacheDirHandle = await directoryHandle.getDirectoryHandle('translation_cache', { create: true });
 
-            // Update JSON blocks cache
-            const jsonHandle = await cacheDirHandle.getFileHandle(`${item.name}_blocks.json`, { create: true });
-            const jsonWritable = await jsonHandle.createWritable();
-            await jsonWritable.write(JSON.stringify(blocks));
-            await jsonWritable.close();
+              // Update JSON blocks cache
+              const jsonHandle = await cacheDirHandle.getFileHandle(`${item.name}_blocks.json`, { create: true });
+              const jsonWritable = await jsonHandle.createWritable();
+              await jsonWritable.write(JSON.stringify(blocks));
+              await jsonWritable.close();
 
-            // Update translated image cache
-            const res = await fetch(url);
-            const blob = await res.blob();
-            const translatedHandle = await cacheDirHandle.getFileHandle(`${item.name}_translated.png`, { create: true });
-            const translatedWritable = await translatedHandle.createWritable();
-            await translatedWritable.write(blob);
-            await translatedWritable.close();
+              // Update translated image cache
+              const res = await fetch(url);
+              const blob = await res.blob();
+              const translatedHandle = await cacheDirHandle.getFileHandle(`${item.name}_translated.png`, { create: true });
+              const translatedWritable = await translatedHandle.createWritable();
+              await translatedWritable.write(blob);
+              await translatedWritable.close();
+            }
           } catch (fsErr) {
             console.error('Failed to update local cache files on block edit', fsErr);
           }
@@ -373,6 +451,13 @@ export default function App() {
     if (!config.apiKey && config.provider !== 'custom') {
       addToast('请先在右侧面板配置大模型 API Key', 'error');
       return;
+    }
+
+    if (directoryHandle) {
+      const hasPermission = await verifyWritePermission(directoryHandle);
+      if (!hasPermission) {
+        addToast('未获得文件夹的写入权限，翻译将不会同步到本地磁盘。', 'error');
+      }
     }
 
     setImages(prev => prev.map(img => img.id === imageId ? { ...img, status: 'processing', progress: 10 } : img));
@@ -469,6 +554,13 @@ export default function App() {
     if (pending.length === 0) {
       addToast('没有等待翻译的图片 (可点击清空后重新上传)', 'info');
       return;
+    }
+
+    if (directoryHandle) {
+      const hasPermission = await verifyWritePermission(directoryHandle);
+      if (!hasPermission) {
+        addToast('未获得文件夹的写入权限，翻译将不会同步到本地磁盘。', 'error');
+      }
     }
 
     setIsTranslatingAll(true);
@@ -880,23 +972,11 @@ export default function App() {
             ) : (
               <>
                 <div style={{ display: 'flex', gap: '1rem', flexDirection: 'column' }}>
-                  <UploadArea onFilesSelected={handleFilesSelected} />
-                  
-                  {/* Local Directory Selector */}
-                  <div className="glass-card" style={{ padding: '1.25rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                      <h4 style={{ fontSize: '0.95rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        <FolderOpen size={16} className="text-primary" style={{ color: 'var(--color-primary)' }} />
-                        本地工作文件夹模式 (支持磁盘缓存)
-                      </h4>
-                      <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                        选择包含漫画图片的本地文件夹。系统会自动在子目录 <code>translation_cache</code> 中读写 <code>_blocks.json</code> 文本数据、去字底图及翻译后大图，大幅缩减 OCR 耗时与 API 消耗。
-                      </p>
-                    </div>
-                    <button className="btn btn-secondary" onClick={handleOpenLocalDirectory}>
-                      <FolderOpen size={14} /> {directoryHandle ? '切换本地文件夹' : '选择本地文件夹'}
-                    </button>
-                  </div>
+                  <UploadArea 
+                    onFilesSelected={handleFilesSelected} 
+                    onSelectLocalDirectory={handleOpenLocalDirectory}
+                    selectedDirectoryName={directoryHandle ? directoryHandle.name : null}
+                  />
                 </div>
 
                 {/* Queue list card */}
