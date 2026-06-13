@@ -176,6 +176,14 @@ export default function App() {
       
       const newItems: ImageItem[] = [];
       
+      // Get cache directory handle if it exists
+      let cacheDirHandle: FileSystemDirectoryHandle | null = null;
+      try {
+        cacheDirHandle = await handle.getDirectoryHandle('translation_cache', { create: false });
+      } catch (e) {
+        // translation_cache folder does not exist yet
+      }
+      
       for await (const entry of handle.values()) {
         if (entry.kind === 'file' && /\.(jpe?g|png|webp|bmp)$/i.test(entry.name)) {
           // Exclude generated helper files
@@ -192,7 +200,17 @@ export default function App() {
           
           // Try loading JSON blocks cache
           try {
-            const jsonHandle = await handle.getFileHandle(`${entry.name}_blocks.json`);
+            let jsonHandle;
+            if (cacheDirHandle) {
+              try {
+                jsonHandle = await cacheDirHandle.getFileHandle(`${entry.name}_blocks.json`);
+              } catch (err) {
+                // Fallback to root directory
+                jsonHandle = await handle.getFileHandle(`${entry.name}_blocks.json`);
+              }
+            } else {
+              jsonHandle = await handle.getFileHandle(`${entry.name}_blocks.json`);
+            }
             const jsonFile = await jsonHandle.getFile();
             const text = await jsonFile.text();
             blocks = JSON.parse(text);
@@ -203,12 +221,30 @@ export default function App() {
           
           // Try loading translated or erased preview image cache
           try {
-            const translatedHandle = await handle.getFileHandle(`${entry.name}_translated.png`);
+            let translatedHandle;
+            if (cacheDirHandle) {
+              try {
+                translatedHandle = await cacheDirHandle.getFileHandle(`${entry.name}_translated.png`);
+              } catch (err) {
+                translatedHandle = await handle.getFileHandle(`${entry.name}_translated.png`);
+              }
+            } else {
+              translatedHandle = await handle.getFileHandle(`${entry.name}_translated.png`);
+            }
             const translatedFile = await translatedHandle.getFile();
             translatedPreviewUrl = URL.createObjectURL(translatedFile);
           } catch (e) {
             try {
-              const erasedHandle = await handle.getFileHandle(`${entry.name}_erased.png`);
+              let erasedHandle;
+              if (cacheDirHandle) {
+                try {
+                  erasedHandle = await cacheDirHandle.getFileHandle(`${entry.name}_erased.png`);
+                } catch (err) {
+                  erasedHandle = await handle.getFileHandle(`${entry.name}_erased.png`);
+                }
+              } else {
+                erasedHandle = await handle.getFileHandle(`${entry.name}_erased.png`);
+              }
               const erasedFile = await erasedHandle.getFile();
               translatedPreviewUrl = URL.createObjectURL(erasedFile);
               hasErasedCache = true;
@@ -297,8 +333,10 @@ export default function App() {
         
         if (directoryHandle) {
           try {
+            const cacheDirHandle = await directoryHandle.getDirectoryHandle('translation_cache', { create: true });
+
             // Update JSON blocks cache
-            const jsonHandle = await directoryHandle.getFileHandle(`${item.name}_blocks.json`, { create: true });
+            const jsonHandle = await cacheDirHandle.getFileHandle(`${item.name}_blocks.json`, { create: true });
             const jsonWritable = await jsonHandle.createWritable();
             await jsonWritable.write(JSON.stringify(blocks));
             await jsonWritable.close();
@@ -306,7 +344,7 @@ export default function App() {
             // Update translated image cache
             const res = await fetch(url);
             const blob = await res.blob();
-            const translatedHandle = await directoryHandle.getFileHandle(`${item.name}_translated.png`, { create: true });
+            const translatedHandle = await cacheDirHandle.getFileHandle(`${item.name}_translated.png`, { create: true });
             const translatedWritable = await translatedHandle.createWritable();
             await translatedWritable.write(blob);
             await translatedWritable.close();
@@ -366,8 +404,10 @@ export default function App() {
           // Write back local caches if directory mode active
           if (directoryHandle) {
             try {
+              const cacheDirHandle = await directoryHandle.getDirectoryHandle('translation_cache', { create: true });
+
               // 1. Write blocks JSON
-              const jsonHandle = await directoryHandle.getFileHandle(`${item.name}_blocks.json`, { create: true });
+              const jsonHandle = await cacheDirHandle.getFileHandle(`${item.name}_blocks.json`, { create: true });
               const jsonWritable = await jsonHandle.createWritable();
               await jsonWritable.write(JSON.stringify(blocks));
               await jsonWritable.close();
@@ -375,7 +415,7 @@ export default function App() {
 
               // 2. Write erased background image
               const erasedBlob = await renderErasedCanvas(item.previewUrl, blocks, styleConfig);
-              const erasedHandle = await directoryHandle.getFileHandle(`${item.name}_erased.png`, { create: true });
+              const erasedHandle = await cacheDirHandle.getFileHandle(`${item.name}_erased.png`, { create: true });
               const erasedWritable = await erasedHandle.createWritable();
               await erasedWritable.write(erasedBlob);
               await erasedWritable.close();
@@ -384,7 +424,7 @@ export default function App() {
               // 3. Write final translated image
               const translatedRes = await fetch(translatedPreviewUrl);
               const translatedBlob = await translatedRes.blob();
-              const translatedHandle = await directoryHandle.getFileHandle(`${item.name}_translated.png`, { create: true });
+              const translatedHandle = await cacheDirHandle.getFileHandle(`${item.name}_translated.png`, { create: true });
               const translatedWritable = await translatedHandle.createWritable();
               await translatedWritable.write(translatedBlob);
               await translatedWritable.close();
@@ -470,8 +510,10 @@ export default function App() {
             // Write back local caches if directory mode active
             if (directoryHandle) {
               try {
+                const cacheDirHandle = await directoryHandle.getDirectoryHandle('translation_cache', { create: true });
+
                 // 1. Write blocks JSON
-                const jsonHandle = await directoryHandle.getFileHandle(`${img.name}_blocks.json`, { create: true });
+                const jsonHandle = await cacheDirHandle.getFileHandle(`${img.name}_blocks.json`, { create: true });
                 const jsonWritable = await jsonHandle.createWritable();
                 await jsonWritable.write(JSON.stringify(blocks));
                 await jsonWritable.close();
@@ -479,7 +521,7 @@ export default function App() {
 
                 // 2. Write erased background image
                 const erasedBlob = await renderErasedCanvas(img.previewUrl, blocks, styleConfig);
-                const erasedHandle = await directoryHandle.getFileHandle(`${img.name}_erased.png`, { create: true });
+                const erasedHandle = await cacheDirHandle.getFileHandle(`${img.name}_erased.png`, { create: true });
                 const erasedWritable = await erasedHandle.createWritable();
                 await erasedWritable.write(erasedBlob);
                 await erasedWritable.close();
@@ -488,7 +530,7 @@ export default function App() {
                 // 3. Write final translated image
                 const translatedRes = await fetch(translatedPreviewUrl);
                 const translatedBlob = await translatedRes.blob();
-                const translatedHandle = await directoryHandle.getFileHandle(`${img.name}_translated.png`, { create: true });
+                const translatedHandle = await cacheDirHandle.getFileHandle(`${img.name}_translated.png`, { create: true });
                 const translatedWritable = await translatedHandle.createWritable();
                 await translatedWritable.write(translatedBlob);
                 await translatedWritable.close();
@@ -848,7 +890,7 @@ export default function App() {
                         本地工作文件夹模式 (支持磁盘缓存)
                       </h4>
                       <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                        选择包含漫画图片的本地文件夹。系统会自动在同目录下读写 <code>_blocks.json</code> 文本数据、去字底图及翻译后大图，大幅缩减 OCR 耗时与 API 消耗。
+                        选择包含漫画图片的本地文件夹。系统会自动在子目录 <code>translation_cache</code> 中读写 <code>_blocks.json</code> 文本数据、去字底图及翻译后大图，大幅缩减 OCR 耗时与 API 消耗。
                       </p>
                     </div>
                     <button className="btn btn-secondary" onClick={handleOpenLocalDirectory}>

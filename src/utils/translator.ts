@@ -1,6 +1,44 @@
 import type { ImageItem, TranslateConfig, TranslationBlock } from '../types';
 import { performLocalOCR } from './ocr';
 
+// Helper to extract and parse JSON from a response string robustly
+const extractJson = (text: string): any => {
+  const trimmed = text.trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch (e) {
+    let cleaned = trimmed;
+    if (cleaned.startsWith('```json')) {
+      cleaned = cleaned.replace(/^```json/, '').replace(/```$/, '').trim();
+    } else if (cleaned.startsWith('```')) {
+      cleaned = cleaned.replace(/^```/, '').replace(/```$/, '').trim();
+    }
+    try {
+      return JSON.parse(cleaned);
+    } catch (err) {
+      const firstBrace = cleaned.indexOf('{');
+      const lastBrace = cleaned.lastIndexOf('}');
+      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+        try {
+          return JSON.parse(cleaned.substring(firstBrace, lastBrace + 1));
+        } catch (jsonErr) {
+          // Try array brackets fallback
+          const firstBracket = cleaned.indexOf('[');
+          const lastBracket = cleaned.lastIndexOf(']');
+          if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+            try {
+              return JSON.parse(cleaned.substring(firstBracket, lastBracket + 1));
+            } catch (bracketErr) {
+              // ignore
+            }
+          }
+        }
+      }
+      throw new Error(`JSON 解析失败: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+};
+
 
 
 // Helper to convert File to Base64
@@ -142,7 +180,7 @@ Return your results in a structured JSON object strictly conforming to the reque
     throw new Error("Gemini returned an empty response.");
   }
 
-  const parsed = JSON.parse(textResponse);
+  const parsed = extractJson(textResponse);
   if (!parsed.blocks || !Array.isArray(parsed.blocks)) {
     throw new Error("Invalid response structure from Gemini API");
   }
@@ -239,7 +277,7 @@ const translateWithOpenAI = async (
     throw new Error("OpenAI returned an empty response.");
   }
 
-  const parsed = JSON.parse(textResponse);
+  const parsed = extractJson(textResponse);
   if (!parsed.blocks || !Array.isArray(parsed.blocks)) {
     throw new Error("Invalid response structure from OpenAI API");
   }
@@ -327,16 +365,8 @@ Return ONLY the raw JSON object. Do not include markdown code block syntax.`;
   if (!textResponse) {
     throw new Error("DeepSeek returned an empty response.");
   }
-  
-  // Clean markdown block formatting if outputted
-  textResponse = textResponse.trim();
-  if (textResponse.startsWith('```json')) {
-    textResponse = textResponse.replace(/^```json/, '').replace(/```$/, '').trim();
-  } else if (textResponse.startsWith('```')) {
-    textResponse = textResponse.replace(/^```/, '').replace(/```$/, '').trim();
-  }
 
-  const parsed = JSON.parse(textResponse);
+  const parsed = extractJson(textResponse);
   if (!parsed.translations || !Array.isArray(parsed.translations)) {
     throw new Error("Invalid response structure from DeepSeek API");
   }
@@ -464,7 +494,7 @@ ${JSON.stringify(blocks.map(b => ({
   const textResponse = data.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!textResponse) throw new Error("Gemini returned empty text translation.");
   
-  const parsed = JSON.parse(textResponse);
+  const parsed = extractJson(textResponse);
   const translationMap = new Map<string, { translated_text: string, type: 'bubble' | 'onomatopoeia' | 'other' }>();
   parsed.translations.forEach((item: any) => {
     translationMap.set(item.id, {
@@ -544,17 +574,10 @@ Return ONLY the raw JSON object. Do not include markdown code block syntax.`;
   }
 
   const data = await response.json();
-  let textResponse = data.choices?.[0]?.message?.content;
+  const textResponse = data.choices?.[0]?.message?.content;
   if (!textResponse) throw new Error("OpenAI returned empty text translation.");
-  
-  textResponse = textResponse.trim();
-  if (textResponse.startsWith('```json')) {
-    textResponse = textResponse.replace(/^```json/, '').replace(/```$/, '').trim();
-  } else if (textResponse.startsWith('```')) {
-    textResponse = textResponse.replace(/^```/, '').replace(/```$/, '').trim();
-  }
 
-  const parsed = JSON.parse(textResponse);
+  const parsed = extractJson(textResponse);
   const translationMap = new Map<string, { translated_text: string, type: 'bubble' | 'onomatopoeia' | 'other' }>();
   parsed.translations.forEach((item: any) => {
     translationMap.set(item.id, {

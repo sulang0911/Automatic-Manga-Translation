@@ -28,6 +28,10 @@ try:
         # 针对 CPU 运行，显式禁用 enable_mkldnn=False 规避 oneDNN static graph bug
         # 显式禁用 use_doc_orientation_classify 和 use_doc_unwarping，防止其预处理扭曲漫画坐标
         import paddle
+        try:
+            paddle.set_flags({"FLAGS_use_onednn": False})
+        except Exception:
+            pass
         has_cuda = paddle.device.is_compiled_with_cuda()
         device_str = "gpu" if has_cuda else "cpu"
         paddle_ocr = PaddleOCR(
@@ -56,24 +60,13 @@ try:
                 print("[+] PaddleOCR (日文) 基础引擎初始化成功！")
             except Exception as e_base:
                 print(f"[-] 所有 PaddleOCR 初始化尝试均失败: {e_base}")
+                sys.exit(1)
 except Exception as e:
-    print(f"[*] 未安装或初始化 PaddleOCR 失败 (将尝试使用 EasyOCR 降级方案): {e}")
-
-# 备用 EasyOCR 引擎
-easy_reader = None
-if not USE_PADDLE:
-    try:
-        import easyocr
-        print(f"[*] 正在初始化 EasyOCR 备用模型 (支持语言: 日文 + 英文)...")
-        easy_reader = easyocr.Reader(['ja', 'en'], gpu=torch.cuda.is_available())
-        print("[+] EasyOCR 引擎初始化成功！")
-    except Exception as e:
-        print(f"[-] 初始化 EasyOCR 失败: {e}")
-        print("\n[警告] 没有任何本地 OCR 引擎可用！请执行: pip install paddleocr paddlepaddle\n")
+    print(f"[-] 未安装或初始化 PaddleOCR 失败: {e}")
+    sys.exit(1)
 
 device = "GPU (CUDA)" if torch.cuda.is_available() else "CPU"
-engine_name = "PaddleOCR" if USE_PADDLE else "EasyOCR"
-print(f"[*] 当前活动引擎: {engine_name}，计算后端: {device}")
+print(f"[*] 当前活动引擎: PaddleOCR，计算后端: {device}")
 
 @app.route('/ocr', methods=['POST'])
 def run_ocr():
@@ -91,11 +84,10 @@ def run_ocr():
 
     formatted_blocks = []
 
-    # 1. 尝试使用高精度 PaddleOCR 识别
-    if USE_PADDLE and paddle_ocr:
+    # 使用高精度 PaddleOCR 识别
+    if paddle_ocr:
         try:
-            # 3.x 版本移除了 cls 参数且返回格式不同
-            # 兼容 2.x 和 3.x 两种格式进行识别与解析
+            # 3.x 版本移了使用 predict，兼容 2.x 和 3.x 两种格式进行识别与解析
             try:
                 results = paddle_ocr.ocr(img)
             except TypeError:
@@ -136,23 +128,10 @@ def run_ocr():
                             "confidence": float(confidence)
                         })
         except Exception as e:
-            print(f"[-] PaddleOCR 运行异常，将切换至 EasyOCR 备用处理: {e}")
+            print(f"[-] PaddleOCR 运行异常: {e}")
+            return jsonify({"error": f"PaddleOCR processing error: {e}"}), 500
 
-    # 2. 降级备用：EasyOCR 识别
-    if not formatted_blocks and easy_reader:
-        try:
-            results = easy_reader.readtext(img, detail=1)
-            for bbox, text, confidence in results:
-                box = [[int(pt[0]), int(pt[1])] for pt in bbox]
-                formatted_blocks.append({
-                    "text": text,
-                    "box": box,
-                    "confidence": float(confidence)
-                })
-        except Exception as e:
-            print(f"[-] EasyOCR 运行异常: {e}")
-
-    print(f"[+] 识别引擎 {engine_name} 成功处理，提取出 {len(formatted_blocks)} 个文本区域", flush=True)
+    print(f"[+] PaddleOCR 成功处理，提取出 {len(formatted_blocks)} 个文本区域", flush=True)
     return jsonify({"blocks": formatted_blocks})
 
 # Helper functions for precision masking and inpainting
@@ -322,7 +301,7 @@ def inpaint_image():
 def health():
     return jsonify({
         "status": "healthy",
-        "engine": "PaddleOCR" if USE_PADDLE else "EasyOCR",
+        "engine": "PaddleOCR",
         "device": device,
         "cuda_available": torch.cuda.is_available(),
         "lama_available": USE_LAMA
