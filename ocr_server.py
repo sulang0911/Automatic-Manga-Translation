@@ -19,12 +19,15 @@ CORS(app)  # 启用 CORS 跨域
 USE_PADDLE = False
 paddle_ocr = None
 has_cuda = False
+device_str = "cpu"
+gpu_info = ""
+
 try:
     from paddleocr import PaddleOCR
     print("[*] 检测到已安装 PaddleOCR，正在初始化日文与竖排识别模型...")
     try:
         # 3.x 版本移除了 use_gpu 和 show_log 参数，改用 device 参数
-        # 且 use_angle_cls 在 3.x 中已被弃用或用 use_textline_orientation 代替
+        # 且 use_angle_cls 在 3.x 中已被弃用 or 用 use_textline_orientation 代替
         # 针对 CPU 运行，显式禁用 enable_mkldnn=False 规避 oneDNN static graph bug
         # 显式禁用 use_doc_orientation_classify 和 use_doc_unwarping，防止其预处理扭曲漫画坐标
         import paddle
@@ -33,9 +36,27 @@ try:
         except Exception:
             pass
         has_cuda = paddle.device.is_compiled_with_cuda()
-        # 针对 1080 Ti (Pascal架构) 显卡，Paddle 3.x 在 CUDA 12 下存在底层计算Bug，会导致GPU输出乱码。
-        # 这里强制使用 CPU 推理以确保识别精度。CPU 推理通常只需 1 秒左右，非常稳定。
-        device_str = "cpu"
+        
+        if has_cuda:
+            try:
+                gpu_name = paddle.device.cuda.get_device_properties(0).name
+                gpu_name_lower = gpu_name.lower()
+                # 针对 10-series (Pascal), 9-series (Maxwell) 等老显卡，Paddle 3.x + CUDA 12 存在计算Bug（输出全乱码且精度极低）。
+                # 如果检测到是这些老卡，强制使用 CPU，其余现代显卡（如 RTX 20/30/40 等）则自动启用 GPU 运行。
+                is_old_gpu = any(x in gpu_name_lower for x in ["1080", "1070", "1060", "1050", "titan xp", "p40", "p100", "980", "970", "960"])
+                if is_old_gpu:
+                    gpu_info = f"CPU (已针对 {gpu_name} 强制切换以避免乱码)"
+                    device_str = "cpu"
+                else:
+                    gpu_info = f"GPU ({gpu_name})"
+                    device_str = "gpu"
+            except Exception as e_gpu:
+                gpu_info = "CPU (获取GPU信息失败，安全回退)"
+                device_str = "cpu"
+        else:
+            gpu_info = "CPU"
+            device_str = "cpu"
+
         paddle_ocr = PaddleOCR(
             lang="japan", 
             device=device_str, 
@@ -53,6 +74,8 @@ try:
             paddle_ocr = PaddleOCR(use_angle_cls=True, lang="japan", use_gpu=has_cuda)
             USE_PADDLE = True
             print("[+] PaddleOCR (日文) 2.x 引擎初始化成功！")
+            device_str = "gpu" if has_cuda else "cpu"
+            gpu_info = "GPU" if has_cuda else "CPU"
         except Exception as e2:
             print(f"[-] PaddleOCR 2.x 初始化也失败: {e2}")
             print("[*] 尝试最基础的初始化方式...")
@@ -60,6 +83,8 @@ try:
                 paddle_ocr = PaddleOCR(lang="japan")
                 USE_PADDLE = True
                 print("[+] PaddleOCR (日文) 基础引擎初始化成功！")
+                device_str = "cpu"
+                gpu_info = "CPU"
             except Exception as e_base:
                 print(f"[-] 所有 PaddleOCR 初始化尝试均失败: {e_base}")
                 sys.exit(1)
@@ -67,7 +92,7 @@ except Exception as e:
     print(f"[-] 未安装或初始化 PaddleOCR 失败: {e}")
     sys.exit(1)
 
-device = "CPU (已为 1080 Ti 兼容性强制切换)"
+device = gpu_info
 print(f"[*] 当前活动引擎: PaddleOCR，计算后端: {device}")
 
 @app.route('/ocr', methods=['POST'])
