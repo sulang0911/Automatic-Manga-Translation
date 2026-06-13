@@ -1,5 +1,25 @@
 import type { TranslationBlock, StyleConfig } from '../types';
 
+export const getFontFallbackString = (fontFamily: string): string => {
+  switch (fontFamily) {
+    case 'Microsoft YaHei':
+      return '"Microsoft YaHei", "微软雅黑", sans-serif';
+    case 'SimHei':
+      return 'SimHei, "黑体", "Helvetica Neue", Helvetica, sans-serif';
+    case 'KaiTi':
+      return 'KaiTi, "楷体", STKaiti, "楷体_GB2312", serif';
+    case 'FangSong':
+      return 'FangSong, "仿宋", STFangsong, "仿宋_GB2312", serif';
+    case 'Inter':
+      return 'Inter, -apple-system, sans-serif';
+    case 'Outfit':
+      return 'Outfit, -apple-system, sans-serif';
+    case 'system-ui':
+    default:
+      return 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+  }
+};
+
 
 // Wrap text utility for canvas drawing
 export interface WrappedLine {
@@ -160,12 +180,15 @@ export const renderTranslatedCanvas = async (
         const isVertical = h > w * 1.15 && isCJK;
         
         // Define font styling helper
-        const buildFontStyle = (sz: number) => [
-          style.fontItalic ? 'italic' : '',
-          style.fontBold ? 'bold' : '',
-          `${sz}px`,
-          style.fontFamily || 'sans-serif'
-        ].filter(Boolean).join(' ');
+        const buildFontStyle = (sz: number) => {
+          const family = getFontFallbackString(style.fontFamily);
+          return [
+            style.fontItalic ? 'italic' : '',
+            style.fontBold ? 'bold' : '',
+            `${sz}px`,
+            family
+          ].filter(Boolean).join(' ');
+        };
 
         // Setup drawing styles
         ctx.fillStyle = textColor;

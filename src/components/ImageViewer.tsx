@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import type { ImageItem, TranslationBlock, StyleConfig } from '../types';
-import { renderTranslatedCanvas, wrapText } from '../utils/canvasExporter';
+import { renderTranslatedCanvas, wrapText, getFontFallbackString } from '../utils/canvasExporter';
 import { 
   Download, 
   Edit3, 
@@ -45,12 +45,15 @@ const getOptimizedFontSize = (
   const isCJK = /[\u4e00-\u9fa5\u3040-\u30ff\uac00-\ud7af]/.test(text);
   const isVertical = h > w * 1.15 && isCJK;
 
-  const buildFontStyle = (sz: number) => [
-    style.fontItalic ? 'italic' : '',
-    style.fontBold ? 'bold' : '',
-    `${sz}px`,
-    style.fontFamily || 'sans-serif'
-  ].filter(Boolean).join(' ');
+  const buildFontStyle = (sz: number) => {
+    const family = getFontFallbackString(style.fontFamily);
+    return [
+      style.fontItalic ? 'italic' : '',
+      style.fontBold ? 'bold' : '',
+      `${sz}px`,
+      family
+    ].filter(Boolean).join(' ');
+  };
 
   const minFontSize = 6;
 
@@ -745,7 +748,7 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
                       height: `${h}%`,
                       color: textColor,
                       backgroundColor: 'transparent',
-                      fontFamily: styleConfig.fontFamily,
+                      fontFamily: getFontFallbackString(styleConfig.fontFamily),
                       fontSize: `${fontSize}px`,
                       fontWeight: styleConfig.fontBold ? 'bold' : 'normal',
                       fontStyle: styleConfig.fontItalic ? 'italic' : 'normal',
