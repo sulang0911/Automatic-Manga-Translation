@@ -78,16 +78,48 @@ export const wrapText = (
   return lines;
 };
 
+const checkServerActive = async (): Promise<boolean> => {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 600);
+    const res = await fetch('http://127.0.0.1:5000/health', { signal: controller.signal });
+    clearTimeout(timeoutId);
+    if (res.ok) {
+      const data = await res.json();
+      return data.status === 'healthy';
+    }
+  } catch (e) {
+    // Offline
+  }
+  return false;
+};
+
 // Main function to draw image and translation overlays to a Canvas
 export const renderTranslatedCanvas = async (
   originalImageSrc: string,
   blocks: TranslationBlock[],
   style: StyleConfig
 ): Promise<string> => {
-  return new Promise((resolve, reject) => {
+  return new Promise(async (resolve, reject) => {
+    let backgroundSrc = originalImageSrc;
+    let isServerActive = false;
+    let tempUrl: string | null = null;
+    
+    try {
+      isServerActive = await checkServerActive();
+      if (isServerActive) {
+        // @ts-ignore - Assuming renderErasedCanvas is imported/available
+        const erasedBlob = await renderErasedCanvas(originalImageSrc, blocks, style);
+        tempUrl = URL.createObjectURL(erasedBlob);
+        backgroundSrc = tempUrl;
+      }
+    } catch (e) {
+      console.warn('Failed to pre-inpaint background for translation preview', e);
+    }
+
     const img = new Image();
     img.crossOrigin = 'anonymous'; // Avoid tainted canvas
-    img.src = originalImageSrc;
+    img.src = backgroundSrc;
     
     img.onload = () => {
       const canvas = document.createElement('canvas');
@@ -96,52 +128,55 @@ export const renderTranslatedCanvas = async (
       const ctx = canvas.getContext('2d');
       
       if (!ctx) {
+        if (tempUrl) URL.revokeObjectURL(tempUrl);
         reject(new Error('Failed to get 2D context'));
         return;
       }
       
-      // 1. Draw original image
+      // 1. Draw background image (original or inpainted)
       ctx.drawImage(img, 0, 0);
       
-      // 2a. First pass: Draw all background masks
-      blocks.forEach((block) => {
-        const xmin = (block.xmin / 100) * canvas.width;
-        const ymin = (block.ymin / 100) * canvas.height;
-        const xmax = (block.xmax / 100) * canvas.width;
-        const ymax = (block.ymax / 100) * canvas.height;
-        
-        const w = xmax - xmin;
-        const h = ymax - ymin;
-        
-        // Skip invalid blocks
-        if (w <= 0 || h <= 0) return;
-        
-        // Check onomatopoeia mode for background mask
-        if (block.type === 'onomatopoeia' && (style.onomatopoeiaMode === 'ignore' || style.onomatopoeiaMode === 'transparent')) {
-          return;
-        }
-        
-        // 2a. Draw Background Mask
-        let bgColor = '#000000';
-        let useBg = true;
-        
-        if (style.bgColorMode === 'original') {
-          bgColor = block.bg_color;
-        } else if (style.bgColorMode === 'custom') {
-          bgColor = style.customBgColor;
-        } else {
-          useBg = false;
-        }
-        
-        if (useBg) {
-          ctx.save();
-          ctx.fillStyle = bgColor;
-          // Apply opacity
-          ctx.globalAlpha = style.bgOpacity / 100;
-          ctx.fillRect(xmin, ymin, w, h);
-          ctx.restore();
-        }
-      });
+      // 2a. First pass: Draw all background masks (ONLY if server was offline!)
+      if (!isServerActive) {
+        blocks.forEach((block) => {
+          const xmin = (block.xmin / 100) * canvas.width;
+          const ymin = (block.ymin / 100) * canvas.height;
+          const xmax = (block.xmax / 100) * canvas.width;
+          const ymax = (block.ymax / 100) * canvas.height;
+          
+          const w = xmax - xmin;
+          const h = ymax - ymin;
+          
+          // Skip invalid blocks
+          if (w <= 0 || h <= 0) return;
+          
+          // Check onomatopoeia mode for background mask
+          if (block.type === 'onomatopoeia' && (style.onomatopoeiaMode === 'ignore' || style.onomatopoeiaMode === 'transparent')) {
+            return;
+          }
+          
+          // 2a. Draw Background Mask
+          let bgColor = '#000000';
+          let useBg = true;
+          
+          if (style.bgColorMode === 'original') {
+            bgColor = block.bg_color;
+          } else if (style.bgColorMode === 'custom') {
+            bgColor = style.customBgColor;
+          } else {
+            useBg = false;
+          }
+          
+          if (useBg) {
+            ctx.save();
+            ctx.fillStyle = bgColor;
+            // Apply opacity
+            ctx.globalAlpha = style.bgOpacity / 100;
+            ctx.fillRect(xmin, ymin, w, h);
+            ctx.restore();
+          }
+        });
+      }
       
       // 2b. Second pass: Draw all text overlays
       blocks.forEach((block) => {
@@ -378,6 +413,32 @@ export const renderErasedCanvas = async (
   blocks: TranslationBlock[],
   style: StyleConfig
 ): Promise<Blob> => {
+  const isServerActive = await checkServerActive();
+  if (isServerActive) {
+    try {
+      const response = await fetch(originalImageSrc);
+      const originalBlob = await response.blob();
+      
+      const formData = new FormData();
+      formData.append('image', originalBlob, 'image.png');
+      formData.append('blocks', JSON.stringify(blocks));
+      formData.append('style', JSON.stringify(style));
+      
+      const inpaintRes = await fetch('http://127.0.0.1:5000/inpaint', {
+        method: 'POST',
+        body: formData
+      });
+      if (inpaintRes.ok) {
+        const inpaintedBlob = await inpaintRes.blob();
+        return inpaintedBlob;
+      } else {
+        console.warn('Local inpaint server returned error, falling back to local canvas...');
+      }
+    } catch (err) {
+      console.warn('Failed to call local inpaint server, falling back to local canvas...', err);
+    }
+  }
+
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
