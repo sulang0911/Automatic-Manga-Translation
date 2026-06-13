@@ -7,10 +7,9 @@ try:
     from flask_cors import CORS
     import numpy as np
     import cv2
-    import torch
 except ImportError:
     print("\n[错误] 缺少必要依赖，请先执行以下命令安装:")
-    print("pip install flask flask-cors opencv-python numpy torch torchvision\n")
+    print("pip install flask flask-cors opencv-python numpy\n")
     sys.exit(1)
 
 app = Flask(__name__)
@@ -19,6 +18,7 @@ CORS(app)  # 启用 CORS 跨域
 # 尝试优先初始化 PaddleOCR (在日文/竖排漫画识别精度上处于业界领先地位)
 USE_PADDLE = False
 paddle_ocr = None
+has_cuda = False
 try:
     from paddleocr import PaddleOCR
     print("[*] 检测到已安装 PaddleOCR，正在初始化日文与竖排识别模型...")
@@ -48,7 +48,7 @@ try:
         print(f"[*] PaddleOCR 3.x 初始化未成功 ({e3})，正在尝试 2.x 兼容模式...")
         try:
             # 2.x 兼容模式
-            paddle_ocr = PaddleOCR(use_angle_cls=True, lang="japan", use_gpu=torch.cuda.is_available())
+            paddle_ocr = PaddleOCR(use_angle_cls=True, lang="japan", use_gpu=has_cuda)
             USE_PADDLE = True
             print("[+] PaddleOCR (日文) 2.x 引擎初始化成功！")
         except Exception as e2:
@@ -65,7 +65,7 @@ except Exception as e:
     print(f"[-] 未安装或初始化 PaddleOCR 失败: {e}")
     sys.exit(1)
 
-device = "GPU (CUDA)" if torch.cuda.is_available() else "CPU"
+device = "GPU (CUDA)" if has_cuda else "CPU"
 print(f"[*] 当前活动引擎: PaddleOCR，计算后端: {device}")
 
 @app.route('/ocr', methods=['POST'])
@@ -303,7 +303,7 @@ def health():
         "status": "healthy",
         "engine": "PaddleOCR",
         "device": device,
-        "cuda_available": torch.cuda.is_available(),
+        "cuda_available": has_cuda,
         "lama_available": USE_LAMA
     })
 

@@ -1,5 +1,14 @@
 import type { TranslationBlock, StyleConfig } from '../types';
 
+interface ErasedCacheEntry {
+  originalImageSrc: string;
+  blocksHash: string;
+  styleHash: string;
+  blob: Blob;
+}
+
+let lastErasedCache: ErasedCacheEntry | null = null;
+
 export const getFontFallbackString = (fontFamily: string): string => {
   switch (fontFamily) {
     case 'Microsoft YaHei':
@@ -413,6 +422,19 @@ export const renderErasedCanvas = async (
   blocks: TranslationBlock[],
   style: StyleConfig
 ): Promise<Blob> => {
+  // Check memory cache first
+  const blocksJson = JSON.stringify(blocks);
+  const styleJson = JSON.stringify(style);
+  
+  if (
+    lastErasedCache &&
+    lastErasedCache.originalImageSrc === originalImageSrc &&
+    lastErasedCache.blocksHash === blocksJson &&
+    lastErasedCache.styleHash === styleJson
+  ) {
+    return lastErasedCache.blob;
+  }
+
   const isServerActive = await checkServerActive();
   if (isServerActive) {
     try {
@@ -430,6 +452,15 @@ export const renderErasedCanvas = async (
       });
       if (inpaintRes.ok) {
         const inpaintedBlob = await inpaintRes.blob();
+        
+        // Save to cache
+        lastErasedCache = {
+          originalImageSrc,
+          blocksHash: blocksJson,
+          styleHash: styleJson,
+          blob: inpaintedBlob
+        };
+        
         return inpaintedBlob;
       } else {
         console.warn('Local inpaint server returned error, falling back to local canvas...');
@@ -500,6 +531,13 @@ export const renderErasedCanvas = async (
             reject(new Error('Canvas export failed'));
             return;
           }
+          // Save to cache
+          lastErasedCache = {
+            originalImageSrc,
+            blocksHash: blocksJson,
+            styleHash: styleJson,
+            blob
+          };
           resolve(blob);
         }, 'image/png');
       } catch (err) {

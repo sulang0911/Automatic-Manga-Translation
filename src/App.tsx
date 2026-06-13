@@ -95,12 +95,48 @@ export default function App() {
     localStorage.setItem(LOCAL_STORAGE_KEY_STYLE, JSON.stringify(styleConfig));
   }, [styleConfig]);
 
+  // Background preloader for Grid view to load image details in small non-blocking batches
+  useEffect(() => {
+    if (queueViewMode !== 'grid') return;
+
+    let active = true;
+    const loadUnresolved = async () => {
+      const unresolved = images.filter(img => img.fileHandle && !img.previewUrl);
+      if (unresolved.length === 0) return;
+
+      const batchSize = 5;
+      for (let i = 0; i < unresolved.length; i += batchSize) {
+        if (!active) break;
+        const batch = unresolved.slice(i, i + batchSize);
+        
+        const resolvedBatch = await Promise.all(
+          batch.map(img => resolveImageFiles(img))
+        );
+
+        if (!active) break;
+
+        setImages(prev => {
+          const map = new Map(resolvedBatch.map(r => [r.id, r]));
+          return prev.map(img => map.has(img.id) ? map.get(img.id)! : img);
+        });
+
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    };
+
+    loadUnresolved();
+
+    return () => {
+      active = false;
+    };
+  }, [queueViewMode, images.length]);
+
   // Update translated previews when style changes or blocks text changes in real-time
   useEffect(() => {
     const updatePreviews = async () => {
       let updated = false;
       const newImages = await Promise.all(images.map(async (img) => {
-        if (img.status === 'completed' && img.blocks && img.blocks.length > 0) {
+        if (img.status === 'completed' && img.previewUrl && img.blocks && img.blocks.length > 0) {
           const currentHash = getRenderHash(img.blocks, styleConfig);
           if (img.lastRenderedHash !== currentHash) {
             try {
@@ -124,7 +160,7 @@ export default function App() {
     updatePreviews();
   }, [
     styleConfig, 
-    images.map(img => `${img.id}-${img.status}-${img.translatedPreviewUrl ? 'has_preview' : 'no_preview'}-${img.blocks?.map(b => b.translated_text + b.text_color + b.bg_color).join('') || ''}`).join(',')
+    images.map(img => `${img.id}-${img.status}-${img.previewUrl ? 'has_orig' : 'no_orig'}-${img.translatedPreviewUrl ? 'has_preview' : 'no_preview'}-${img.blocks?.map(b => b.translated_text + b.text_color + b.bg_color).join('') || ''}`).join(',')
   ]);
 
   const addToast = (text: string, type: ToastMessage['type'] = 'info') => {
@@ -147,12 +183,10 @@ export default function App() {
     blocks?: TranslationBlock[];
     hasOcrCache: boolean;
     hasErasedCache: boolean;
-    translatedPreviewUrl?: string;
   }> => {
     let blocks: TranslationBlock[] = [];
     let hasOcrCache = false;
     let hasErasedCache = false;
-    let translatedPreviewUrl: string | undefined = undefined;
 
     let cacheDirHandle: FileSystemDirectoryHandle | null = null;
     try {
@@ -182,45 +216,43 @@ export default function App() {
       // No JSON cache
     }
 
-    // Try loading translated or erased preview image cache
+    // Try checking if translated or erased preview image cache exists (WITHOUT reading file data)
     try {
-      let translatedHandle;
       if (cacheDirHandle) {
         try {
-          translatedHandle = await cacheDirHandle.getFileHandle(`${fileName}_translated.png`);
+          await cacheDirHandle.getFileHandle(`${fileName}_translated.png`);
+          hasErasedCache = true;
         } catch (err) {
-          translatedHandle = await dirHandle.getFileHandle(`${fileName}_translated.png`);
+          try {
+            await dirHandle.getFileHandle(`${fileName}_translated.png`);
+            hasErasedCache = true;
+          } catch (err2) {
+            try {
+              await cacheDirHandle.getFileHandle(`${fileName}_erased.png`);
+              hasErasedCache = true;
+            } catch (err3) {
+              await dirHandle.getFileHandle(`${fileName}_erased.png`);
+              hasErasedCache = true;
+            }
+          }
         }
       } else {
-        translatedHandle = await dirHandle.getFileHandle(`${fileName}_translated.png`);
-      }
-      const translatedFile = await translatedHandle.getFile();
-      translatedPreviewUrl = URL.createObjectURL(translatedFile);
-    } catch (e) {
-      try {
-        let erasedHandle;
-        if (cacheDirHandle) {
-          try {
-            erasedHandle = await cacheDirHandle.getFileHandle(`${fileName}_erased.png`);
-          } catch (err) {
-            erasedHandle = await dirHandle.getFileHandle(`${fileName}_erased.png`);
-          }
-        } else {
-          erasedHandle = await dirHandle.getFileHandle(`${fileName}_erased.png`);
+        try {
+          await dirHandle.getFileHandle(`${fileName}_translated.png`);
+          hasErasedCache = true;
+        } catch (err) {
+          await dirHandle.getFileHandle(`${fileName}_erased.png`);
+          hasErasedCache = true;
         }
-        const erasedFile = await erasedHandle.getFile();
-        translatedPreviewUrl = URL.createObjectURL(erasedFile);
-        hasErasedCache = true;
-      } catch (err) {
-        // No erased cache
       }
+    } catch (e) {
+      // No image cache
     }
 
     return {
       blocks: hasOcrCache ? blocks : undefined,
       hasOcrCache,
-      hasErasedCache: hasErasedCache || !!translatedPreviewUrl,
-      translatedPreviewUrl
+      hasErasedCache
     };
   };
 
@@ -240,6 +272,59 @@ export default function App() {
       return status === 'granted';
     }
     return true; // Fallback
+  };
+
+  const resolveImageFiles = async (img: ImageItem): Promise<ImageItem> => {
+    if (img.file && img.previewUrl) {
+      return img;
+    }
+
+    if (img.fileHandle) {
+      try {
+        const file = await img.fileHandle.getFile();
+        const previewUrl = URL.createObjectURL(file);
+        
+        let translatedPreviewUrl = img.translatedPreviewUrl;
+        if (!translatedPreviewUrl && img.status === 'completed' && directoryHandle) {
+          try {
+            const cacheDirHandle = await directoryHandle.getDirectoryHandle('translation_cache', { create: false });
+            let translatedHandle;
+            try {
+              translatedHandle = await cacheDirHandle.getFileHandle(`${img.name}_translated.png`);
+            } catch (err) {
+              translatedHandle = await directoryHandle.getFileHandle(`${img.name}_translated.png`);
+            }
+            const translatedFile = await translatedHandle.getFile();
+            translatedPreviewUrl = URL.createObjectURL(translatedFile);
+          } catch (e) {
+            try {
+              const cacheDirHandle = await directoryHandle.getDirectoryHandle('translation_cache', { create: false });
+              let erasedHandle;
+              try {
+                erasedHandle = await cacheDirHandle.getFileHandle(`${img.name}_erased.png`);
+              } catch (err) {
+                erasedHandle = await directoryHandle.getFileHandle(`${img.name}_erased.png`);
+              }
+              const erasedFile = await erasedHandle.getFile();
+              translatedPreviewUrl = URL.createObjectURL(erasedFile);
+            } catch (e2) {
+              // No cache image
+            }
+          }
+        }
+
+        return {
+          ...img,
+          file,
+          previewUrl,
+          translatedPreviewUrl
+        };
+      } catch (err) {
+        console.error(`Failed to resolve files for ${img.name}`, err);
+      }
+    }
+
+    return img;
   };
 
   const handleFilesSelected = async (files: FileList) => {
@@ -262,7 +347,6 @@ export default function App() {
         blocks?: TranslationBlock[];
         hasOcrCache: boolean;
         hasErasedCache: boolean;
-        translatedPreviewUrl?: string;
       } = {
         hasOcrCache: false,
         hasErasedCache: false
@@ -281,7 +365,7 @@ export default function App() {
         name: file.name,
         file,
         previewUrl: URL.createObjectURL(file),
-        translatedPreviewUrl: cache.translatedPreviewUrl,
+        translatedPreviewUrl: undefined,
         status: cache.hasOcrCache ? 'completed' : 'idle',
         progress: cache.hasOcrCache ? 100 : 0,
         blocks: cache.blocks,
@@ -326,26 +410,26 @@ export default function App() {
 
       const newItems: ImageItem[] = [];
       for (const entry of entries) {
-        const file = await entry.getFile();
         const cache = await checkFileCache(entry.name, handle);
         
         newItems.push({
           id: `img_${Date.now()}_${Math.random()}`,
           name: entry.name,
-          file,
-          previewUrl: URL.createObjectURL(file),
-          translatedPreviewUrl: cache.translatedPreviewUrl,
+          file: undefined,
+          previewUrl: '',
+          translatedPreviewUrl: undefined,
           status: cache.hasOcrCache ? 'completed' : 'idle',
           progress: cache.hasOcrCache ? 100 : 0,
           blocks: cache.blocks,
           hasOcrCache: cache.hasOcrCache,
-          hasErasedCache: cache.hasErasedCache
+          hasErasedCache: cache.hasErasedCache,
+          fileHandle: entry
         });
       }
       
       setImages(prev => {
         prev.forEach(img => {
-          URL.revokeObjectURL(img.previewUrl);
+          if (img.previewUrl) URL.revokeObjectURL(img.previewUrl);
           if (img.translatedPreviewUrl) URL.revokeObjectURL(img.translatedPreviewUrl);
         });
         return newItems;
@@ -360,12 +444,23 @@ export default function App() {
     }
   };
 
+  const handleSelectImage = async (id: string) => {
+    const target = images.find(img => img.id === id);
+    if (!target) return;
+    
+    const resolved = await resolveImageFiles(target);
+    setImages(prev => prev.map(img => img.id === id ? resolved : img));
+    setSelectedImageId(id);
+  };
+
   const handleRemoveImage = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     setImages(prev => {
       const target = prev.find(item => item.id === id);
       if (target) {
-        URL.revokeObjectURL(target.previewUrl);
+        if (target.previewUrl) {
+          URL.revokeObjectURL(target.previewUrl);
+        }
         if (target.translatedPreviewUrl) {
           URL.revokeObjectURL(target.translatedPreviewUrl);
         }
@@ -380,7 +475,9 @@ export default function App() {
 
   const handleClearQueue = () => {
     images.forEach(img => {
-      URL.revokeObjectURL(img.previewUrl);
+      if (img.previewUrl) {
+        URL.revokeObjectURL(img.previewUrl);
+      }
       if (img.translatedPreviewUrl) {
         URL.revokeObjectURL(img.translatedPreviewUrl);
       }
@@ -407,28 +504,30 @@ export default function App() {
         const url = await renderTranslatedCanvas(item.previewUrl, blocks, styleConfig);
         
         if (directoryHandle) {
-          try {
-            const hasPermission = await verifyWritePermission(directoryHandle);
-            if (hasPermission) {
-              const cacheDirHandle = await directoryHandle.getDirectoryHandle('translation_cache', { create: true });
+          (async () => {
+            try {
+              const hasPermission = await verifyWritePermission(directoryHandle);
+              if (hasPermission) {
+                const cacheDirHandle = await directoryHandle.getDirectoryHandle('translation_cache', { create: true });
 
-              // Update JSON blocks cache
-              const jsonHandle = await cacheDirHandle.getFileHandle(`${item.name}_blocks.json`, { create: true });
-              const jsonWritable = await jsonHandle.createWritable();
-              await jsonWritable.write(JSON.stringify(blocks));
-              await jsonWritable.close();
+                // Update JSON blocks cache
+                const jsonHandle = await cacheDirHandle.getFileHandle(`${item.name}_blocks.json`, { create: true });
+                const jsonWritable = await jsonHandle.createWritable();
+                await jsonWritable.write(JSON.stringify(blocks));
+                await jsonWritable.close();
 
-              // Update translated image cache
-              const res = await fetch(url);
-              const blob = await res.blob();
-              const translatedHandle = await cacheDirHandle.getFileHandle(`${item.name}_translated.png`, { create: true });
-              const translatedWritable = await translatedHandle.createWritable();
-              await translatedWritable.write(blob);
-              await translatedWritable.close();
+                // Update translated image cache
+                const res = await fetch(url);
+                const blob = await res.blob();
+                const translatedHandle = await cacheDirHandle.getFileHandle(`${item.name}_translated.png`, { create: true });
+                const translatedWritable = await translatedHandle.createWritable();
+                await translatedWritable.write(blob);
+                await translatedWritable.close();
+              }
+            } catch (fsErr) {
+              console.error('Failed to update local cache files on block edit in background', fsErr);
             }
-          } catch (fsErr) {
-            console.error('Failed to update local cache files on block edit', fsErr);
-          }
+          })();
         }
 
         const currentHash = getRenderHash(blocks, styleConfig);
@@ -445,7 +544,7 @@ export default function App() {
   };
 
   const handleTranslateSingle = async (imageId: string): Promise<void> => {
-    const item = images.find(img => img.id === imageId);
+    let item = images.find(img => img.id === imageId);
     if (!item) return;
 
     if (!config.apiKey && config.provider !== 'custom') {
@@ -460,12 +559,17 @@ export default function App() {
       }
     }
 
-    setImages(prev => prev.map(img => img.id === imageId ? { ...img, status: 'processing', progress: 10 } : img));
+    // Ensure files are resolved
+    const resolvedItem = await resolveImageFiles(item);
+    item = resolvedItem;
+    setImages(prev => prev.map(img => img.id === imageId ? { ...resolvedItem, status: 'processing', progress: 10 } : img));
 
     try {
       let dims = { width: item.width || 0, height: item.height || 0 };
       if (!item.width || !item.height) {
-        dims = await getImageDimensions(item.file);
+        if (item.file) {
+          dims = await getImageDimensions(item.file);
+        }
       }
 
       // Check if image is solid color
@@ -506,34 +610,43 @@ export default function App() {
 
           // Write back local caches if directory mode active
           if (directoryHandle) {
-            try {
-              const cacheDirHandle = await directoryHandle.getDirectoryHandle('translation_cache', { create: true });
+            hasOcrCache = true;
+            hasErasedCache = true;
+            
+            // Asynchronous file cache updates
+            const currentItem = item;
+            const currentBlocks = blocks;
+            const currentUrl = translatedPreviewUrl;
+            (async () => {
+              try {
+                const cacheDirHandle = await directoryHandle.getDirectoryHandle('translation_cache', { create: true });
 
-              // 1. Write blocks JSON
-              const jsonHandle = await cacheDirHandle.getFileHandle(`${item.name}_blocks.json`, { create: true });
-              const jsonWritable = await jsonHandle.createWritable();
-              await jsonWritable.write(JSON.stringify(blocks));
-              await jsonWritable.close();
-              hasOcrCache = true;
+                // 1. Write blocks JSON
+                const jsonHandle = await cacheDirHandle.getFileHandle(`${currentItem.name}_blocks.json`, { create: true });
+                const jsonWritable = await jsonHandle.createWritable();
+                await jsonWritable.write(JSON.stringify(currentBlocks));
+                await jsonWritable.close();
 
-              // 2. Write erased background image
-              const erasedBlob = await renderErasedCanvas(item.previewUrl, blocks, styleConfig);
-              const erasedHandle = await cacheDirHandle.getFileHandle(`${item.name}_erased.png`, { create: true });
-              const erasedWritable = await erasedHandle.createWritable();
-              await erasedWritable.write(erasedBlob);
-              await erasedWritable.close();
-              hasErasedCache = true;
+                // 2. Write erased background image
+                const erasedBlob = await renderErasedCanvas(currentItem.previewUrl, currentBlocks, styleConfig);
+                const erasedHandle = await cacheDirHandle.getFileHandle(`${currentItem.name}_erased.png`, { create: true });
+                const erasedWritable = await erasedHandle.createWritable();
+                await erasedWritable.write(erasedBlob);
+                await erasedWritable.close();
 
-              // 3. Write final translated image
-              const translatedRes = await fetch(translatedPreviewUrl);
-              const translatedBlob = await translatedRes.blob();
-              const translatedHandle = await cacheDirHandle.getFileHandle(`${item.name}_translated.png`, { create: true });
-              const translatedWritable = await translatedHandle.createWritable();
-              await translatedWritable.write(translatedBlob);
-              await translatedWritable.close();
-            } catch (fsErr) {
-              console.error('Failed to write local cache files', fsErr);
-            }
+                // 3. Write final translated image
+                if (currentUrl) {
+                  const translatedRes = await fetch(currentUrl);
+                  const translatedBlob = await translatedRes.blob();
+                  const translatedHandle = await cacheDirHandle.getFileHandle(`${currentItem.name}_translated.png`, { create: true });
+                  const translatedWritable = await translatedHandle.createWritable();
+                  await translatedWritable.write(translatedBlob);
+                  await translatedWritable.close();
+                }
+              } catch (fsErr) {
+                console.error('Failed to write local cache files in background', fsErr);
+              }
+            })();
           }
         } catch (e) {
           console.error('Failed to pre-render translated preview', e);
@@ -591,16 +704,23 @@ export default function App() {
         break;
       }
 
-      setImages(prev => prev.map(item => item.id === img.id ? { ...item, status: 'processing', progress: 0 } : item));
+      // Ensure files are resolved before processing
+      let currentImg = img;
+      const resolved = await resolveImageFiles(img);
+      currentImg = resolved;
+
+      setImages(prev => prev.map(item => item.id === img.id ? { ...resolved, status: 'processing', progress: 0 } : item));
 
       try {
-        let dims = { width: img.width || 0, height: img.height || 0 };
-        if (!img.width || !img.height) {
-          dims = await getImageDimensions(img.file);
+        let dims = { width: currentImg.width || 0, height: currentImg.height || 0 };
+        if (!currentImg.width || !currentImg.height) {
+          if (currentImg.file) {
+            dims = await getImageDimensions(currentImg.file);
+          }
         }
 
         // Check if image is solid color
-        const isSolid = await checkIfImageIsSolidColor(img.previewUrl);
+        const isSolid = await checkIfImageIsSolidColor(currentImg.previewUrl);
         if (isSolid) {
           setImages(prev => prev.map(item => item.id === img.id ? {
             ...item,
@@ -613,11 +733,11 @@ export default function App() {
             hasOcrCache: false,
             hasErasedCache: false
           } : item));
-          addToast(`图片 "${img.name}" 为纯色（空白）图片，已直接跳过并处理下一张。`, 'success');
+          addToast(`图片 "${currentImg.name}" 为纯色（空白）图片，已直接跳过并处理下一张。`, 'success');
           continue;
         }
 
-        const blocks = await translateImage(img, config, (p) => {
+        const blocks = await translateImage(currentImg, config, (p) => {
           setImages(prev => prev.map(item => item.id === img.id ? { ...item, progress: p } : item));
         });
 
@@ -629,42 +749,51 @@ export default function App() {
 
         if (blocks.length > 0) {
           try {
-            if (img.translatedPreviewUrl) {
-              URL.revokeObjectURL(img.translatedPreviewUrl);
+            if (currentImg.translatedPreviewUrl) {
+              URL.revokeObjectURL(currentImg.translatedPreviewUrl);
             }
-            translatedPreviewUrl = await renderTranslatedCanvas(img.previewUrl, blocks, styleConfig);
+            translatedPreviewUrl = await renderTranslatedCanvas(currentImg.previewUrl, blocks, styleConfig);
             lastRenderedHash = getRenderHash(blocks, styleConfig);
 
             // Write back local caches if directory mode active
             if (directoryHandle) {
-              try {
-                const cacheDirHandle = await directoryHandle.getDirectoryHandle('translation_cache', { create: true });
+              hasOcrCache = true;
+              hasErasedCache = true;
+              
+              // Asynchronous cache file writes
+              const item = currentImg;
+              const currentBlocks = blocks;
+              const currentUrl = translatedPreviewUrl;
+              (async () => {
+                try {
+                  const cacheDirHandle = await directoryHandle.getDirectoryHandle('translation_cache', { create: true });
 
-                // 1. Write blocks JSON
-                const jsonHandle = await cacheDirHandle.getFileHandle(`${img.name}_blocks.json`, { create: true });
-                const jsonWritable = await jsonHandle.createWritable();
-                await jsonWritable.write(JSON.stringify(blocks));
-                await jsonWritable.close();
-                hasOcrCache = true;
+                  // 1. Write blocks JSON
+                  const jsonHandle = await cacheDirHandle.getFileHandle(`${item.name}_blocks.json`, { create: true });
+                  const jsonWritable = await jsonHandle.createWritable();
+                  await jsonWritable.write(JSON.stringify(currentBlocks));
+                  await jsonWritable.close();
 
-                // 2. Write erased background image
-                const erasedBlob = await renderErasedCanvas(img.previewUrl, blocks, styleConfig);
-                const erasedHandle = await cacheDirHandle.getFileHandle(`${img.name}_erased.png`, { create: true });
-                const erasedWritable = await erasedHandle.createWritable();
-                await erasedWritable.write(erasedBlob);
-                await erasedWritable.close();
-                hasErasedCache = true;
+                  // 2. Write erased background image
+                  const erasedBlob = await renderErasedCanvas(item.previewUrl, currentBlocks, styleConfig);
+                  const erasedHandle = await cacheDirHandle.getFileHandle(`${item.name}_erased.png`, { create: true });
+                  const erasedWritable = await erasedHandle.createWritable();
+                  await erasedWritable.write(erasedBlob);
+                  await erasedWritable.close();
 
-                // 3. Write final translated image
-                const translatedRes = await fetch(translatedPreviewUrl);
-                const translatedBlob = await translatedRes.blob();
-                const translatedHandle = await cacheDirHandle.getFileHandle(`${img.name}_translated.png`, { create: true });
-                const translatedWritable = await translatedHandle.createWritable();
-                await translatedWritable.write(translatedBlob);
-                await translatedWritable.close();
-              } catch (fsErr) {
-                console.error('Failed to write local cache files', fsErr);
-              }
+                  // 3. Write final translated image
+                  if (currentUrl) {
+                    const translatedRes = await fetch(currentUrl);
+                    const translatedBlob = await translatedRes.blob();
+                    const translatedHandle = await cacheDirHandle.getFileHandle(`${item.name}_translated.png`, { create: true });
+                    const translatedWritable = await translatedHandle.createWritable();
+                    await translatedWritable.write(translatedBlob);
+                    await translatedWritable.close();
+                  }
+                } catch (fsErr) {
+                  console.error('Failed to write local cache files in background', fsErr);
+                }
+              })();
             }
           } catch (e) {
             console.error('Failed to pre-render translated preview', e);
@@ -713,11 +842,19 @@ export default function App() {
     try {
       for (const img of completed) {
         if (!img.blocks) continue;
-        const blobUrl = await renderTranslatedCanvas(img.previewUrl, img.blocks, styleConfig);
+        const resolved = await resolveImageFiles(img);
+        if (!resolved.previewUrl) continue;
+        const blobUrl = await renderTranslatedCanvas(resolved.previewUrl, resolved.blocks || img.blocks, styleConfig);
         const res = await fetch(blobUrl);
         const blob = await res.blob();
         zip.file(`translated_${img.name}`, blob);
         URL.revokeObjectURL(blobUrl);
+
+        // Revoke temporary Object URLs if they weren't loaded before
+        if (!img.previewUrl) {
+          if (resolved.previewUrl) URL.revokeObjectURL(resolved.previewUrl);
+          if (resolved.translatedPreviewUrl) URL.revokeObjectURL(resolved.translatedPreviewUrl);
+        }
       }
 
       const content = await zip.generateAsync({ type: 'blob' });
@@ -817,7 +954,7 @@ export default function App() {
                   return (
                     <a
                       key={img.id}
-                      onClick={() => setSelectedImageId(img.id)}
+                      onClick={() => handleSelectImage(img.id)}
                       style={{
                         display: 'flex',
                         alignItems: 'center',
@@ -996,9 +1133,9 @@ export default function App() {
                   onNavigate={(dir) => {
                     const idx = images.findIndex(img => img.id === selectedImageId);
                     if (dir === 'prev' && idx > 0) {
-                      setSelectedImageId(images[idx - 1].id);
+                      handleSelectImage(images[idx - 1].id);
                     } else if (dir === 'next' && idx < images.length - 1) {
-                      setSelectedImageId(images[idx + 1].id);
+                      handleSelectImage(images[idx + 1].id);
                     }
                   }}
                   hasPrev={images.findIndex(img => img.id === selectedImageId) > 0}
@@ -1115,7 +1252,7 @@ export default function App() {
                   <ImageGrid
                     images={images}
                     selectedId={selectedImageId}
-                    onSelect={(id) => setSelectedImageId(id)}
+                    onSelect={handleSelectImage}
                     onRemove={handleRemoveImage}
                     viewMode={queueViewMode}
                   />

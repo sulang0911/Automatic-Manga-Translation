@@ -656,6 +656,10 @@ export const translateImage = async (
   config: TranslateConfig,
   onProgress?: (progress: number) => void
 ): Promise<TranslationBlock[]> => {
+  if (!item.file) {
+    throw new Error('图片文件尚未加载');
+  }
+  
   onProgress?.(10);
   
   const mimeType = item.file.type || 'image/jpeg';

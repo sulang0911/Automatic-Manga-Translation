@@ -46,7 +46,7 @@ export interface StyleConfig {
 export interface ImageItem {
   id: string;
   name: string;
-  file: File;
+  file?: File;
   previewUrl: string;
   translatedPreviewUrl?: string; // Cache the generated canvas translation
   status: 'idle' | 'pending' | 'processing' | 'completed' | 'failed';
@@ -58,4 +58,5 @@ export interface ImageItem {
   lastRenderedHash?: string;
   hasOcrCache?: boolean;
   hasErasedCache?: boolean;
+  fileHandle?: FileSystemFileHandle;
 }
