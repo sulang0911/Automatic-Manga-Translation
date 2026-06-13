@@ -643,7 +643,11 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
                 src={image.previewUrl} 
                 alt="Workspace Image" 
                 className="workspace-image" 
-                style={{ maxHeight: `${500 * zoomScale}px` }} 
+                style={{ 
+                  height: `${500 * zoomScale}px`,
+                  width: 'auto',
+                  maxWidth: 'none'
+                }} 
                 draggable={false}
               />
               
