@@ -69,6 +69,60 @@ export const getImageDimensions = (file: File): Promise<{ width: number; height:
   });
 };
 
+// Helper to check if an image is a solid color (e.g. blank spacer pages)
+export const checkIfImageIsSolidColor = (imageUrl: string, threshold = 8): Promise<boolean> => {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas');
+        const size = 64; 
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(false);
+          return;
+        }
+        ctx.drawImage(img, 0, 0, size, size);
+        const imgData = ctx.getImageData(0, 0, size, size);
+        const data = imgData.data;
+
+        // Take the first pixel as the reference color
+        const refR = data[0];
+        const refG = data[1];
+        const refB = data[2];
+
+        let isSolid = true;
+        for (let i = 0; i < data.length; i += 4) {
+          const r = data[i];
+          const g = data[i + 1];
+          const b = data[i + 2];
+          
+          if (
+            Math.abs(r - refR) > threshold ||
+            Math.abs(g - refG) > threshold ||
+            Math.abs(b - refB) > threshold
+          ) {
+            isSolid = false;
+            break;
+          }
+        }
+        resolve(isSolid);
+      } catch (e) {
+        console.error('Failed to analyze image color uniformity', e);
+        resolve(false);
+      }
+    };
+    img.onerror = () => {
+      resolve(false);
+    };
+    img.src = imageUrl;
+  });
+};
+
+
 // JSON Schema for structured output
 const translationSchema = {
   type: "object",

@@ -6,7 +6,7 @@ import { ImageGrid } from './components/ImageGrid';
 import { ImageViewer } from './components/ImageViewer';
 import { ToastContainer } from './components/Toast';
 import type { ToastMessage } from './components/Toast';
-import { translateImage, getImageDimensions } from './utils/translator';
+import { translateImage, getImageDimensions, checkIfImageIsSolidColor } from './utils/translator';
 import { renderTranslatedCanvas, renderErasedCanvas } from './utils/canvasExporter';
 import JSZip from 'jszip';
 import { 
@@ -468,6 +468,24 @@ export default function App() {
         dims = await getImageDimensions(item.file);
       }
 
+      // Check if image is solid color
+      const isSolid = await checkIfImageIsSolidColor(item.previewUrl);
+      if (isSolid) {
+        setImages(prev => prev.map(img => img.id === imageId ? {
+          ...img,
+          status: 'completed',
+          progress: 100,
+          blocks: [],
+          translatedPreviewUrl: img.previewUrl,
+          width: dims.width,
+          height: dims.height,
+          hasOcrCache: false,
+          hasErasedCache: false
+        } : img));
+        addToast(`图片 "${item.name}" 为纯色（空白）图片，已直接标记为成功。`, 'success');
+        return;
+      }
+
       const blocks = await translateImage(item, config, (progress) => {
         setImages(prev => prev.map(img => img.id === imageId ? { ...img, progress } : img));
       });
@@ -579,6 +597,24 @@ export default function App() {
         let dims = { width: img.width || 0, height: img.height || 0 };
         if (!img.width || !img.height) {
           dims = await getImageDimensions(img.file);
+        }
+
+        // Check if image is solid color
+        const isSolid = await checkIfImageIsSolidColor(img.previewUrl);
+        if (isSolid) {
+          setImages(prev => prev.map(item => item.id === img.id ? {
+            ...item,
+            status: 'completed',
+            progress: 100,
+            blocks: [],
+            translatedPreviewUrl: item.previewUrl,
+            width: dims.width,
+            height: dims.height,
+            hasOcrCache: false,
+            hasErasedCache: false
+          } : item));
+          addToast(`图片 "${img.name}" 为纯色（空白）图片，已直接跳过并处理下一张。`, 'success');
+          continue;
         }
 
         const blocks = await translateImage(img, config, (p) => {
