@@ -606,23 +606,95 @@ export default function App() {
           </button>
         </div>
 
-        <ul className="nav-menu">
+        <ul className="nav-menu" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', flexGrow: 1, overflow: 'hidden' }}>
           <li className="nav-item">
             <a 
               className={`nav-link ${!selectedImageId ? 'active' : ''}`}
               onClick={() => setSelectedImageId(null)}
+              style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}
             >
-              <Layers />
-              批处理工作区
+              <Layers size={16} />
+              {selectedImageId ? '返回批处理工作区' : '批处理工作区'}
             </a>
           </li>
+          
           {selectedImageId && (
-            <li className="nav-item">
-              <a className="nav-link active">
-                <ChevronLeft size={16} />
-                正在修图校对
-              </a>
-            </li>
+            <>
+              <div style={{ height: '1px', background: 'var(--border-color)', margin: '0.5rem 0' }} />
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600, padding: '0 0.5rem 0.25rem 0.5rem' }}>
+                图片队列 ({images.length})
+              </div>
+              <div 
+                className="sidebar-image-queue"
+                style={{ 
+                  flexGrow: 1, 
+                  overflowY: 'auto', 
+                  display: 'flex', 
+                  flexDirection: 'column', 
+                  gap: '0.25rem',
+                  paddingRight: '4px' 
+                }}
+              >
+                {images.map((img) => {
+                  const isActive = img.id === selectedImageId;
+                  
+                  let dotColor = 'var(--text-muted)';
+                  if (img.status === 'processing') dotColor = 'var(--color-info)';
+                  else if (img.status === 'completed') dotColor = 'var(--color-success)';
+                  else if (img.status === 'failed') dotColor = 'var(--color-danger)';
+                  else if (img.status === 'pending') dotColor = 'var(--color-warning)';
+                  
+                  return (
+                    <a
+                      key={img.id}
+                      onClick={() => setSelectedImageId(img.id)}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.5rem',
+                        padding: '0.5rem 0.75rem',
+                        borderRadius: 'var(--radius-sm)',
+                        fontSize: '0.8rem',
+                        color: isActive ? 'var(--text-main)' : 'var(--text-muted)',
+                        background: isActive ? 'rgba(99, 102, 241, 0.12)' : 'transparent',
+                        borderLeft: isActive ? '3px solid var(--color-primary)' : '3px solid transparent',
+                        cursor: 'pointer',
+                        textDecoration: 'none',
+                        transition: 'var(--transition-fast)'
+                      }}
+                      onMouseEnter={(e) => {
+                        if (!isActive) e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
+                      }}
+                      onMouseLeave={(e) => {
+                        if (!isActive) e.currentTarget.style.background = 'transparent';
+                      }}
+                      title={img.name}
+                    >
+                      <div 
+                        style={{ 
+                          width: '6px', 
+                          height: '6px', 
+                          borderRadius: '50%', 
+                          backgroundColor: dotColor,
+                          flexShrink: 0
+                        }} 
+                      />
+                      <span 
+                        style={{ 
+                          overflow: 'hidden', 
+                          textOverflow: 'ellipsis', 
+                          whiteSpace: 'nowrap',
+                          flexGrow: 1,
+                          fontWeight: isActive ? 600 : 400
+                        }}
+                      >
+                        {img.name}
+                      </span>
+                    </a>
+                  );
+                })}
+              </div>
+            </>
           )}
         </ul>
 

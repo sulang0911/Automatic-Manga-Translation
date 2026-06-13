@@ -536,26 +536,26 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
           <div className="viewer-header">
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               {onNavigate && (
-                <>
+                <div style={{ display: 'flex', gap: '4px' }}>
                   <button
                     className="btn btn-secondary"
                     disabled={!hasPrev}
                     onClick={() => onNavigate('prev')}
-                    style={{ padding: '0.35rem', display: 'inline-flex', alignItems: 'center', minWidth: 'auto', border: 'none', background: 'rgba(255,255,255,0.03)', cursor: 'pointer' }}
-                    title="上一张图片"
+                    style={{ padding: '0.4rem 0.6rem', fontSize: '0.8rem', height: '32px' }}
+                    title="上一张 (快捷键 [)"
                   >
-                    <ChevronLeft size={16} />
+                    <ChevronLeft size={14} /> 上一张
                   </button>
                   <button
                     className="btn btn-secondary"
                     disabled={!hasNext}
                     onClick={() => onNavigate('next')}
-                    style={{ padding: '0.35rem', display: 'inline-flex', alignItems: 'center', minWidth: 'auto', border: 'none', background: 'rgba(255,255,255,0.03)', cursor: 'pointer' }}
-                    title="下一张图片"
+                    style={{ padding: '0.4rem 0.6rem', fontSize: '0.8rem', height: '32px' }}
+                    title="下一张 (快捷键 ])"
                   >
-                    <ChevronRight size={16} />
+                    下一张 <ChevronRight size={14} />
                   </button>
-                </>
+                </div>
               )}
               <h3 style={{ 
                 fontSize: '0.95rem', 
