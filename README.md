@@ -47,6 +47,8 @@ AetherLens 是一款专为漫画、条漫（Webtoon）打造的**高精度本地
    - 浏览器将自动打开前端页面：[http://localhost:5173](http://localhost:5173)
    - 本地 OCR 后端服务运行在：`http://127.0.0.1:5000`
 
+*项目还提供了自动清理与卸载脚本 **[uninstall.bat](file:///D:/baidu/download/web/uninstall.bat)**，可按需一键清理项目依赖与本地模型缓存文件。*
+
 ---
 
 ## 🔧 手动分步启动
@@ -131,6 +133,8 @@ An automated deployer script is pre-built in the project root:
 3. Once completed:
    - The Web UI will open at: [http://localhost:5173](http://localhost:5173)
    - The local OCR API is hosted at: `http://127.0.0.1:5000`
+
+*An uninstaller script **[uninstall.bat](file:///D:/baidu/download/web/uninstall.bat)** is also provided to clean up dependencies and downloaded model cache files.*
 
 ---
 
