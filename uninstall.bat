@@ -60,16 +60,22 @@ echo.
 echo ======================================================================
 echo 3. Cleaning Python dependencies...
 echo ======================================================================
-echo WARNING: Only choose YES if you do not use these libraries for other 
-echo python projects on this machine.
+echo This will delete the isolated Python environment (python_env) and 
+echo virtual environment (venv) created inside this project.
 echo.
-set /p clean_python="Do you want to uninstall Python packages (flask, flask-cors, opencv-python, paddlepaddle-gpu)? (Y/N): "
+set /p clean_python="Do you want to delete the isolated Python and virtual environment? (Y/N): "
 if /i "%clean_python%"=="Y" (
-    echo [*] Uninstalling Python dependencies...
-    python -m pip uninstall -y flask flask-cors opencv-python paddlepaddle-gpu nvidia-cudnn-cu12 nvidia-cuda-runtime-cu12 nvidia-cublas-cu12 nvidia-cufft-cu12 nvidia-curand-cu12 nvidia-cusolver-cu12 nvidia-cusparse-cu12
-    echo [+] Python packages uninstalled.
+    if exist python_env (
+        echo [*] Removing python_env...
+        rmdir /s /q python_env
+    )
+    if exist venv (
+        echo [*] Removing venv...
+        rmdir /s /q venv
+    )
+    echo [+] Isolated Python environment and virtual environment removed.
 ) else (
-    echo [-] Skipped Python dependencies uninstall.
+    echo [-] Skipped isolated Python cleaning.
 )
 
 echo.
