@@ -46,27 +46,15 @@ if not exist node_modules (
 )
 echo.
 
-:: 4. Setup Backend
-echo [*] Setting up Python dependencies for OCR server...
-python -c "import flask, flask_cors, cv2, numpy, torch, torchvision, paddleocr" >nul 2>nul
-if %errorlevel% neq 0 (
-    echo [!] Some Python packages are missing. Installing backend dependencies...
-    python -m pip install --upgrade pip
-    python -m pip install flask flask-cors opencv-python numpy torch torchvision paddlepaddle paddleocr
-) else (
-    echo [+] Python dependencies are ready.
-)
-echo.
-
-:: 5. Launch Servers
+:: 4. Setup & Launch Services
 color 0A
-echo [+] Environment setup complete!
+echo [+] Environment setup check complete!
 echo [*] Starting services in separate windows...
 echo.
 
-:: Start OCR Server
+:: Start OCR Server (via start_ocr_server.bat to ensure isolated GPU env)
 echo [*] Launching Local OCR Server...
-start "AetherLens Local OCR Server" cmd /c "set PYTHONIOENCODING=utf-8 && python ocr_server.py"
+start "AetherLens Local OCR Server" start_ocr_server.bat
 
 :: Start Frontend Dev Server
 echo [*] Launching Frontend Web App...
