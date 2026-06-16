@@ -33,7 +33,7 @@ if not exist "python_env\.setup_complete" (
             :: 3. Configure python310._pth
             if exist "python_env\python310._pth" (
                 echo [*] Enabling site-packages in portable environment...
-                powershell -NoProfile -ExecutionPolicy Bypass -Command "(Get-Content python_env\python310._pth) -replace '#import site', 'import site' | Set-Content python_env\python310._pth"
+                powershell -NoProfile -ExecutionPolicy Bypass -Command "$pth = 'python_env\python310._pth'; $c = Get-Content $pth; $c -replace '#import site', 'import site' | Set-Content $pth"
             )
             
             :: 4. Run the rest of setup using the bootstrapped python

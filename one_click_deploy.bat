@@ -25,9 +25,9 @@ echo.
 echo [*] Checking Python environment...
 where python >nul 2>nul
 if %errorlevel% equ 0 (
-    echo [+] Python is ready (Global).
+    echo [+] Python is ready [Global].
 ) else if exist "python_env\python.exe" (
-    echo [+] Python is ready (Portable).
+    echo [+] Python is ready [Portable].
 ) else (
     echo [!] Global Python not found. A portable Python environment will be set up automatically during server launch.
 )
