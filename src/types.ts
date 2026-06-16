@@ -49,6 +49,7 @@ export interface ImageItem {
   file?: File;
   previewUrl: string;
   translatedPreviewUrl?: string; // Cache the generated canvas translation
+  erasedPreviewUrl?: string; // Cache the pre-inpainted background image
   status: 'idle' | 'pending' | 'processing' | 'completed' | 'failed';
   progress: number; // 0 to 100
   error?: string;

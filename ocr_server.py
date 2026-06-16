@@ -1,4 +1,12 @@
 import os
+
+# Limit CPU threads to prevent CPU 100% max-out and freezing when running on CPU
+os.environ["OMP_NUM_THREADS"] = "4"
+os.environ["MKL_NUM_THREADS"] = "4"
+os.environ["OPENBLAS_NUM_THREADS"] = "4"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "4"
+os.environ["NUMEXPR_NUM_THREADS"] = "4"
+
 import sys
 import warnings
 
@@ -47,6 +55,7 @@ try:
         import paddle
         try:
             paddle.set_flags({"FLAGS_use_onednn": False})
+            paddle.set_num_threads(4)
         except Exception:
             pass
         has_cuda = paddle.device.is_compiled_with_cuda()
@@ -231,6 +240,11 @@ USE_LAMA = False
 lama_inpainter = None
 try:
     from simple_lama_inpainting import SimpleLama
+    import torch
+    try:
+        torch.set_num_threads(4)
+    except Exception:
+        pass
     print("[*] 检测到已安装 simple-lama-inpainting，正在初始化 LaMa 图像修复模型...")
     lama_inpainter = SimpleLama()
     USE_LAMA = True

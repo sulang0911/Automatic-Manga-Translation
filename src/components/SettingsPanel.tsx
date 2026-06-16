@@ -9,6 +9,8 @@ interface SettingsPanelProps {
   setConfig: React.Dispatch<React.SetStateAction<TranslateConfig>>;
   styleConfig: StyleConfig;
   setStyleConfig: React.Dispatch<React.SetStateAction<StyleConfig>>;
+  onRenderAllFonts?: () => Promise<void>;
+  isRenderingAllFonts?: boolean;
 }
 
 const SOURCE_LANGUAGES = [
@@ -48,7 +50,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   config,
   setConfig,
   styleConfig,
-  setStyleConfig
+  setStyleConfig,
+  onRenderAllFonts,
+  isRenderingAllFonts
 }) => {
   const [showKey, setShowKey] = useState(false);
   const [activeTab, setActiveTab] = useState<'api' | 'style'>('api');
@@ -574,6 +578,25 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                 <span className="slider"></span>
               </label>
             </div>
+          </div>
+
+          <div className="form-group" style={{ marginTop: '1.5rem', marginBottom: 0 }}>
+            {onRenderAllFonts && (
+              <button
+                type="button"
+                className="btn btn-primary"
+                style={{ width: '100%', gap: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                onClick={onRenderAllFonts}
+                disabled={isRenderingAllFonts}
+              >
+                {isRenderingAllFonts ? (
+                  <Loader2 size={16} className="pulse" style={{ animation: 'spin 1.5s linear infinite' }} />
+                ) : (
+                  <Type size={16} />
+                )}
+                {isRenderingAllFonts ? '正在重新绘制所有字体...' : '重新渲染所有图片字体'}
+              </button>
+            )}
           </div>
         </div>
       )}

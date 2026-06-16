@@ -59,13 +59,17 @@ export const fileToBase64 = (file: File): Promise<string> => {
 export const getImageDimensions = (file: File): Promise<{ width: number; height: number }> => {
   return new Promise((resolve, reject) => {
     const img = new Image();
-    img.src = URL.createObjectURL(file);
+    const url = URL.createObjectURL(file);
+    img.src = url;
     img.onload = () => {
       const dims = { width: img.width, height: img.height };
-      URL.revokeObjectURL(img.src);
+      URL.revokeObjectURL(url);
       resolve(dims);
     };
-    img.onerror = (err) => reject(err);
+    img.onerror = (err) => {
+      URL.revokeObjectURL(url);
+      reject(err);
+    };
   });
 };
 

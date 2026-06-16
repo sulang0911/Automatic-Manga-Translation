@@ -3,7 +3,7 @@ import type { TranslationBlock, StyleConfig } from '../types';
 interface ErasedCacheEntry {
   originalImageSrc: string;
   blocksHash: string;
-  styleHash: string;
+  onomatopoeiaMode: string;
   blob: Blob;
 }
 
@@ -107,23 +107,28 @@ const checkServerActive = async (): Promise<boolean> => {
 export const renderTranslatedCanvas = async (
   originalImageSrc: string,
   blocks: TranslationBlock[],
-  style: StyleConfig
+  style: StyleConfig,
+  erasedImageSrc?: string
 ): Promise<string> => {
   return new Promise(async (resolve, reject) => {
     let backgroundSrc = originalImageSrc;
     let isServerActive = false;
     let tempUrl: string | null = null;
     
-    try {
-      isServerActive = await checkServerActive();
-      if (isServerActive) {
-        // @ts-ignore - Assuming renderErasedCanvas is imported/available
-        const erasedBlob = await renderErasedCanvas(originalImageSrc, blocks, style);
-        tempUrl = URL.createObjectURL(erasedBlob);
-        backgroundSrc = tempUrl;
+    if (erasedImageSrc) {
+      backgroundSrc = erasedImageSrc;
+    } else {
+      try {
+        isServerActive = await checkServerActive();
+        if (isServerActive) {
+          // @ts-ignore - Assuming renderErasedCanvas is imported/available
+          const erasedBlob = await renderErasedCanvas(originalImageSrc, blocks, style);
+          tempUrl = URL.createObjectURL(erasedBlob);
+          backgroundSrc = tempUrl;
+        }
+      } catch (e) {
+        console.warn('Failed to pre-inpaint background for translation preview', e);
       }
-    } catch (e) {
-      console.warn('Failed to pre-inpaint background for translation preview', e);
     }
 
     const img = new Image();
@@ -131,13 +136,16 @@ export const renderTranslatedCanvas = async (
     img.src = backgroundSrc;
     
     img.onload = () => {
+      if (tempUrl) {
+        URL.revokeObjectURL(tempUrl);
+        tempUrl = null;
+      }
       const canvas = document.createElement('canvas');
       canvas.width = img.naturalWidth;
       canvas.height = img.naturalHeight;
       const ctx = canvas.getContext('2d');
       
       if (!ctx) {
-        if (tempUrl) URL.revokeObjectURL(tempUrl);
         reject(new Error('Failed to get 2D context'));
         return;
       }
@@ -412,6 +420,10 @@ export const renderTranslatedCanvas = async (
     };
     
     img.onerror = (err) => {
+      if (tempUrl) {
+        URL.revokeObjectURL(tempUrl);
+        tempUrl = null;
+      }
       reject(err);
     };
   });
@@ -425,13 +437,13 @@ export const renderErasedCanvas = async (
 ): Promise<Blob> => {
   // Check memory cache first
   const blocksJson = JSON.stringify(blocks);
-  const styleJson = JSON.stringify(style);
+  const onomatopoeiaMode = style.onomatopoeiaMode || 'ignore';
   
   if (
     lastErasedCache &&
     lastErasedCache.originalImageSrc === originalImageSrc &&
     lastErasedCache.blocksHash === blocksJson &&
-    lastErasedCache.styleHash === styleJson
+    lastErasedCache.onomatopoeiaMode === onomatopoeiaMode
   ) {
     return lastErasedCache.blob;
   }
@@ -458,7 +470,7 @@ export const renderErasedCanvas = async (
         lastErasedCache = {
           originalImageSrc,
           blocksHash: blocksJson,
-          styleHash: styleJson,
+          onomatopoeiaMode,
           blob: inpaintedBlob
         };
         
@@ -547,7 +559,7 @@ export const renderErasedCanvas = async (
           lastErasedCache = {
             originalImageSrc,
             blocksHash: blocksJson,
-            styleHash: styleJson,
+            onomatopoeiaMode,
             blob
           };
           resolve(blob);

@@ -24,7 +24,8 @@ import {
   Grid,
   List,
   Settings,
-  Menu
+  Menu,
+  RefreshCw
 } from 'lucide-react';
 
 
@@ -85,6 +86,18 @@ export default function App() {
   });
   
   const cancelRef = useRef(false);
+  const imagesRef = useRef(images);
+  const debounceTimeouts = useRef<{ [key: string]: NodeJS.Timeout }>({});
+
+  useEffect(() => {
+    imagesRef.current = images;
+  }, [images]);
+
+  useEffect(() => {
+    return () => {
+      Object.values(debounceTimeouts.current).forEach(timeout => clearTimeout(timeout));
+    };
+  }, []);
 
   // Auto-save configs
   useEffect(() => {
@@ -131,37 +144,89 @@ export default function App() {
     };
   }, [queueViewMode, images.length]);
 
-  // Update translated previews when style changes or blocks text changes in real-time
+  // Update translated preview only for the currently active/selected image when style changes
   useEffect(() => {
-    const updatePreviews = async () => {
-      let updated = false;
-      const newImages = await Promise.all(images.map(async (img) => {
-        if (img.status === 'completed' && img.previewUrl && img.blocks && img.blocks.length > 0) {
-          const currentHash = getRenderHash(img.blocks, styleConfig);
-          if (img.lastRenderedHash !== currentHash) {
-            try {
-              if (img.translatedPreviewUrl) {
-                URL.revokeObjectURL(img.translatedPreviewUrl);
-              }
-              const url = await renderTranslatedCanvas(img.previewUrl, img.blocks, styleConfig);
-              updated = true;
-              return { ...img, translatedPreviewUrl: url, lastRenderedHash: currentHash };
-            } catch (e) {
-              console.error('Failed to update preview thumbnail', e);
-            }
+    let active = true;
+    if (!selectedImageId) return;
+
+    const updateActivePreview = async () => {
+      const img = images.find(i => i.id === selectedImageId);
+      if (!img || img.status !== 'completed' || !img.previewUrl || !img.blocks || img.blocks.length === 0) return;
+
+      const currentHash = getRenderHash(img.blocks, styleConfig);
+      if (img.lastRenderedHash !== currentHash) {
+        try {
+          let erasedUrl = img.erasedPreviewUrl;
+          let newlyCreatedErased = false;
+
+          if (!erasedUrl) {
+            const erasedBlob = await renderErasedCanvas(img.previewUrl, img.blocks, styleConfig);
+            erasedUrl = URL.createObjectURL(erasedBlob);
+            newlyCreatedErased = true;
           }
+
+          const url = await renderTranslatedCanvas(img.previewUrl, img.blocks, styleConfig, erasedUrl);
+          
+          if (!active) {
+            URL.revokeObjectURL(url);
+            if (newlyCreatedErased && erasedUrl) URL.revokeObjectURL(erasedUrl);
+            return;
+          }
+
+          setImages(prev => prev.map(item => {
+            if (item.id === selectedImageId) {
+              if (item.translatedPreviewUrl) {
+                URL.revokeObjectURL(item.translatedPreviewUrl);
+              }
+
+              // Write back updated cache files to disk asynchronously
+              if (directoryHandle) {
+                (async () => {
+                  try {
+                    const cacheDirHandle = await directoryHandle.getDirectoryHandle('translation_cache', { create: true });
+                    
+                    if (newlyCreatedErased && erasedUrl) {
+                      const erasedRes = await fetch(erasedUrl);
+                      const erasedBlob = await erasedRes.blob();
+                      const erasedHandle = await cacheDirHandle.getFileHandle(`${item.name}_erased.png`, { create: true });
+                      const erasedWritable = await erasedHandle.createWritable();
+                      await erasedWritable.write(erasedBlob);
+                      await erasedWritable.close();
+                    }
+
+                    const res = await fetch(url);
+                    const blob = await res.blob();
+                    const translatedHandle = await cacheDirHandle.getFileHandle(`${item.name}_translated.png`, { create: true });
+                    const translatedWritable = await translatedHandle.createWritable();
+                    await translatedWritable.write(blob);
+                    await translatedWritable.close();
+                  } catch (fsErr) {
+                    console.error('Failed to sync style updates to local disk cache', fsErr);
+                  }
+                })();
+              }
+
+              return { 
+                ...item, 
+                translatedPreviewUrl: url, 
+                erasedPreviewUrl: erasedUrl,
+                lastRenderedHash: currentHash 
+              };
+            }
+            return item;
+          }));
+        } catch (e) {
+          console.error('Failed to update active preview thumbnail', e);
         }
-        return img;
-      }));
-      if (updated) {
-        setImages(newImages);
       }
     };
-    updatePreviews();
-  }, [
-    styleConfig, 
-    images.map(img => `${img.id}-${img.status}-${img.previewUrl ? 'has_orig' : 'no_orig'}-${img.translatedPreviewUrl ? 'has_preview' : 'no_preview'}-${img.blocks?.map(b => b.translated_text + b.text_color + b.bg_color).join('') || ''}`).join(',')
-  ]);
+
+    updateActivePreview();
+
+    return () => {
+      active = false;
+    };
+  }, [styleConfig, selectedImageId]);
 
   const addToast = (text: string, type: ToastMessage['type'] = 'info') => {
     const newToast: ToastMessage = {
@@ -313,11 +378,29 @@ export default function App() {
           }
         }
 
+        let erasedPreviewUrl = img.erasedPreviewUrl;
+        if (!erasedPreviewUrl && directoryHandle) {
+          try {
+            const cacheDirHandle = await directoryHandle.getDirectoryHandle('translation_cache', { create: false });
+            let erasedHandle;
+            try {
+              erasedHandle = await cacheDirHandle.getFileHandle(`${img.name}_erased.png`);
+            } catch (err) {
+              erasedHandle = await directoryHandle.getFileHandle(`${img.name}_erased.png`);
+            }
+            const erasedFile = await erasedHandle.getFile();
+            erasedPreviewUrl = URL.createObjectURL(erasedFile);
+          } catch (e) {
+            // No erased cache image
+          }
+        }
+
         return {
           ...img,
           file,
           previewUrl,
-          translatedPreviewUrl
+          translatedPreviewUrl,
+          erasedPreviewUrl
         };
       } catch (err) {
         console.error(`Failed to resolve files for ${img.name}`, err);
@@ -464,6 +547,9 @@ export default function App() {
         if (target.translatedPreviewUrl) {
           URL.revokeObjectURL(target.translatedPreviewUrl);
         }
+        if (target.erasedPreviewUrl) {
+          URL.revokeObjectURL(target.erasedPreviewUrl);
+        }
       }
       return prev.filter(item => item.id !== id);
     });
@@ -481,66 +567,244 @@ export default function App() {
       if (img.translatedPreviewUrl) {
         URL.revokeObjectURL(img.translatedPreviewUrl);
       }
+      if (img.erasedPreviewUrl) {
+        URL.revokeObjectURL(img.erasedPreviewUrl);
+      }
     });
     setImages([]);
     setSelectedImageId(null);
     addToast('已清空图片队列', 'info');
   };
 
+  const handleCleanCache = async () => {
+    if (!directoryHandle) {
+      addToast('只有在导入文件夹模式下才能清理缓存', 'info');
+      return;
+    }
+    
+    const hasPermission = await verifyWritePermission(directoryHandle);
+    if (!hasPermission) {
+      addToast('缺少文件夹写入权限，无法清理缓存', 'error');
+      return;
+    }
+
+    try {
+      const cacheDirHandle = await directoryHandle.getDirectoryHandle('translation_cache', { create: false });
+      
+      const existingNames = new Set(images.map(img => img.name));
+      let deletedCount = 0;
+      let keptCount = 0;
+      
+      // @ts-ignore
+      for await (const entry of cacheDirHandle.values()) {
+        if (entry.kind === 'file') {
+          const name = entry.name;
+          let originalName = '';
+          if (name.endsWith('_blocks.json')) {
+            originalName = name.slice(0, -'_blocks.json'.length);
+          } else if (name.endsWith('_erased.png')) {
+            originalName = name.slice(0, -'_erased.png'.length);
+          } else if (name.endsWith('_translated.png')) {
+            originalName = name.slice(0, -'_translated.png'.length);
+          }
+          
+          if (originalName && !existingNames.has(originalName)) {
+            await cacheDirHandle.removeEntry(name);
+            deletedCount++;
+          } else {
+            keptCount++;
+          }
+        }
+      }
+      
+      if (deletedCount > 0) {
+        addToast(`清理完成！共删除了 ${deletedCount} 个孤立缓存文件，保留了 ${keptCount} 个活动缓存文件。`, 'success');
+      } else {
+        addToast(`缓存文件夹非常健康，无需清理（共 ${keptCount} 个缓存文件）。`, 'success');
+      }
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'NotFoundError') {
+        addToast('未找到缓存文件夹或暂无缓存文件。', 'info');
+      } else {
+        console.error('Failed to clean cache', e);
+        addToast(`清理缓存失败: ${e instanceof Error ? e.message : String(e)}`, 'error');
+      }
+    }
+  };
+
+  const [isRenderingAllFonts, setIsRenderingAllFonts] = useState(false);
+
+  const handleRenderAllFonts = async () => {
+    const completed = images.filter(img => img.status === 'completed' && img.previewUrl && img.blocks && img.blocks.length > 0);
+    if (completed.length === 0) {
+      addToast('没有需要重新渲染字体的已完成图片', 'info');
+      return;
+    }
+
+    setIsRenderingAllFonts(true);
+    addToast('正在重新绘制所有图片预览...', 'info');
+
+    let updatedCount = 0;
+    try {
+      const newImages = await Promise.all(images.map(async (img) => {
+        if (img.status === 'completed' && img.previewUrl && img.blocks && img.blocks.length > 0) {
+          const currentHash = getRenderHash(img.blocks, styleConfig);
+          if (img.lastRenderedHash !== currentHash) {
+            try {
+              let erasedUrl = img.erasedPreviewUrl;
+              let newlyCreatedErased = false;
+              let erasedBlob: Blob | undefined = undefined;
+              if (!erasedUrl) {
+                erasedBlob = await renderErasedCanvas(img.previewUrl, img.blocks, styleConfig);
+                erasedUrl = URL.createObjectURL(erasedBlob);
+                newlyCreatedErased = true;
+              }
+
+              const url = await renderTranslatedCanvas(img.previewUrl, img.blocks, styleConfig, erasedUrl);
+              
+              if (img.translatedPreviewUrl) {
+                URL.revokeObjectURL(img.translatedPreviewUrl);
+              }
+
+              // Update cache files on disk asynchronously
+              if (directoryHandle) {
+                (async () => {
+                  try {
+                    const cacheDirHandle = await directoryHandle.getDirectoryHandle('translation_cache', { create: true });
+                    
+                    if (newlyCreatedErased && erasedBlob) {
+                      const erasedHandle = await cacheDirHandle.getFileHandle(`${img.name}_erased.png`, { create: true });
+                      const erasedWritable = await erasedHandle.createWritable();
+                      await erasedWritable.write(erasedBlob);
+                      await erasedWritable.close();
+                    }
+
+                    const res = await fetch(url);
+                    const blob = await res.blob();
+                    const translatedHandle = await cacheDirHandle.getFileHandle(`${img.name}_translated.png`, { create: true });
+                    const translatedWritable = await translatedHandle.createWritable();
+                    await translatedWritable.write(blob);
+                    await translatedWritable.close();
+                  } catch (fsErr) {
+                    console.error(`Failed to update cache on disk for ${img.name}`, fsErr);
+                  }
+                })();
+              }
+
+              updatedCount++;
+              return { 
+                ...img, 
+                translatedPreviewUrl: url, 
+                erasedPreviewUrl: erasedUrl,
+                lastRenderedHash: currentHash 
+              };
+            } catch (e) {
+              console.error(`Failed to re-render font for ${img.name}`, e);
+            }
+          }
+        }
+        return img;
+      }));
+
+      setImages(newImages);
+      addToast(`所有字体渲染完成！共更新了 ${updatedCount} 张图片预览样式。`, 'success');
+    } catch (err) {
+      console.error('Failed to render all fonts', err);
+      addToast('批量渲染字体样式失败', 'error');
+    } finally {
+      setIsRenderingAllFonts(false);
+    }
+  };
+
   const handleUpdateBlocks = async (imageId: string, blocks: TranslationBlock[]) => {
+    // 1. Instantly update blocks in state for instant UI overlay/editor responsiveness
     setImages(prev => prev.map(img => {
       if (img.id === imageId) {
-        if (img.translatedPreviewUrl) {
-          URL.revokeObjectURL(img.translatedPreviewUrl);
+        let erasedPreviewUrl = img.erasedPreviewUrl;
+        
+        // Compare new blocks with old blocks positions to see if layout changed
+        const oldBlocks = img.blocks || [];
+        const structureChanged = oldBlocks.length !== blocks.length || 
+          blocks.some((b, idx) => {
+            const ob = oldBlocks[idx];
+            return !ob || ob.xmin !== b.xmin || ob.xmax !== b.xmax || ob.ymin !== b.ymin || ob.ymax !== b.ymax || ob.type !== b.type;
+          });
+          
+        if (structureChanged && erasedPreviewUrl) {
+          URL.revokeObjectURL(erasedPreviewUrl);
+          erasedPreviewUrl = undefined;
         }
-        return { ...img, blocks, translatedPreviewUrl: undefined };
+        
+        return { ...img, blocks, erasedPreviewUrl };
       }
       return img;
     }));
 
-    const item = images.find(img => img.id === imageId);
-    if (item) {
+    // Clear existing debounce timeout for this image
+    if (debounceTimeouts.current[imageId]) {
+      clearTimeout(debounceTimeouts.current[imageId]);
+    }
+
+    // Set new timeout to render and cache
+    debounceTimeouts.current[imageId] = setTimeout(async () => {
+      const item = imagesRef.current.find(img => img.id === imageId);
+      if (!item || !item.previewUrl) return;
+
       try {
-        const url = await renderTranslatedCanvas(item.previewUrl, blocks, styleConfig);
+        let erasedUrl = item.erasedPreviewUrl;
+
+        if (!erasedUrl) {
+          const erasedBlob = await renderErasedCanvas(item.previewUrl, blocks, styleConfig);
+          erasedUrl = URL.createObjectURL(erasedBlob);
+        }
+
+        const url = await renderTranslatedCanvas(item.previewUrl, blocks, styleConfig, erasedUrl);
         
         if (directoryHandle) {
-          (async () => {
-            try {
-              const hasPermission = await verifyWritePermission(directoryHandle);
-              if (hasPermission) {
-                const cacheDirHandle = await directoryHandle.getDirectoryHandle('translation_cache', { create: true });
+          try {
+            const hasPermission = await verifyWritePermission(directoryHandle);
+            if (hasPermission) {
+              const cacheDirHandle = await directoryHandle.getDirectoryHandle('translation_cache', { create: true });
 
-                // Update JSON blocks cache
-                const jsonHandle = await cacheDirHandle.getFileHandle(`${item.name}_blocks.json`, { create: true });
-                const jsonWritable = await jsonHandle.createWritable();
-                await jsonWritable.write(JSON.stringify(blocks));
-                await jsonWritable.close();
+              // Update JSON blocks cache
+              const jsonHandle = await cacheDirHandle.getFileHandle(`${item.name}_blocks.json`, { create: true });
+              const jsonWritable = await jsonHandle.createWritable();
+              await jsonWritable.write(JSON.stringify(blocks));
+              await jsonWritable.close();
 
-                // Update translated image cache
-                const res = await fetch(url);
-                const blob = await res.blob();
-                const translatedHandle = await cacheDirHandle.getFileHandle(`${item.name}_translated.png`, { create: true });
-                const translatedWritable = await translatedHandle.createWritable();
-                await translatedWritable.write(blob);
-                await translatedWritable.close();
-              }
-            } catch (fsErr) {
-              console.error('Failed to update local cache files on block edit in background', fsErr);
+              // Update translated image cache
+              const res = await fetch(url);
+              const blob = await res.blob();
+              const translatedHandle = await cacheDirHandle.getFileHandle(`${item.name}_translated.png`, { create: true });
+              const translatedWritable = await translatedHandle.createWritable();
+              await translatedWritable.write(blob);
+              await translatedWritable.close();
             }
-          })();
+          } catch (fsErr) {
+            console.error('Failed to update local cache files on block edit in background', fsErr);
+          }
         }
 
         const currentHash = getRenderHash(blocks, styleConfig);
-        setImages(prev => prev.map(img => img.id === imageId ? { 
-          ...img, 
-          translatedPreviewUrl: url, 
-          lastRenderedHash: currentHash,
-          hasOcrCache: true
-        } : img));
+        setImages(prev => prev.map(img => {
+          if (img.id === imageId) {
+            if (img.translatedPreviewUrl && img.translatedPreviewUrl !== url) {
+              URL.revokeObjectURL(img.translatedPreviewUrl);
+            }
+            return { 
+              ...img, 
+              translatedPreviewUrl: url, 
+              erasedPreviewUrl: erasedUrl,
+              lastRenderedHash: currentHash,
+              hasOcrCache: true
+            };
+          }
+          return img;
+        }));
       } catch (e) {
         console.error('Failed to update blocks preview', e);
       }
-    }
+    }, 800);
   };
 
   const handleTranslateSingle = async (imageId: string): Promise<void> => {
@@ -596,16 +860,22 @@ export default function App() {
 
       // Render and cache translated preview image
       let translatedPreviewUrl: string | undefined = undefined;
+      let erasedPreviewUrl: string | undefined = undefined;
       let lastRenderedHash: string | undefined = undefined;
       let hasOcrCache = false;
       let hasErasedCache = false;
 
       if (blocks.length > 0) {
         try {
+          // Generate erased background once
+          const erasedBlob = await renderErasedCanvas(item.previewUrl, blocks, styleConfig);
+          const erasedUrl = URL.createObjectURL(erasedBlob);
+          erasedPreviewUrl = erasedUrl;
+
           if (item.translatedPreviewUrl) {
             URL.revokeObjectURL(item.translatedPreviewUrl);
           }
-          translatedPreviewUrl = await renderTranslatedCanvas(item.previewUrl, blocks, styleConfig);
+          translatedPreviewUrl = await renderTranslatedCanvas(item.previewUrl, blocks, styleConfig, erasedUrl);
           lastRenderedHash = getRenderHash(blocks, styleConfig);
 
           // Write back local caches if directory mode active
@@ -628,7 +898,6 @@ export default function App() {
                 await jsonWritable.close();
 
                 // 2. Write erased background image
-                const erasedBlob = await renderErasedCanvas(currentItem.previewUrl, currentBlocks, styleConfig);
                 const erasedHandle = await cacheDirHandle.getFileHandle(`${currentItem.name}_erased.png`, { create: true });
                 const erasedWritable = await erasedHandle.createWritable();
                 await erasedWritable.write(erasedBlob);
@@ -659,6 +928,7 @@ export default function App() {
         progress: 100, 
         blocks,
         translatedPreviewUrl,
+        erasedPreviewUrl,
         lastRenderedHash,
         width: dims.width,
         height: dims.height,
@@ -743,16 +1013,22 @@ export default function App() {
 
         // Render and cache translated preview image
         let translatedPreviewUrl: string | undefined = undefined;
+        let erasedPreviewUrl: string | undefined = undefined;
         let lastRenderedHash: string | undefined = undefined;
         let hasOcrCache = false;
         let hasErasedCache = false;
 
         if (blocks.length > 0) {
           try {
+            // Generate erased background once
+            const erasedBlob = await renderErasedCanvas(currentImg.previewUrl, blocks, styleConfig);
+            const erasedUrl = URL.createObjectURL(erasedBlob);
+            erasedPreviewUrl = erasedUrl;
+
             if (currentImg.translatedPreviewUrl) {
               URL.revokeObjectURL(currentImg.translatedPreviewUrl);
             }
-            translatedPreviewUrl = await renderTranslatedCanvas(currentImg.previewUrl, blocks, styleConfig);
+            translatedPreviewUrl = await renderTranslatedCanvas(currentImg.previewUrl, blocks, styleConfig, erasedUrl);
             lastRenderedHash = getRenderHash(blocks, styleConfig);
 
             // Write back local caches if directory mode active
@@ -775,7 +1051,6 @@ export default function App() {
                   await jsonWritable.close();
 
                   // 2. Write erased background image
-                  const erasedBlob = await renderErasedCanvas(item.previewUrl, currentBlocks, styleConfig);
                   const erasedHandle = await cacheDirHandle.getFileHandle(`${item.name}_erased.png`, { create: true });
                   const erasedWritable = await erasedHandle.createWritable();
                   await erasedWritable.write(erasedBlob);
@@ -806,6 +1081,7 @@ export default function App() {
           progress: 100, 
           blocks,
           translatedPreviewUrl,
+          erasedPreviewUrl,
           lastRenderedHash,
           width: dims.width,
           height: dims.height,
@@ -844,7 +1120,7 @@ export default function App() {
         if (!img.blocks) continue;
         const resolved = await resolveImageFiles(img);
         if (!resolved.previewUrl) continue;
-        const blobUrl = await renderTranslatedCanvas(resolved.previewUrl, resolved.blocks || img.blocks, styleConfig);
+        const blobUrl = await renderTranslatedCanvas(resolved.previewUrl, resolved.blocks || img.blocks, styleConfig, resolved.erasedPreviewUrl);
         const res = await fetch(blobUrl);
         const blob = await res.blob();
         zip.file(`translated_${img.name}`, blob);
@@ -1227,6 +1503,17 @@ export default function App() {
                             <Download size={16} /> 导出已完成 ZIP
                           </button>
                           
+                          {directoryHandle && (
+                            <button
+                              className="btn btn-secondary"
+                              onClick={handleCleanCache}
+                              disabled={isTranslatingAll}
+                              title="清理本地文件夹缓存中已删除或改名图片的孤立文件"
+                            >
+                              <RefreshCw size={16} /> 清理缓存
+                            </button>
+                          )}
+                          
                           {isTranslatingAll ? (
                             <button
                               className="btn btn-secondary"
@@ -1269,6 +1556,8 @@ export default function App() {
                 setConfig={setConfig}
                 styleConfig={styleConfig}
                 setStyleConfig={setStyleConfig}
+                onRenderAllFonts={handleRenderAllFonts}
+                isRenderingAllFonts={isRenderingAllFonts}
               />
             </div>
           )}

@@ -293,6 +293,11 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
     let url: string | null = null;
 
     const loadErasedBg = async () => {
+      if (image.erasedPreviewUrl) {
+        setErasedUrl(image.erasedPreviewUrl);
+        setDebugStatus('Using pre-loaded erased background');
+        return;
+      }
       if (!image.blocks || image.blocks.length === 0) {
         setErasedUrl(null);
         setDebugStatus('No text blocks to inpaint');
@@ -582,7 +587,12 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
     if (localBlocks.length === 0) return;
     setIsExporting(true);
     try {
-      const dataUrl = await renderTranslatedCanvas(image.previewUrl, localBlocks, styleConfig);
+      const dataUrl = await renderTranslatedCanvas(
+        image.previewUrl,
+        localBlocks,
+        styleConfig,
+        image.erasedPreviewUrl || erasedUrl || undefined
+      );
       const link = document.createElement('a');
       link.download = `translated_${image.name}`;
       link.href = dataUrl;
