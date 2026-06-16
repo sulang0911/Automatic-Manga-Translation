@@ -35,8 +35,8 @@ echo.
 
 :: 3. Setup Frontend
 echo [*] Setting up frontend dependencies (React + Vite)...
-if not exist node_modules (
-    echo [!] node_modules not found. Installing dependencies...
+if not exist node_modules\vite (
+    echo [!] Frontend dependencies missing or incomplete. Installing...
     call npm install
 ) else (
     echo [+] Frontend dependencies already installed.
