@@ -1,5 +1,9 @@
 import os
 import sys
+import warnings
+
+# Suppress all python warnings (like RequestsDependencyWarning, ccache UserWarning, DeprecationWarning)
+warnings.filterwarnings("ignore")
 
 # Force stdout/stderr to use UTF-8 to avoid encoding errors (e.g. GBK on Windows) when printing Japanese characters
 try:
@@ -14,6 +18,9 @@ try:
     from flask_cors import CORS
     import numpy as np
     import cv2
+    import flask.cli
+    # Suppress Flask development server banner warning
+    flask.cli.show_server_banner = lambda *args: None
 except ImportError:
     print("\n[错误] 缺少必要依赖，请先执行以下命令安装:")
     print("pip install flask flask-cors opencv-python numpy\n")
