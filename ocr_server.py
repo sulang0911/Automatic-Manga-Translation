@@ -6,10 +6,12 @@ try:
 except ImportError:
     pass
 
-# Add nvidia DLL directories from venv to the DLL search path on Windows
+# Add nvidia DLL directories from python_env/venv to the DLL search path on Windows
 if os.name == "nt":
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    site_packages = os.path.join(base_dir, "venv", "Lib", "site-packages")
+    site_packages = os.path.join(base_dir, "python_env", "Lib", "site-packages")
+    if not os.path.exists(site_packages):
+        site_packages = os.path.join(base_dir, "venv", "Lib", "site-packages")
     if os.path.exists(site_packages):
         nvidia_dir = os.path.join(site_packages, "nvidia")
         if os.path.exists(nvidia_dir):

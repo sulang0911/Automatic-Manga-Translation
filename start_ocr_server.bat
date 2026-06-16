@@ -5,10 +5,10 @@ echo   AetherLens Local High-Precision OCR Server (PaddleOCR)
 echo ======================================================
 echo.
 
-set VENV_PYTHON=venv\Scripts\python.exe
+set VENV_PYTHON=python_env\python.exe
 
-if not exist "%VENV_PYTHON%" (
-    echo [!] Python 3.10 virtual environment not found.
+if not exist "python_env\.setup_complete" (
+    echo [!] Python 3.10 environment setup is missing or incomplete.
     echo [*] Starting automatic environment setup...
     echo.
     
@@ -18,32 +18,36 @@ if not exist "%VENV_PYTHON%" (
         python setup_venv.py
     ) else (
         echo [!] Global Python not found in PATH.
-        echo [*] Attempting to run setup using PowerShell download/execution...
-        powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process python -ArgumentList 'setup_venv.py' -NoNewWindow -Wait" 2>nul
-        if %errorlevel% neq 0 (
-            echo [!] Failed to execute setup. Downloading Python installer directly via PowerShell...
-            powershell -NoProfile -ExecutionPolicy Bypass -Command "& { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.10.11/python-3.10.11-amd64.exe' -OutFile 'python_installer.exe' }"
-            if exist python_installer.exe (
-                echo [*] Installing Python 3.10.11 silently to python_env...
-                mkdir python_env >nul 2>nul
-                python_installer.exe /quiet InstallAllUsers=0 TargetDir="%CD%\python_env" PrependPath=0 Include_doc=0 Include_test=0
-                del python_installer.exe
-                if exist "%CD%\python_env\python.exe" (
-                    echo [*] Creating virtual environment...
-                    "%CD%\python_env\python.exe" -m venv venv
-                    if exist "%VENV_PYTHON%" (
-                        echo [*] Installing dependencies in virtual environment...
-                        "%VENV_PYTHON%" setup_venv.py
-                    )
-                )
+        echo [*] Bootstrapping portable Python environment using PowerShell...
+        
+        :: 1. Download zip
+        powershell -NoProfile -ExecutionPolicy Bypass -Command "& { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; echo '[*] Downloading Python 3.10.11 embeddable package...'; Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.10.11/python-3.10.11-embed-amd64.zip' -OutFile 'python_embed.zip' }"
+        
+        if exist python_embed.zip (
+            :: 2. Extract zip
+            echo [*] Extracting Python to python_env...
+            mkdir python_env >nul 2>nul
+            powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -Path 'python_embed.zip' -DestinationPath 'python_env' -Force"
+            del python_embed.zip
+            
+            :: 3. Configure python310._pth
+            if exist "python_env\python310._pth" (
+                echo [*] Enabling site-packages in portable environment...
+                powershell -NoProfile -ExecutionPolicy Bypass -Command "(Get-Content python_env\python310._pth) -replace '#import site', 'import site' | Set-Content python_env\python310._pth"
+            )
+            
+            :: 4. Run the rest of setup using the bootstrapped python
+            if exist "%VENV_PYTHON%" (
+                echo [*] Bootstrapping completed. Running dependency installer...
+                "%VENV_PYTHON%" setup_venv.py
             )
         )
     )
     
-    if not exist "%VENV_PYTHON%" (
+    if not exist "python_env\.setup_complete" (
         echo.
-        echo [X] Error: Failed to set up virtual environment automatically.
-        echo [!] Please make sure you have Python installed globally, or run setup_venv.py manually.
+        echo [X] Error: Failed to set up Python environment automatically.
+        echo [!] Please install Python 3.10 globally, or configure the portable environment manually.
         echo.
         pause
         exit /b 1

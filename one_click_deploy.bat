@@ -24,16 +24,13 @@ echo.
 :: 2. Check Python
 echo [*] Checking Python environment...
 where python >nul 2>nul
-if %errorlevel% neq 0 (
-    color 0C
-    echo [ERROR] Python is not installed!
-    echo Please download and install Python from: https://www.python.org/
-    echo Please make sure to check "Add Python to PATH" during installation.
-    echo.
-    pause
-    exit /b 1
+if %errorlevel% equ 0 (
+    echo [+] Python is ready (Global).
+) else if exist "python_env\python.exe" (
+    echo [+] Python is ready (Portable).
+) else (
+    echo [!] Global Python not found. A portable Python environment will be set up automatically during server launch.
 )
-echo [+] Python is ready.
 echo.
 
 :: 3. Setup Frontend
