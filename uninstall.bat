@@ -34,6 +34,18 @@ if exist dist (
     echo [-] dist not found.
 )
 
+if exist translation_cache (
+    echo [*] Removing translation_cache (local translation cache files)...
+    rmdir /s /q translation_cache
+    echo [+] translation_cache removed.
+)
+
+if exist ocr_config.json (
+    echo [*] Removing ocr_config.json (OCR launcher config)...
+    del /q ocr_config.json
+    echo [+] ocr_config.json removed.
+)
+
 echo.
 echo ======================================================================
 echo 2. Cleaning PaddleOCR model cache files...
