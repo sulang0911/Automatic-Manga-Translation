@@ -1,5 +1,26 @@
 import os
 
+# Ensure torch is imported first to avoid DLL/OMP conflict on Windows
+try:
+    import torch
+except ImportError:
+    pass
+
+# Add nvidia DLL directories from venv to the DLL search path on Windows
+if os.name == "nt":
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    site_packages = os.path.join(base_dir, "venv", "Lib", "site-packages")
+    if os.path.exists(site_packages):
+        nvidia_dir = os.path.join(site_packages, "nvidia")
+        if os.path.exists(nvidia_dir):
+            for folder in os.listdir(nvidia_dir):
+                bin_path = os.path.join(nvidia_dir, folder, "bin")
+                if os.path.exists(bin_path):
+                    try:
+                        os.add_dll_directory(bin_path)
+                    except Exception:
+                        pass
+
 # Limit CPU threads to prevent CPU 100% max-out and freezing when running on CPU
 os.environ["OMP_NUM_THREADS"] = "4"
 os.environ["MKL_NUM_THREADS"] = "4"
@@ -155,6 +176,7 @@ if choice in ["1", "2", "4"]:
     try:
         from paddleocr import PaddleOCR
         import paddle
+        print("[*] paddle module path:", paddle.__file__, flush=True)
         try:
             paddle.set_flags({"FLAGS_use_onednn": False})
             paddle.set_num_threads(4)
@@ -366,56 +388,21 @@ def get_background_color(crop):
     if len(border_pixels) == 0:
         return [255, 255, 255]
     median_color = np.median(border_pixels, axis=0).astype(int)
-    return [int(c) for c in median_color]
-
-def get_text_mask(crop, bg_color):
-    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-    bg_gray = int(0.299 * bg_color[2] + 0.587 * bg_color[1] + 0.114 * bg_color[0])
-    diff = cv2.absdiff(gray, bg_gray)
-    _, thresh = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
-    return thresh
-
-def dilate_mask(mask, dilation_pixels=4):
-    if dilation_pixels <= 0:
-        return mask
-    kernel_size = dilation_pixels * 2 + 1
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_size, kernel_size))
-    return cv2.dilate(mask, kernel, iterations=1)
-
-def blend_inpainted_image(original_img, inpainted_img, mask, feather_radius=5):
-    if feather_radius <= 0:
-        result = original_img.copy()
-        result[mask > 0] = inpainted_img[mask > 0]
-        return result
-    
-    ksize = feather_radius * 2 + 1
-    alpha = cv2.GaussianBlur(mask.astype(np.float32) / 255.0, (ksize, ksize), 0)
-    alpha = np.expand_dims(alpha, axis=2)
-    
-    blended = inpainted_img.astype(np.float32) * alpha + original_img.astype(np.float32) * (1.0 - alpha)
-    return np.clip(blended, 0, 255).astype(np.uint8)
-
-# Check for simple-lama-inpainting support
-USE_LAMA = False
-lama_inpainter = None
-try:
-    from simple_lama_inpainting import SimpleLama
-    import torch
+# Helper function to check if inpaint server is running
+def check_inpaint_server_active():
+    import requests
     try:
-        torch.set_num_threads(4)
+        res = requests.get('http://127.0.0.1:5001/health', timeout=1.0)
+        if res.ok:
+            data = res.json()
+            return data.get("status") == "healthy"
     except Exception:
         pass
-    print("[*] 检测到已安装 simple-lama-inpainting，正在初始化 LaMa 图像修复模型...")
-    lama_inpainter = SimpleLama()
-    USE_LAMA = True
-    print("[+] LaMa 图像修复模型加载成功！")
-except Exception as e:
-    print("[*] 提示: 未安装 simple-lama-inpainting，将自动使用 OpenCV 优化修复算法（支持高精羽化融合）。")
-    print("[*] 如需启用深度学习修复效果，可执行: pip install simple-lama-inpainting")
+    return False
 
 @app.route('/inpaint', methods=['POST'])
 def inpaint_image():
-    import json
+    import requests
     from flask import make_response
     
     if 'image' not in request.files:
@@ -425,13 +412,38 @@ def inpaint_image():
     blocks_str = request.form.get('blocks', '[]')
     style_str = request.form.get('style', '{}')
     
+    # Check if inpaint_server is active on port 5001
+    inpaint_active = check_inpaint_server_active()
+    
+    if inpaint_active:
+        # Proxy request to port 5001
+        try:
+            filename = file.filename or 'image.png'
+            file.seek(0)
+            files = {'image': (filename, file.read(), file.content_type)}
+            data = {'blocks': blocks_str, 'style': style_str}
+            
+            res = requests.post('http://127.0.0.1:5001/inpaint', files=files, data=data, timeout=60.0)
+            if res.ok:
+                response = make_response(res.content)
+                response.headers.set('Content-Type', 'image/png')
+                return response
+            else:
+                return jsonify({"error": f"Inpaint server returned error: {res.status_code}"}), res.status_code
+        except Exception as e:
+            print(f"[-] Failed to communicate with inpaint server: {e}")
+            # Fallback to local OpenCV if connection fails
+            file.seek(0)
+            
+    # Local OpenCV-only inpainting fallback if port 5001 is offline or failed
     try:
+        import json
         blocks = json.loads(blocks_str)
         style = json.loads(style_str)
     except Exception as e:
         return jsonify({"error": f"Invalid JSON parameters: {e}"}), 400
         
-    # Decode image
+    file.seek(0)
     img_bytes = file.read()
     nparr = np.frombuffer(img_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -439,14 +451,11 @@ def inpaint_image():
         return jsonify({"error": "Failed to decode image"}), 400
         
     h_img, w_img = img.shape[:2]
-    
     erased_img = img.copy()
-    inpaint_mask = np.zeros((h_img, w_img), dtype=np.uint8)
     
-    # Calculate dynamic dilation sizes
+    # Perform OpenCV fast speech bubble flat fills
     base_dim = max(h_img, w_img)
-    bubble_dilation = max(1, int(base_dim * 0.002))       # e.g., 2-4px
-    onomatopoeia_dilation = max(2, int(base_dim * 0.004)) # e.g., 4-8px
+    bubble_dilation = max(1, int(base_dim * 0.002))
     
     for block in blocks:
         xmin = int((block.get('xmin', 0) / 100.0) * w_img)
@@ -465,8 +474,6 @@ def inpaint_image():
             continue
             
         block_type = block.get('type', 'bubble')
-        
-        # Skip if style config ignores onomatopoeia
         if block_type == 'onomatopoeia' and style.get('onomatopoeiaMode') == 'ignore':
             continue
             
@@ -474,67 +481,10 @@ def inpaint_image():
         bg_color = get_background_color(crop)
         text_mask = get_text_mask(crop, bg_color)
         
-        # Calculate background uniformity (standard deviation of grayscale values on block borders)
-        h_c, w_c = crop.shape[:2]
-        border_pixels = []
-        if h_c > 0 and w_c > 0:
-            border_pixels.extend(crop[0, :])
-            border_pixels.extend(crop[h_c-1, :])
-            if h_c > 2:
-                border_pixels.extend(crop[1:h_c-1, 0])
-                border_pixels.extend(crop[1:h_c-1, w_c-1])
-        
-        border_pixels = np.array(border_pixels)
-        is_uniform = True
-        if len(border_pixels) > 0:
-            # Grayscale conversion of border pixels
-            border_gray = 0.299 * border_pixels[:, 2] + 0.587 * border_pixels[:, 1] + 0.114 * border_pixels[:, 0]
-            # Standard deviation threshold: < 15.0 means highly uniform color (e.g. standard speech bubble)
-            is_uniform = np.std(border_gray) < 15.0
-        
-        if block_type == 'bubble' and is_uniform:
-            # 1. Bubble text on a solid/uniform background: fill the precise dilated text mask with the bubble background color
-            dilated = dilate_mask(text_mask, bubble_dilation)
-            crop[dilated == 255] = bg_color
-            erased_img[ymin:ymax, xmin:xmax] = crop
-        else:
-            # 2. Dialogue on complex background (no bubble) or SFX/onomatopoeia: accumulate precise mask for LaMa inpainting
-            dilated = dilate_mask(text_mask, onomatopoeia_dilation)
-            inpaint_mask[ymin:ymax, xmin:xmax] = cv2.bitwise_or(inpaint_mask[ymin:ymax, xmin:xmax], dilated)
-            
-    # Inpaint accumulated background/onomatopoeia text regions
-    if np.sum(inpaint_mask) > 0:
-        inpainted = None
-        if USE_LAMA and lama_inpainter:
-            try:
-                from PIL import Image as PILImage
-                img_rgb = cv2.cvtColor(erased_img, cv2.COLOR_BGR2RGB)
-                img_pil = PILImage.fromarray(img_rgb)
-                mask_pil = PILImage.fromarray(inpaint_mask)
-                
-                result_pil = lama_inpainter(img_pil, mask_pil)
-                inpainted_rgb = np.array(result_pil)
-                inpainted = cv2.cvtColor(inpainted_rgb, cv2.COLOR_RGB2BGR)
-                
-                # Crop back to original dimensions as simple-lama-inpainting pads internally
-                if inpainted.shape[0] != h_img or inpainted.shape[1] != w_img:
-                    inpainted = inpainted[0:h_img, 0:w_img]
-                    
-                print("[+] 使用 LaMa 深度学习修复引擎处理完成")
-            except Exception as e:
-                print(f"[-] LaMa 修复引擎运行异常: {e}，将自动切换至 OpenCV 修复。")
-                inpainted = None
-                
-        if inpainted is None:
-            # OpenCV Telea
-            inpainted = cv2.inpaint(erased_img, inpaint_mask, 3, cv2.INPAINT_TELEA)
-            
-        # Smooth with Bilateral Filter to preserve sharp lines while flat-filling
-        inpainted_filtered = cv2.bilateralFilter(inpainted, 5, 50, 50)
-        
-        # Feather and blend back using the soft mask
-        feather_radius = max(2, int(base_dim * 0.003))
-        erased_img = blend_inpainted_image(erased_img, inpainted_filtered, inpaint_mask, feather_radius)
+        # Simple OpenCV fill
+        dilated = dilate_mask(text_mask, bubble_dilation)
+        crop[dilated == 255] = bg_color
+        erased_img[ymin:ymax, xmin:xmax] = crop
         
     _, buffer = cv2.imencode('.png', erased_img)
     response = make_response(buffer.tobytes())
@@ -543,14 +493,34 @@ def inpaint_image():
 
 @app.route('/health', methods=['GET'])
 def health():
+    inpaint_active = check_inpaint_server_active()
+    
+    # Get exact ocr engine name
+    detailed_engine = "PaddleOCR"
+    glbs = globals()
+    active_eng = glbs.get("active_engine", "paddle")
+    chc = glbs.get("choice", "1")
+    ver = glbs.get("ocr_ver", "Default")
+    
+    if active_eng == "paddle":
+        if ver == "PP-OCRv3":
+            detailed_engine = "PaddleOCR (PP-OCRv3)"
+        elif chc == "4":
+            detailed_engine = "PaddleOCR (PP-OCRv4 CPU)"
+        else:
+            detailed_engine = "PaddleOCR (PP-OCRv4)"
+    elif active_eng == "easyocr":
+        detailed_engine = "EasyOCR"
+        
     return jsonify({
         "status": "healthy",
-        "engine": "PaddleOCR" if active_engine == "paddle" else "EasyOCR",
+        "engine": "PaddleOCR" if active_eng == "paddle" else "EasyOCR",
+        "engine_detail": detailed_engine,
         "device": device,
         "cuda_available": has_cuda,
-        "lama_available": USE_LAMA
+        "lama_available": inpaint_active
     })
 
 if __name__ == '__main__':
-    print("[*] 正在 127.0.0.1:5000 启动本地 OCR 服务...")
+    print('[*] 正在 127.0.0.1:5000 启动本地 OCR 服务...')
     app.run(host='127.0.0.1', port=5000, debug=False)

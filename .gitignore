@@ -27,6 +27,7 @@ dist-ssr
 .venv
 venv
 env
+python_env/
 __pycache__/
 *.py[cod]
 
@@ -34,3 +35,7 @@ __pycache__/
 *_translated.png
 *_erased.png
 *_blocks.json
+ocr_config.json
+
+# Release Packages
+*.zip

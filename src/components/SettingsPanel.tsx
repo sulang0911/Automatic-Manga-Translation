@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import type { TranslateConfig, StyleConfig, APIProvider } from '../types';
-import { Eye, EyeOff, Settings, Sparkles, Sliders, Type, Palette, Loader2 } from 'lucide-react';
+import { Eye, EyeOff, Settings, Sparkles, Sliders, Type, Palette, Loader2, Activity } from 'lucide-react';
 import { testApiConnection } from '../utils/translator';
 
 
@@ -58,6 +58,55 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   const [activeTab, setActiveTab] = useState<'api' | 'style'>('api');
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ status: 'success' | 'error'; message: string } | null>(null);
+  const [ocrStatus, setOcrStatus] = useState<{
+    status: 'online' | 'offline' | 'loading';
+    engine: string;
+    device: string;
+    lama: string;
+  }>({
+    status: 'loading',
+    engine: '加载中...',
+    device: '-',
+    lama: '-',
+  });
+
+  useEffect(() => {
+    let active = true;
+    const checkStatus = async () => {
+      try {
+        const res = await fetch('http://127.0.0.1:5000/health');
+        if (res.ok) {
+          const data = await res.json();
+          if (active) {
+            setOcrStatus({
+              status: 'online',
+              engine: data.engine_detail || data.engine || 'PaddleOCR',
+              device: data.device || 'CPU',
+              lama: data.lama_available ? 'LaMa 高清擦除' : 'OpenCV 基础擦除'
+            });
+          }
+        } else {
+          throw new Error();
+        }
+      } catch (e) {
+        if (active) {
+          setOcrStatus({
+            status: 'offline',
+            engine: '未连接',
+            device: '未知',
+            lama: '未知'
+          });
+        }
+      }
+    };
+    
+    checkStatus();
+    const interval = setInterval(checkStatus, 5000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, []);
 
   const handleTestConnection = async () => {
     if (!config.apiKey && config.provider !== 'custom') {
@@ -131,6 +180,60 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
             <Sparkles size={18} className="text-primary" />
             AI 翻译引擎配置
           </h3>
+
+          {/* 本地服务状态卡片 */}
+          <div style={{
+            marginBottom: '1.5rem',
+            padding: '1rem',
+            borderRadius: 'var(--radius-md)',
+            backgroundColor: 'rgba(255, 255, 255, 0.03)',
+            border: '1px solid rgba(255, 255, 255, 0.08)',
+            fontSize: '0.85rem'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
+              <span style={{ fontWeight: '600', color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Activity size={14} className="text-primary" />
+                本地 OCR 与擦除服务状态
+              </span>
+              <span style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                fontSize: '0.8rem',
+                fontWeight: 'bold',
+                color: ocrStatus.status === 'online' ? 'var(--color-success)' : ocrStatus.status === 'offline' ? '#fca5a5' : 'var(--text-muted)'
+              }}>
+                <span style={{
+                  width: '8px',
+                  height: '8px',
+                  borderRadius: '50%',
+                  backgroundColor: ocrStatus.status === 'online' ? '#10b981' : ocrStatus.status === 'offline' ? '#ef4444' : '#6b7280',
+                  animation: ocrStatus.status === 'online' ? 'pulse 2s infinite' : 'none',
+                  display: 'inline-block'
+                }}></span>
+                {ocrStatus.status === 'online' ? '在线' : ocrStatus.status === 'offline' ? '离线' : '检测中...'}
+              </span>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+              <div>
+                <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', opacity: 0.6 }}>文字识别模型</span>
+                <span style={{ fontWeight: '500', color: 'var(--text-main)' }}>{ocrStatus.engine}</span>
+              </div>
+              <div>
+                <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', opacity: 0.6 }}>硬件运算后端</span>
+                <span style={{ fontWeight: '500', color: 'var(--text-main)' }}>{ocrStatus.device}</span>
+              </div>
+              <div>
+                <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', opacity: 0.6 }}>背景擦除算法</span>
+                <span style={{ fontWeight: '500', color: 'var(--text-main)' }}>{ocrStatus.lama}</span>
+              </div>
+              <div>
+                <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', opacity: 0.6 }}>大模型翻译引擎</span>
+                <span style={{ fontWeight: '500', color: 'var(--text-main)' }}>{config.provider.toUpperCase()} ({config.model})</span>
+              </div>
+            </div>
+          </div>
 
           <div className="form-group">
             <label className="form-label">服务商 (API Provider)</label>
