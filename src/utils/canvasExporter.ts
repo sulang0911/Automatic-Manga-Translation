@@ -420,7 +420,8 @@ export const renderTranslatedCanvas = async (
 export const renderErasedCanvas = async (
   originalImageSrc: string,
   blocks: TranslationBlock[],
-  style: StyleConfig
+  style: StyleConfig,
+  throwOnError: boolean = false
 ): Promise<Blob> => {
   // Check memory cache first
   const blocksJson = JSON.stringify(blocks);
@@ -463,10 +464,21 @@ export const renderErasedCanvas = async (
         
         return inpaintedBlob;
       } else {
-        console.warn('Local inpaint server returned error, falling back to local canvas...');
+        const errText = await inpaintRes.text();
+        console.warn('Local inpaint server returned error:', errText);
+        if (throwOnError) {
+          throw new Error(`Inpaint server returned error: ${inpaintRes.status} - ${errText}`);
+        }
       }
     } catch (err) {
-      console.warn('Failed to call local inpaint server, falling back to local canvas...', err);
+      console.warn('Failed to call local inpaint server', err);
+      if (throwOnError) {
+        throw err;
+      }
+    }
+  } else {
+    if (throwOnError) {
+      throw new Error('Inpaint server is offline');
     }
   }
 

@@ -1,6 +1,13 @@
 import os
 import sys
 
+# Force stdout/stderr to use UTF-8 to avoid encoding errors (e.g. GBK on Windows) when printing Japanese characters
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+except AttributeError:
+    pass
+
 # Guide user to install dependencies if import fails
 try:
     from flask import Flask, request, jsonify
@@ -129,7 +136,10 @@ def run_ocr():
                     rec_polys = res_dict.get('rec_polys', [])
                     print(f"[DEBUG] 3.x format: rec_texts length={len(rec_texts)}", flush=True)
                     if len(rec_texts) > 0:
-                        print(f"[DEBUG] Sample texts: {rec_texts[:3]}", flush=True)
+                        try:
+                            print(f"[DEBUG] Sample texts: {rec_texts[:3]}", flush=True)
+                        except Exception:
+                            print(f"[DEBUG] Sample texts: {[t.encode('utf-8', errors='ignore').decode('utf-8', errors='ignore') for t in rec_texts[:3]]}", flush=True)
                     for i in range(len(rec_texts)):
                         text = rec_texts[i]
                         confidence = rec_scores[i] if i < len(rec_scores) else 1.0
@@ -283,13 +293,31 @@ def inpaint_image():
         bg_color = get_background_color(crop)
         text_mask = get_text_mask(crop, bg_color)
         
-        if block_type == 'bubble':
-            # 1. Bubble text: fill the precise dilated text mask with the bubble background color
+        # Calculate background uniformity (standard deviation of grayscale values on block borders)
+        h_c, w_c = crop.shape[:2]
+        border_pixels = []
+        if h_c > 0 and w_c > 0:
+            border_pixels.extend(crop[0, :])
+            border_pixels.extend(crop[h_c-1, :])
+            if h_c > 2:
+                border_pixels.extend(crop[1:h_c-1, 0])
+                border_pixels.extend(crop[1:h_c-1, w_c-1])
+        
+        border_pixels = np.array(border_pixels)
+        is_uniform = True
+        if len(border_pixels) > 0:
+            # Grayscale conversion of border pixels
+            border_gray = 0.299 * border_pixels[:, 2] + 0.587 * border_pixels[:, 1] + 0.114 * border_pixels[:, 0]
+            # Standard deviation threshold: < 15.0 means highly uniform color (e.g. standard speech bubble)
+            is_uniform = np.std(border_gray) < 15.0
+        
+        if block_type == 'bubble' and is_uniform:
+            # 1. Bubble text on a solid/uniform background: fill the precise dilated text mask with the bubble background color
             dilated = dilate_mask(text_mask, bubble_dilation)
             crop[dilated == 255] = bg_color
             erased_img[ymin:ymax, xmin:xmax] = crop
         else:
-            # 2. Onomatopoeia/Background text: accumulate dilated precise mask for inpainting
+            # 2. Dialogue on complex background (no bubble) or SFX/onomatopoeia: accumulate precise mask for LaMa inpainting
             dilated = dilate_mask(text_mask, onomatopoeia_dilation)
             inpaint_mask[ymin:ymax, xmin:xmax] = cv2.bitwise_or(inpaint_mask[ymin:ymax, xmin:xmax], dilated)
             
@@ -306,6 +334,11 @@ def inpaint_image():
                 result_pil = lama_inpainter(img_pil, mask_pil)
                 inpainted_rgb = np.array(result_pil)
                 inpainted = cv2.cvtColor(inpainted_rgb, cv2.COLOR_RGB2BGR)
+                
+                # Crop back to original dimensions as simple-lama-inpainting pads internally
+                if inpainted.shape[0] != h_img or inpainted.shape[1] != w_img:
+                    inpainted = inpainted[0:h_img, 0:w_img]
+                    
                 print("[+] 使用 LaMa 深度学习修复引擎处理完成")
             except Exception as e:
                 print(f"[-] LaMa 修复引擎运行异常: {e}，将自动切换至 OpenCV 修复。")

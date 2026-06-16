@@ -66,7 +66,7 @@ echo.
 
 :: Start OCR Server
 echo [*] Launching Local OCR Server...
-start "AetherLens Local OCR Server" cmd /c "python ocr_server.py"
+start "AetherLens Local OCR Server" cmd /c "set PYTHONIOENCODING=utf-8 && python ocr_server.py"
 
 :: Start Frontend Dev Server
 echo [*] Launching Frontend Web App...

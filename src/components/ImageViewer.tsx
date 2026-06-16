@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import type { ImageItem, TranslationBlock, StyleConfig } from '../types';
-import { renderTranslatedCanvas, wrapText, getFontFallbackString } from '../utils/canvasExporter';
+import { renderTranslatedCanvas, renderErasedCanvas, wrapText, getFontFallbackString } from '../utils/canvasExporter';
 import { 
   Download, 
   Edit3, 
@@ -191,6 +191,8 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
   const [isPanning, setIsPanning] = useState(false);
   const [draggingBlockId, setDraggingBlockId] = useState<string | null>(null);
   const [resizingBlockId, setResizingBlockId] = useState<string | null>(null);
+  const [erasedUrl, setErasedUrl] = useState<string | null>(null);
+  const [debugStatus, setDebugStatus] = useState<string>('Initializing...');
 
   const wrapperRef = useRef<HTMLDivElement>(null);
   const canvasContainerRef = useRef<HTMLDivElement>(null);
@@ -284,6 +286,52 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
       container.removeEventListener('wheel', handleWheel);
     };
   }, []);
+
+  // Fetch/generate the cleanly inpainted image from backend to use as the background
+  useEffect(() => {
+    let active = true;
+    let url: string | null = null;
+
+    const loadErasedBg = async () => {
+      if (!image.blocks || image.blocks.length === 0) {
+        setErasedUrl(null);
+        setDebugStatus('No text blocks to inpaint');
+        return;
+      }
+      try {
+        setDebugStatus('Checking local server health...');
+        const checkOcr = await fetch('http://127.0.0.1:5000/health').then(r => r.ok).catch(() => false);
+        if (!checkOcr) {
+          setErasedUrl(null);
+          setDebugStatus('Local server is offline');
+          return;
+        }
+
+        setDebugStatus('Requesting erased background from backend...');
+        const blob = await renderErasedCanvas(image.previewUrl, image.blocks, styleConfig, true);
+        if (active) {
+          url = URL.createObjectURL(blob);
+          setErasedUrl(url);
+          setDebugStatus(`Success! Erased image size: ${(blob.size / 1024).toFixed(1)} KB`);
+        }
+      } catch (err) {
+        console.warn('Failed to load erased background in viewer', err);
+        if (active) {
+          setErasedUrl(null);
+          setDebugStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    };
+
+    loadErasedBg();
+
+    return () => {
+      active = false;
+      if (url) {
+        URL.revokeObjectURL(url);
+      }
+    };
+  }, [image.id, image.blocks, styleConfig]);
 
   // Keyboard navigation shortcuts
   useEffect(() => {
@@ -591,6 +639,18 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
               }}>
                 {image.name}
               </h3>
+              <span className="debug-badge" style={{
+                fontSize: '0.72rem',
+                padding: '2px 6px',
+                borderRadius: '4px',
+                backgroundColor: debugStatus.startsWith('Error') ? 'rgba(239, 68, 68, 0.15)' : debugStatus.startsWith('Success') ? 'rgba(34, 197, 94, 0.15)' : 'rgba(100, 116, 139, 0.15)',
+                color: debugStatus.startsWith('Error') ? '#ef4444' : debugStatus.startsWith('Success') ? '#22c55e' : '#64748b',
+                border: '1px solid currentColor',
+                marginLeft: '8px',
+                whiteSpace: 'nowrap'
+              }} title={debugStatus}>
+                修复层: {debugStatus.length > 25 ? debugStatus.substring(0, 25) + '...' : debugStatus}
+              </span>
             </div>
             
             <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
@@ -662,7 +722,7 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
               } as React.CSSProperties}
             >
               <img 
-                src={image.previewUrl} 
+                src={viewMode === 'overlay' && erasedUrl ? erasedUrl : image.previewUrl} 
                 alt="Workspace Image" 
                 className="workspace-image" 
                 style={{ 
@@ -675,8 +735,8 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
               
               {viewMode === 'overlay' && localBlocks.length > 0 && (
                 <div className="translation-overlay-layer">
-                  {/* Pass 1: Background Masks (Drawn at the bottom) */}
-                  {localBlocks.map((block) => {
+                  {/* Pass 1: Background Masks (Drawn at the bottom, only if server inpainting is not active or user chose custom bg) */}
+                  {(!erasedUrl || styleConfig.bgColorMode === 'custom') && localBlocks.map((block) => {
                     const w = block.xmax - block.xmin;
                     const h = block.ymax - block.ymin;
                     

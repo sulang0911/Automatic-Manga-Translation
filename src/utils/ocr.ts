@@ -22,19 +22,54 @@ export const analyzeBlockColors = (
 
     if (w <= 0 || h <= 0) return { text_color: '#000000', bg_color: '#FFFFFF' };
 
-    tempCanvas.width = Math.min(w, 200); // Scale down for speed
-    tempCanvas.height = Math.min(h, 100);
+    tempCanvas.width = Math.min(w, 150); // Scale down for speed
+    tempCanvas.height = Math.min(h, 80);
     ctx.drawImage(img, x, y, w, h, 0, 0, tempCanvas.width, tempCanvas.height);
 
     const imgData = ctx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
     const data = imgData.data;
 
+    // 1. Estimate background color using median of border pixels
+    const borderPixels: [number, number, number][] = [];
+    const tw = tempCanvas.width;
+    const th = tempCanvas.height;
+    
+    // Top and bottom borders
+    for (let col = 0; col < tw; col++) {
+      const idxTop = col * 4;
+      borderPixels.push([data[idxTop], data[idxTop + 1], data[idxTop + 2]]);
+      const idxBot = ((th - 1) * tw + col) * 4;
+      borderPixels.push([data[idxBot], data[idxBot + 1], data[idxBot + 2]]);
+    }
+    // Left and right borders
+    for (let row = 1; row < th - 1; row++) {
+      const idxLeft = row * tw * 4;
+      borderPixels.push([data[idxLeft], data[idxLeft + 1], data[idxLeft + 2]]);
+      const idxRight = (row * tw + (tw - 1)) * 4;
+      borderPixels.push([data[idxRight], data[idxRight + 1], data[idxRight + 2]]);
+    }
+
+    if (borderPixels.length === 0) return { text_color: '#000000', bg_color: '#FFFFFF' };
+
+    const getMedianColor = (pixels: [number, number, number][]): [number, number, number] => {
+      const r = pixels.map(p => p[0]).sort((a, b) => a - b);
+      const g = pixels.map(p => p[1]).sort((a, b) => a - b);
+      const b = pixels.map(p => p[2]).sort((a, b) => a - b);
+      const mid = Math.floor(pixels.length / 2);
+      return [r[mid], g[mid], b[mid]];
+    };
+
+    const bgColorRGB = getMedianColor(borderPixels);
+
+    // 2. Scan all pixels inside the block to find distinct text pixels (far from background color)
+    let sumR = 0, sumG = 0, sumB = 0;
+    let textPixelCount = 0;
+    
     let minBrightness = 255;
     let maxBrightness = 0;
     let minColor = [0, 0, 0];
     let maxColor = [255, 255, 255];
 
-    // Find the darkest and brightest pixels in the block
     for (let i = 0; i < data.length; i += 4) {
       const r = data[i];
       const g = data[i + 1];
@@ -49,25 +84,43 @@ export const analyzeBlockColors = (
         maxBrightness = brightness;
         maxColor = [r, g, b];
       }
+
+      // Manhattan distance in RGB space
+      const dist = Math.abs(r - bgColorRGB[0]) + Math.abs(g - bgColorRGB[1]) + Math.abs(b - bgColorRGB[2]);
+      
+      // If the pixel is significantly different from background, count it as text
+      if (dist > 60) {
+        sumR += r;
+        sumG += g;
+        sumB += b;
+        textPixelCount++;
+      }
     }
 
     const rgbToHex = (r: number, g: number, b: number) =>
-      '#' + [r, g, b].map((x) => x.toString(16).padStart(2, '0')).join('');
+      '#' + [r, g, b].map((x) => Math.max(0, Math.min(255, Math.round(x))).toString(16).padStart(2, '0')).join('');
 
-    const avgBrightness = (minBrightness + maxBrightness) / 2;
-    if (avgBrightness > 127) {
-      // Light background, dark text
-      return {
-        text_color: rgbToHex(minColor[0], minColor[1], minColor[2]),
-        bg_color: rgbToHex(maxColor[0], maxColor[1], maxColor[2]),
-      };
+    let textColorHex = '';
+    if (textPixelCount > 8) {
+      // Compute the average color of all non-background text pixels
+      const avgR = sumR / textPixelCount;
+      const avgG = sumG / textPixelCount;
+      const avgB = sumB / textPixelCount;
+      textColorHex = rgbToHex(avgR, avgG, avgB);
     } else {
-      // Dark background, light text
-      return {
-        text_color: rgbToHex(maxColor[0], maxColor[1], maxColor[2]),
-        bg_color: rgbToHex(minColor[0], minColor[1], minColor[2]),
-      };
+      // Fallback: use classic contrast brightness extraction
+      const avgBgBrightness = (bgColorRGB[0] * 299 + bgColorRGB[1] * 587 + bgColorRGB[2] * 114) / 1000;
+      if (avgBgBrightness > 127) {
+        textColorHex = rgbToHex(minColor[0], minColor[1], minColor[2]);
+      } else {
+        textColorHex = rgbToHex(maxColor[0], maxColor[1], maxColor[2]);
+      }
     }
+
+    return {
+      text_color: textColorHex,
+      bg_color: rgbToHex(bgColorRGB[0], bgColorRGB[1], bgColorRGB[2]),
+    };
   } catch (e) {
     console.error('Local color analysis failed', e);
     return { text_color: '#000000', bg_color: '#FFFFFF' };
