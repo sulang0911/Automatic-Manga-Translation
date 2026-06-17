@@ -1121,15 +1121,26 @@ export default function App() {
         if (!img.blocks) continue;
         const resolved = await resolveImageFiles(img);
         if (!resolved.previewUrl) continue;
-        const blobUrl = await renderTranslatedCanvas(
-          resolved.previewUrl,
-          resolved.blocks || img.blocks,
-          styleConfig,
-          resolved.erasedPreviewUrl,
-          styleConfig.exportCompressed
-        );
-        const res = await fetch(blobUrl);
-        const blob = await res.blob();
+        let blob: Blob;
+        let blobUrl = '';
+        const currentHash = getRenderHash(resolved.blocks || img.blocks, styleConfig);
+        
+        if (!styleConfig.exportCompressed && resolved.translatedPreviewUrl && resolved.lastRenderedHash === currentHash) {
+          // If compression is disabled and the styling matches the existing cache, pack the cached blob directly
+          const res = await fetch(resolved.translatedPreviewUrl);
+          blob = await res.blob();
+        } else {
+          // Otherwise, render and compress the canvas
+          blobUrl = await renderTranslatedCanvas(
+            resolved.previewUrl,
+            resolved.blocks || img.blocks,
+            styleConfig,
+            resolved.erasedPreviewUrl,
+            styleConfig.exportCompressed
+          );
+          const res = await fetch(blobUrl);
+          blob = await res.blob();
+        }
         
         const originalName = img.name;
         const dotIdx = originalName.lastIndexOf('.');
@@ -1137,7 +1148,9 @@ export default function App() {
         const extension = styleConfig.exportCompressed ? 'webp' : (dotIdx !== -1 ? originalName.substring(dotIdx + 1) : 'png');
         zip.file(`translated_${baseName}.${extension}`, blob);
         
-        URL.revokeObjectURL(blobUrl);
+        if (blobUrl) {
+          URL.revokeObjectURL(blobUrl);
+        }
 
         // Revoke temporary Object URLs if they weren't loaded before
         if (!img.previewUrl) {
