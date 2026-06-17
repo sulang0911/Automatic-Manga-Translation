@@ -41,6 +41,7 @@ export interface StyleConfig {
   fontItalic: boolean;
   autoFitFontSize: boolean;
   onomatopoeiaMode: 'ignore' | 'transparent' | 'normal';
+  exportCompressed: boolean;
 }
 
 export interface ImageItem {

@@ -108,7 +108,8 @@ export const renderTranslatedCanvas = async (
   originalImageSrc: string,
   blocks: TranslationBlock[],
   style: StyleConfig,
-  erasedImageSrc?: string
+  erasedImageSrc?: string,
+  exportCompressed?: boolean
 ): Promise<string> => {
   return new Promise(async (resolve, reject) => {
     let backgroundSrc = originalImageSrc;
@@ -406,6 +407,8 @@ export const renderTranslatedCanvas = async (
       });
       
       try {
+        const mimeType = exportCompressed ? 'image/webp' : 'image/png';
+        const quality = exportCompressed ? 0.85 : undefined;
         canvas.toBlob((blob) => {
           if (!blob) {
             reject(new Error('Canvas export failed'));
@@ -413,7 +416,7 @@ export const renderTranslatedCanvas = async (
           }
           const url = URL.createObjectURL(blob);
           resolve(url);
-        }, 'image/png');
+        }, mimeType, quality);
       } catch (err) {
         reject(err);
       }

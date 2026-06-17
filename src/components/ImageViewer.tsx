@@ -591,10 +591,15 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
         image.previewUrl,
         localBlocks,
         styleConfig,
-        image.erasedPreviewUrl || erasedUrl || undefined
+        image.erasedPreviewUrl || erasedUrl || undefined,
+        styleConfig.exportCompressed
       );
       const link = document.createElement('a');
-      link.download = `translated_${image.name}`;
+      const originalName = image.name;
+      const dotIdx = originalName.lastIndexOf('.');
+      const baseName = dotIdx !== -1 ? originalName.substring(0, dotIdx) : originalName;
+      const extension = styleConfig.exportCompressed ? 'webp' : (dotIdx !== -1 ? originalName.substring(dotIdx + 1) : 'png');
+      link.download = `translated_${baseName}.${extension}`;
       link.href = dataUrl;
       link.click();
       setTimeout(() => {
@@ -698,6 +703,17 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
                     />
                     {isRefreshing ? '重绘中...' : '重绘排版'}
                   </button>
+                  {setStyleConfig && (
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '0.85rem', color: 'var(--color-text-secondary)', userSelect: 'none', marginRight: '4px' }}>
+                      <input
+                        type="checkbox"
+                        checked={styleConfig.exportCompressed}
+                        onChange={e => setStyleConfig(prev => ({ ...prev, exportCompressed: e.target.checked }))}
+                        style={{ width: '15px', height: '15px', cursor: 'pointer' }}
+                      />
+                      压缩版 (无损WebP)
+                    </label>
+                  )}
                   <button
                     className="btn btn-primary"
                     onClick={handleDownload}

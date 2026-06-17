@@ -681,6 +681,21 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                 <span className="slider"></span>
               </label>
             </div>
+
+            <div className="switch-group" style={{ marginTop: '1.25rem' }}>
+              <div className="switch-label-container">
+                <span className="form-label" style={{ marginBottom: 0 }}>导出压缩版图片 (肉眼无损)</span>
+                <span className="switch-sublabel">在导出或打包译图时，使用高质量 WebP 格式替代庞大的 PNG 格式，大幅缩减文件大小</span>
+              </div>
+              <label className="switch">
+                <input
+                  type="checkbox"
+                  checked={styleConfig.exportCompressed}
+                  onChange={e => updateStyle('exportCompressed', e.target.checked)}
+                />
+                <span className="slider"></span>
+              </label>
+            </div>
           </div>
 
           <div className="form-group" style={{ marginTop: '1.5rem', marginBottom: 0 }}>

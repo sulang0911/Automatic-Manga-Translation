@@ -56,7 +56,8 @@ const DEFAULT_STYLE: StyleConfig = {
   fontBold: true,
   fontItalic: false,
   autoFitFontSize: true,
-  onomatopoeiaMode: 'ignore'
+  onomatopoeiaMode: 'ignore',
+  exportCompressed: false
 };
 
 const getRenderHash = (blocks: TranslationBlock[], style: StyleConfig): string => {
@@ -1120,10 +1121,22 @@ export default function App() {
         if (!img.blocks) continue;
         const resolved = await resolveImageFiles(img);
         if (!resolved.previewUrl) continue;
-        const blobUrl = await renderTranslatedCanvas(resolved.previewUrl, resolved.blocks || img.blocks, styleConfig, resolved.erasedPreviewUrl);
+        const blobUrl = await renderTranslatedCanvas(
+          resolved.previewUrl,
+          resolved.blocks || img.blocks,
+          styleConfig,
+          resolved.erasedPreviewUrl,
+          styleConfig.exportCompressed
+        );
         const res = await fetch(blobUrl);
         const blob = await res.blob();
-        zip.file(`translated_${img.name}`, blob);
+        
+        const originalName = img.name;
+        const dotIdx = originalName.lastIndexOf('.');
+        const baseName = dotIdx !== -1 ? originalName.substring(0, dotIdx) : originalName;
+        const extension = styleConfig.exportCompressed ? 'webp' : (dotIdx !== -1 ? originalName.substring(dotIdx + 1) : 'png');
+        zip.file(`translated_${baseName}.${extension}`, blob);
+        
         URL.revokeObjectURL(blobUrl);
 
         // Revoke temporary Object URLs if they weren't loaded before
@@ -1484,9 +1497,20 @@ export default function App() {
                       )}
                     </div>
                     
-                    <div className="queue-actions">
-                      {images.length > 0 && (
-                        <>
+                    {images.length > 0 && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.5rem', width: '100%' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', padding: '0 0.25rem' }}>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '0.85rem', color: 'var(--color-text-secondary)', userSelect: 'none' }}>
+                            <input
+                              type="checkbox"
+                              checked={styleConfig.exportCompressed}
+                              onChange={e => setStyleConfig(prev => ({ ...prev, exportCompressed: e.target.checked }))}
+                              style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+                            />
+                            导出压缩版图片 (肉眼无损 WebP)
+                          </label>
+                        </div>
+                        <div className="queue-actions">
                           <button
                             className="btn btn-danger"
                             onClick={handleClearQueue}
@@ -1531,9 +1555,9 @@ export default function App() {
                               <Play size={16} /> 开始批量翻译
                             </button>
                           )}
-                        </>
-                      )}
-                    </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   <ImageGrid
