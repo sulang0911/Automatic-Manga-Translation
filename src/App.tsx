@@ -7,7 +7,7 @@ import { ImageViewer } from './components/ImageViewer';
 import { ToastContainer } from './components/Toast';
 import type { ToastMessage } from './components/Toast';
 import { translateImage, getImageDimensions, checkIfImageIsSolidColor } from './utils/translator';
-import { renderTranslatedCanvas, renderErasedCanvas } from './utils/canvasExporter';
+import { renderTranslatedCanvas, renderErasedCanvas, clearErasedCache } from './utils/canvasExporter';
 import JSZip from 'jszip';
 import { 
   Sparkles, 
@@ -348,6 +348,10 @@ export default function App() {
     if (img.fileHandle) {
       try {
         const file = await img.fileHandle.getFile();
+        // Revoke the stale previewUrl before creating a new one to avoid leak
+        if (img.previewUrl && img.previewUrl.startsWith('blob:')) {
+          URL.revokeObjectURL(img.previewUrl);
+        }
         const previewUrl = URL.createObjectURL(file);
         
         let translatedPreviewUrl = img.translatedPreviewUrl;
@@ -361,6 +365,10 @@ export default function App() {
               translatedHandle = await directoryHandle.getFileHandle(`${img.name}_translated.png`);
             }
             const translatedFile = await translatedHandle.getFile();
+            // Revoke old translatedPreviewUrl before creating new
+            if (img.translatedPreviewUrl && img.translatedPreviewUrl.startsWith('blob:')) {
+              URL.revokeObjectURL(img.translatedPreviewUrl);
+            }
             translatedPreviewUrl = URL.createObjectURL(translatedFile);
           } catch (e) {
             try {
@@ -390,6 +398,10 @@ export default function App() {
               erasedHandle = await directoryHandle.getFileHandle(`${img.name}_erased.png`);
             }
             const erasedFile = await erasedHandle.getFile();
+            // Revoke old erasedPreviewUrl before creating new
+            if (img.erasedPreviewUrl && img.erasedPreviewUrl.startsWith('blob:')) {
+              URL.revokeObjectURL(img.erasedPreviewUrl);
+            }
             erasedPreviewUrl = URL.createObjectURL(erasedFile);
           } catch (e) {
             // No erased cache image
@@ -647,67 +659,66 @@ export default function App() {
 
     let updatedCount = 0;
     try {
-      const newImages = await Promise.all(images.map(async (img) => {
-        if (img.status === 'completed' && img.previewUrl && img.blocks && img.blocks.length > 0) {
-          const currentHash = getRenderHash(img.blocks, styleConfig);
-          if (img.lastRenderedHash !== currentHash) {
-            try {
-              let erasedUrl = img.erasedPreviewUrl;
-              let newlyCreatedErased = false;
-              let erasedBlob: Blob | undefined = undefined;
-              if (!erasedUrl) {
-                erasedBlob = await renderErasedCanvas(img.previewUrl, img.blocks, styleConfig);
-                erasedUrl = URL.createObjectURL(erasedBlob);
-                newlyCreatedErased = true;
-              }
+      // Sequential (not concurrent) to avoid holding all canvas bitmaps in memory at once
+      for (const img of images) {
+        if (img.status !== 'completed' || !img.previewUrl || !img.blocks || img.blocks.length === 0) continue;
 
-              const url = await renderTranslatedCanvas(img.previewUrl, img.blocks, styleConfig, erasedUrl);
-              
-              if (img.translatedPreviewUrl) {
-                URL.revokeObjectURL(img.translatedPreviewUrl);
-              }
+        const currentHash = getRenderHash(img.blocks, styleConfig);
+        if (img.lastRenderedHash === currentHash) continue;
 
-              // Update cache files on disk asynchronously
-              if (directoryHandle) {
-                (async () => {
-                  try {
-                    const cacheDirHandle = await directoryHandle.getDirectoryHandle('translation_cache', { create: true });
-                    
-                    if (newlyCreatedErased && erasedBlob) {
-                      const erasedHandle = await cacheDirHandle.getFileHandle(`${img.name}_erased.png`, { create: true });
-                      const erasedWritable = await erasedHandle.createWritable();
-                      await erasedWritable.write(erasedBlob);
-                      await erasedWritable.close();
-                    }
-
-                    const res = await fetch(url);
-                    const blob = await res.blob();
-                    const translatedHandle = await cacheDirHandle.getFileHandle(`${img.name}_translated.png`, { create: true });
-                    const translatedWritable = await translatedHandle.createWritable();
-                    await translatedWritable.write(blob);
-                    await translatedWritable.close();
-                  } catch (fsErr) {
-                    console.error(`Failed to update cache on disk for ${img.name}`, fsErr);
-                  }
-                })();
-              }
-
-              updatedCount++;
-              return { 
-                ...img, 
-                translatedPreviewUrl: url, 
-                erasedPreviewUrl: erasedUrl,
-                lastRenderedHash: currentHash 
-              };
-            } catch (e) {
-              console.error(`Failed to re-render font for ${img.name}`, e);
-            }
+        try {
+          let erasedUrl = img.erasedPreviewUrl;
+          let newlyCreatedErased = false;
+          let erasedBlob: Blob | undefined = undefined;
+          if (!erasedUrl) {
+            erasedBlob = await renderErasedCanvas(img.previewUrl, img.blocks, styleConfig);
+            erasedUrl = URL.createObjectURL(erasedBlob);
+            newlyCreatedErased = true;
           }
-        }
-        return img;
-      }));
 
-      setImages(newImages);
+          const url = await renderTranslatedCanvas(img.previewUrl, img.blocks, styleConfig, erasedUrl);
+
+          // Revoke old URL and update state immediately for this image
+          setImages(prev => prev.map(item => {
+            if (item.id !== img.id) return item;
+            if (item.translatedPreviewUrl) URL.revokeObjectURL(item.translatedPreviewUrl);
+            return { ...item, translatedPreviewUrl: url, erasedPreviewUrl: erasedUrl, lastRenderedHash: currentHash };
+          }));
+
+          // Clear the inpaint cache blob to free memory before next image
+          clearErasedCache();
+
+          // Update cache files on disk asynchronously
+          if (directoryHandle) {
+            (async () => {
+              try {
+                const cacheDirHandle = await directoryHandle.getDirectoryHandle('translation_cache', { create: true });
+                
+                if (newlyCreatedErased && erasedBlob) {
+                  const erasedHandle = await cacheDirHandle.getFileHandle(`${img.name}_erased.png`, { create: true });
+                  const erasedWritable = await erasedHandle.createWritable();
+                  await erasedWritable.write(erasedBlob);
+                  await erasedWritable.close();
+                }
+
+                const res = await fetch(url);
+                const blob = await res.blob();
+                const translatedHandle = await cacheDirHandle.getFileHandle(`${img.name}_translated.png`, { create: true });
+                const translatedWritable = await translatedHandle.createWritable();
+                await translatedWritable.write(blob);
+                await translatedWritable.close();
+              } catch (fsErr) {
+                console.error(`Failed to update cache on disk for ${img.name}`, fsErr);
+              }
+            })();
+          }
+
+          updatedCount++;
+        } catch (e) {
+          console.error(`Failed to re-render font for ${img.name}`, e);
+        }
+      }
+
       addToast(`所有字体渲染完成！共更新了 ${updatedCount} 张图片预览样式。`, 'success');
     } catch (err) {
       console.error('Failed to render all fonts', err);
@@ -1089,6 +1100,10 @@ export default function App() {
           hasOcrCache: hasOcrCache || item.hasOcrCache,
           hasErasedCache: hasErasedCache || item.hasErasedCache
         } : item));
+
+        // Free the inpaint Blob from module cache after each image completes
+        // to prevent accumulation of large image Blobs in memory during batch
+        clearErasedCache();
 
       } catch (err) {
         console.error(err);

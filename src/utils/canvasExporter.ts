@@ -10,6 +10,11 @@ interface ErasedCacheEntry {
 
 let lastErasedCache: ErasedCacheEntry | null = null;
 
+/** Call this between batch images to free the cached inpaint Blob from memory */
+export const clearErasedCache = (): void => {
+  lastErasedCache = null;
+};
+
 export const getFontFallbackString = (fontFamily: string): string => {
   switch (fontFamily) {
     case 'Microsoft YaHei':
@@ -412,6 +417,9 @@ export const renderTranslatedCanvas = async (
         const mimeType = exportCompressed ? 'image/webp' : 'image/png';
         const quality = exportCompressed ? 0.85 : undefined;
         canvas.toBlob((blob) => {
+          // Release canvas GPU texture memory immediately after Blob is created
+          canvas.width = 0;
+          canvas.height = 0;
           if (!blob) {
             reject(new Error('Canvas export failed'));
             return;
@@ -420,6 +428,8 @@ export const renderTranslatedCanvas = async (
           resolve(url);
         }, mimeType, quality);
       } catch (err) {
+        canvas.width = 0;
+        canvas.height = 0;
         reject(err);
       }
     };
@@ -556,11 +566,14 @@ export const renderErasedCanvas = async (
       
       try {
         canvas.toBlob((blob) => {
+          // Release canvas GPU texture memory immediately
+          canvas.width = 0;
+          canvas.height = 0;
           if (!blob) {
             reject(new Error('Canvas export failed'));
             return;
           }
-          // Save to cache
+          // Save to cache (replacing old entry — old Blob gets GC'd)
           lastErasedCache = {
             originalImageSrc,
             blocksHash: blocksJson,
@@ -570,6 +583,8 @@ export const renderErasedCanvas = async (
           resolve(blob);
         }, 'image/png');
       } catch (err) {
+        canvas.width = 0;
+        canvas.height = 0;
         reject(err);
       }
     };
