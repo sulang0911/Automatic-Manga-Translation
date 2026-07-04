@@ -874,7 +874,7 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
                               right: '-4px',
                               width: '10px',
                               height: '10px',
-                              backgroundColor: 'var(--color-primary, #6366f1)',
+                              backgroundColor: 'var(--color-primary, #38bdf8)',
                               border: '1.5px solid #ffffff',
                               borderRadius: '50%',
                               cursor: 'nwse-resize',

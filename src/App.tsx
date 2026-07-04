@@ -1265,7 +1265,7 @@ export default function App() {
                         borderRadius: 'var(--radius-sm)',
                         fontSize: '0.8rem',
                         color: isActive ? 'var(--text-main)' : 'var(--text-muted)',
-                        background: isActive ? 'rgba(99, 102, 241, 0.12)' : 'transparent',
+                        background: isActive ? 'rgba(56, 189, 248, 0.1)' : 'transparent',
                         borderLeft: isActive ? '3px solid var(--color-primary)' : '3px solid transparent',
                         cursor: 'pointer',
                         textDecoration: 'none',
@@ -1320,7 +1320,7 @@ export default function App() {
       </aside>
 
       {/* Main Content Pane */}
-      <main className="main-content">
+      <div className="main-content">
         <header className="page-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: '1.25rem' }}>
             {!showSidebar && (
@@ -1365,6 +1365,7 @@ export default function App() {
           </button>
         </header>
 
+        <main>
         {/* Dashboard Grid Layout */}
         <div className={`dashboard-grid ${!showSettings ? 'full-width' : ''}`}>
           {/* Main workspace center */}
@@ -1374,7 +1375,7 @@ export default function App() {
             {!selectedImageId && (
               <div className="stats-grid">
                 <div className="glass-card" style={{ padding: '1rem 1.25rem', display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                  <div style={{ background: 'rgba(255,255,255,0.03)', padding: '0.5rem', borderRadius: '8px' }}>
+                  <div style={{ background: 'rgba(56,189,248,0.1)', padding: '0.5rem', borderRadius: '6px' }}>
                     <BarChart3 size={20} className="text-primary" style={{ color: 'var(--color-primary)' }} />
                   </div>
                   <div>
@@ -1384,7 +1385,7 @@ export default function App() {
                 </div>
 
                 <div className="glass-card" style={{ padding: '1rem 1.25rem', display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                  <div style={{ background: 'rgba(245,158,11,0.1)', padding: '0.5rem', borderRadius: '8px' }}>
+                  <div style={{ background: 'rgba(251,191,36,0.1)', padding: '0.5rem', borderRadius: '6px' }}>
                     <Clock size={20} style={{ color: 'var(--color-warning)' }} />
                   </div>
                   <div>
@@ -1394,7 +1395,7 @@ export default function App() {
                 </div>
 
                 <div className="glass-card" style={{ padding: '1rem 1.25rem', display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                  <div style={{ background: 'rgba(16,185,129,0.1)', padding: '0.5rem', borderRadius: '8px' }}>
+                  <div style={{ background: 'rgba(52,211,153,0.1)', padding: '0.5rem', borderRadius: '6px' }}>
                     <CheckCircle size={20} style={{ color: 'var(--color-success)' }} />
                   </div>
                   <div>
@@ -1404,7 +1405,7 @@ export default function App() {
                 </div>
 
                 <div className="glass-card" style={{ padding: '1rem 1.25rem', display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                  <div style={{ background: 'rgba(239,68,68,0.1)', padding: '0.5rem', borderRadius: '8px' }}>
+                  <div style={{ background: 'rgba(248,113,113,0.1)', padding: '0.5rem', borderRadius: '6px' }}>
                     <AlertCircle size={20} style={{ color: 'var(--color-danger)' }} />
                   </div>
                   <div>
@@ -1471,7 +1472,7 @@ export default function App() {
                             style={{ 
                               padding: '2px 8px', 
                               borderRadius: '4px',
-                              background: queueViewMode === 'list' ? 'rgba(99, 102, 241, 0.15)' : 'transparent',
+                              background: queueViewMode === 'list' ? 'rgba(56, 189, 248, 0.12)' : 'transparent',
                               color: queueViewMode === 'list' ? 'var(--text-main)' : 'var(--text-muted)',
                               border: 'none',
                               cursor: 'pointer',
@@ -1491,7 +1492,7 @@ export default function App() {
                             style={{ 
                               padding: '2px 8px', 
                               borderRadius: '4px',
-                              background: queueViewMode === 'grid' ? 'rgba(99, 102, 241, 0.15)' : 'transparent',
+                              background: queueViewMode === 'grid' ? 'rgba(56, 189, 248, 0.12)' : 'transparent',
                               color: queueViewMode === 'grid' ? 'var(--text-main)' : 'var(--text-muted)',
                               border: 'none',
                               cursor: 'pointer',
@@ -1599,7 +1600,8 @@ export default function App() {
             </div>
           )}
         </div>
-      </main>
+        </main>
+      </div>
 
       {/* Floating Notifications */}
       <ToastContainer toasts={toasts} removeToast={removeToast} />

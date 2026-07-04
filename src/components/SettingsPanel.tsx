@@ -447,9 +447,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                     display: 'flex',
                     alignItems: 'flex-start',
                     gap: '8px',
-                    backgroundColor: testResult.status === 'success' ? 'rgba(16, 185, 129, 0.08)' : 'rgba(239, 68, 68, 0.08)',
-                    borderColor: testResult.status === 'success' ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)',
-                    color: testResult.status === 'success' ? 'var(--color-success)' : '#fca5a5'
+                    backgroundColor: testResult.status === 'success' ? 'rgba(52, 211, 153, 0.08)' : 'rgba(248, 113, 113, 0.08)',
+                    borderColor: testResult.status === 'success' ? 'rgba(52, 211, 153, 0.2)' : 'rgba(248, 113, 113, 0.2)',
+                    color: testResult.status === 'success' ? 'var(--color-success)' : 'var(--color-danger)'
                   }}
                 >
                   <div style={{ flexGrow: 1, wordBreak: 'break-all', lineHeight: '1.4' }}>
