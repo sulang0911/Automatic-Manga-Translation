@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import type { TranslateConfig, StyleConfig, ImageItem, TranslationBlock } from './types';
 import { SettingsPanel } from './components/SettingsPanel';
 import { UploadArea } from './components/UploadArea';
@@ -89,9 +89,14 @@ export default function App() {
   const cancelRef = useRef(false);
   const imagesRef = useRef(images);
   const debounceTimeouts = useRef<{ [key: string]: NodeJS.Timeout }>({});
+  // Track the count of fileHandle-only (unresolved) items to avoid triggering
+  // the lazy-load effect on every progress update (which only changes img.status)
+  const unresolvedCountRef = useRef(0);
 
   useEffect(() => {
     imagesRef.current = images;
+    const newCount = images.filter(img => img.fileHandle && !img.previewUrl).length;
+    unresolvedCountRef.current = newCount;
   }, [images]);
 
   useEffect(() => {
@@ -109,16 +114,20 @@ export default function App() {
     localStorage.setItem(LOCAL_STORAGE_KEY_STYLE, JSON.stringify(styleConfig));
   }, [styleConfig]);
 
-  // Background preloader for Grid view to load image details in small non-blocking batches
+  // Background preloader for Grid view: only re-runs when the count of
+  // unresolved (fileHandle-only) images changes, NOT on every progress update
+  const unresolvedCount = images.filter(img => img.fileHandle && !img.previewUrl).length;
   useEffect(() => {
     if (queueViewMode !== 'grid') return;
+    if (unresolvedCount === 0) return;
 
     let active = true;
     const loadUnresolved = async () => {
-      const unresolved = images.filter(img => img.fileHandle && !img.previewUrl);
+      // Read snapshot directly from ref to avoid stale closure over `images`
+      const unresolved = imagesRef.current.filter(img => img.fileHandle && !img.previewUrl);
       if (unresolved.length === 0) return;
 
-      const batchSize = 5;
+      const batchSize = 3; // reduced from 5 to lower peak memory
       for (let i = 0; i < unresolved.length; i += batchSize) {
         if (!active) break;
         const batch = unresolved.slice(i, i + batchSize);
@@ -134,7 +143,7 @@ export default function App() {
           return prev.map(img => map.has(img.id) ? map.get(img.id)! : img);
         });
 
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(resolve => setTimeout(resolve, 150));
       }
     };
 
@@ -143,90 +152,76 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [queueViewMode, images.length]);
+  }, [queueViewMode, unresolvedCount]);
 
-  // Update translated preview only for the currently active/selected image when style changes
+  // Update translated preview only for the currently active/selected image when style changes.
+  // Debounced by 500ms to avoid thrashing canvas on every slider drag tick.
   useEffect(() => {
-    let active = true;
     if (!selectedImageId) return;
 
-    const updateActivePreview = async () => {
-      const img = images.find(i => i.id === selectedImageId);
+    const timerId = setTimeout(async () => {
+      const img = imagesRef.current.find(i => i.id === selectedImageId);
       if (!img || img.status !== 'completed' || !img.previewUrl || !img.blocks || img.blocks.length === 0) return;
 
       const currentHash = getRenderHash(img.blocks, styleConfig);
-      if (img.lastRenderedHash !== currentHash) {
-        try {
-          let erasedUrl = img.erasedPreviewUrl;
-          let newlyCreatedErased = false;
+      if (img.lastRenderedHash === currentHash) return;
 
-          if (!erasedUrl) {
-            const erasedBlob = await renderErasedCanvas(img.previewUrl, img.blocks, styleConfig);
-            erasedUrl = URL.createObjectURL(erasedBlob);
-            newlyCreatedErased = true;
-          }
+      try {
+        let erasedUrl = img.erasedPreviewUrl;
+        let newlyCreatedErased = false;
 
-          const url = await renderTranslatedCanvas(img.previewUrl, img.blocks, styleConfig, erasedUrl);
-          
-          if (!active) {
-            URL.revokeObjectURL(url);
-            if (newlyCreatedErased && erasedUrl) URL.revokeObjectURL(erasedUrl);
-            return;
-          }
-
-          setImages(prev => prev.map(item => {
-            if (item.id === selectedImageId) {
-              if (item.translatedPreviewUrl) {
-                URL.revokeObjectURL(item.translatedPreviewUrl);
-              }
-
-              // Write back updated cache files to disk asynchronously
-              if (directoryHandle) {
-                (async () => {
-                  try {
-                    const cacheDirHandle = await directoryHandle.getDirectoryHandle('translation_cache', { create: true });
-                    
-                    if (newlyCreatedErased && erasedUrl) {
-                      const erasedRes = await fetch(erasedUrl);
-                      const erasedBlob = await erasedRes.blob();
-                      const erasedHandle = await cacheDirHandle.getFileHandle(`${item.name}_erased.png`, { create: true });
-                      const erasedWritable = await erasedHandle.createWritable();
-                      await erasedWritable.write(erasedBlob);
-                      await erasedWritable.close();
-                    }
-
-                    const res = await fetch(url);
-                    const blob = await res.blob();
-                    const translatedHandle = await cacheDirHandle.getFileHandle(`${item.name}_translated.png`, { create: true });
-                    const translatedWritable = await translatedHandle.createWritable();
-                    await translatedWritable.write(blob);
-                    await translatedWritable.close();
-                  } catch (fsErr) {
-                    console.error('Failed to sync style updates to local disk cache', fsErr);
-                  }
-                })();
-              }
-
-              return { 
-                ...item, 
-                translatedPreviewUrl: url, 
-                erasedPreviewUrl: erasedUrl,
-                lastRenderedHash: currentHash 
-              };
-            }
-            return item;
-          }));
-        } catch (e) {
-          console.error('Failed to update active preview thumbnail', e);
+        if (!erasedUrl) {
+          const erasedBlob = await renderErasedCanvas(img.previewUrl, img.blocks, styleConfig);
+          erasedUrl = URL.createObjectURL(erasedBlob);
+          newlyCreatedErased = true;
         }
+
+        const url = await renderTranslatedCanvas(img.previewUrl, img.blocks, styleConfig, erasedUrl);
+
+        setImages(prev => prev.map(item => {
+          if (item.id !== selectedImageId) return item;
+          if (item.translatedPreviewUrl) URL.revokeObjectURL(item.translatedPreviewUrl);
+
+          // Write back updated cache files to disk asynchronously
+          if (directoryHandle) {
+            (async () => {
+              try {
+                const cacheDirHandle = await directoryHandle.getDirectoryHandle('translation_cache', { create: true });
+                
+                if (newlyCreatedErased && erasedUrl) {
+                  const erasedRes = await fetch(erasedUrl);
+                  const erasedBlob = await erasedRes.blob();
+                  const erasedHandle = await cacheDirHandle.getFileHandle(`${item.name}_erased.png`, { create: true });
+                  const erasedWritable = await erasedHandle.createWritable();
+                  await erasedWritable.write(erasedBlob);
+                  await erasedWritable.close();
+                }
+
+                const res = await fetch(url);
+                const blob = await res.blob();
+                const translatedHandle = await cacheDirHandle.getFileHandle(`${item.name}_translated.png`, { create: true });
+                const translatedWritable = await translatedHandle.createWritable();
+                await translatedWritable.write(blob);
+                await translatedWritable.close();
+              } catch (fsErr) {
+                console.error('Failed to sync style updates to local disk cache', fsErr);
+              }
+            })();
+          }
+
+          return { 
+            ...item, 
+            translatedPreviewUrl: url, 
+            erasedPreviewUrl: erasedUrl,
+            lastRenderedHash: currentHash 
+          };
+        }));
+      } catch (e) {
+        console.error('Failed to update active preview thumbnail', e);
       }
-    };
+    }, 500); // 500ms debounce
 
-    updateActivePreview();
-
-    return () => {
-      active = false;
-    };
+    return () => clearTimeout(timerId);
   }, [styleConfig, selectedImageId]);
 
   const addToast = (text: string, type: ToastMessage['type'] = 'info') => {

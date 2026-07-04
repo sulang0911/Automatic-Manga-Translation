@@ -90,7 +90,7 @@ export const ImageGrid: React.FC<ImageGridProps> = ({
                   style={{
                     borderBottom: '1px solid rgba(255,255,255,0.03)',
                     cursor: 'pointer',
-                    background: isSelected ? 'rgba(99, 102, 241, 0.12)' : 'transparent',
+                    background: isSelected ? 'var(--color-primary-dim)' : 'transparent',
                     borderLeft: isSelected ? '3px solid var(--color-primary)' : '3px solid transparent',
                     transition: 'var(--transition-fast)'
                   }}
@@ -116,11 +116,11 @@ export const ImageGrid: React.FC<ImageGridProps> = ({
                             alignItems: 'center', 
                             gap: '4px', 
                             fontSize: '0.65rem', 
-                            background: 'rgba(99, 102, 241, 0.15)', 
-                            color: '#a5b4fc', 
+                            background: 'var(--color-primary-dim)', 
+                            color: 'var(--color-primary)', 
                             padding: '2px 6px', 
                             borderRadius: '4px',
-                            border: '1px solid rgba(99, 102, 241, 0.25)' 
+                            border: '1px solid rgba(56, 189, 248, 0.25)' 
                           }}
                           title="已加载本地 OCR 及译文数据 JSON"
                         >
@@ -134,11 +134,11 @@ export const ImageGrid: React.FC<ImageGridProps> = ({
                             alignItems: 'center', 
                             gap: '4px', 
                             fontSize: '0.65rem', 
-                            background: 'rgba(16, 185, 129, 0.15)', 
-                            color: '#6ee7b7', 
+                            background: 'var(--color-success-dim)', 
+                            color: 'var(--color-success)', 
                             padding: '2px 6px', 
                             borderRadius: '4px',
-                            border: '1px solid rgba(16, 185, 129, 0.25)' 
+                            border: '1px solid rgba(52, 211, 153, 0.25)' 
                           }}
                           title="已关联本地去字后底图缓存"
                         >
