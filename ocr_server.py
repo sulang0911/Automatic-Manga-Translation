@@ -493,6 +493,32 @@ def inpaint_image():
     response.headers.set('Content-Type', 'image/png')
     return response
 
+@app.route('/translate_proxy', methods=['POST'])
+def translate_proxy():
+    import requests
+    try:
+        data = request.get_json()
+        target_url = data.get('url')
+        headers = data.get('headers', {})
+        body = data.get('body')
+        
+        # Forward request to custom/aliyun API endpoint
+        # Remove host/origin/referer from headers to avoid server side restrictions
+        headers_to_send = {}
+        for k, v in headers.items():
+            if k.lower() not in ['host', 'origin', 'referer', 'content-length']:
+                headers_to_send[k] = v
+        
+        response = requests.post(target_url, headers=headers_to_send, json=body, timeout=120.0)
+        
+        try:
+            resp_json = response.json()
+            return jsonify(resp_json), response.status_code
+        except Exception:
+            return response.text, response.status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/health', methods=['GET'])
 def health():
     inpaint_active = check_inpaint_server_active()
@@ -524,5 +550,5 @@ def health():
     })
 
 if __name__ == '__main__':
-    print('[*] 正在 127.0.0.1:5000 启动本地 OCR 服务...')
-    app.run(host='127.0.0.1', port=5000, debug=False)
+    print('[*] 正在 0.0.0.0:5000 启动本地 OCR 服务...')
+    app.run(host='0.0.0.0', port=5000, debug=False)

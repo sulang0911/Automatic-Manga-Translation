@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import type { TranslateConfig, StyleConfig, APIProvider } from '../types';
 import { Eye, EyeOff, Settings, Sparkles, Sliders, Type, Palette, Loader2, Activity } from 'lucide-react';
 import { testApiConnection } from '../utils/translator';
+import { getApiBaseUrl } from '../utils/config';
 
 
 interface SettingsPanelProps {
@@ -58,6 +59,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   const [activeTab, setActiveTab] = useState<'api' | 'style'>('api');
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ status: 'success' | 'error'; message: string } | null>(null);
+  
+  // Local state for API configurations, so they are not saved instantly on typing
+  const [localConfig, setLocalConfig] = useState<TranslateConfig>(config);
+  const [isSaved, setIsSaved] = useState(false);
+
+  useEffect(() => {
+    setLocalConfig(config);
+  }, [config]);
+
   const [ocrStatus, setOcrStatus] = useState<{
     status: 'online' | 'offline' | 'loading';
     engine: string;
@@ -74,7 +84,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     let active = true;
     const checkStatus = async () => {
       try {
-        const res = await fetch('http://127.0.0.1:5000/health');
+        const res = await fetch(`${getApiBaseUrl()}/health`);
         if (res.ok) {
           const data = await res.json();
           if (active) {
@@ -109,7 +119,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   }, []);
 
   const handleTestConnection = async () => {
-    if (!config.apiKey && config.provider !== 'custom') {
+    if (!localConfig.apiKey && localConfig.provider !== 'custom') {
       setTestResult({ status: 'error', message: '请填写 API Key 后再进行测试' });
       return;
     }
@@ -117,7 +127,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     setIsTesting(true);
     setTestResult(null);
     try {
-      const resp = await testApiConnection(config);
+      const resp = await testApiConnection(localConfig);
       setTestResult({
         status: 'success',
         message: `连接成功！模型响应: "${resp}"`
@@ -138,17 +148,27 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     else if (provider === 'deepseek') defaultModel = 'deepseek-chat';
     else if (provider === 'custom') defaultModel = 'gpt-4o-mini';
 
-    setConfig(prev => ({
+    setLocalConfig(prev => ({
       ...prev,
       provider,
       model: defaultModel,
       // Clear endpoint override if switching back to official hosts, or set defaults
       customEndpoint: provider === 'custom' ? '' : prev.customEndpoint
     }));
+    setIsSaved(false);
   };
 
-  const updateConfig = (key: keyof TranslateConfig, value: any) => {
-    setConfig(prev => ({ ...prev, [key]: value }));
+  const updateLocalConfig = (key: keyof TranslateConfig, value: any) => {
+    setLocalConfig(prev => ({ ...prev, [key]: value }));
+    setIsSaved(false);
+  };
+
+  const handleSaveConfig = () => {
+    setConfig(localConfig);
+    setIsSaved(true);
+    setTimeout(() => {
+      setIsSaved(false);
+    }, 2000);
   };
 
   const updateStyle = (key: keyof StyleConfig, value: any) => {
@@ -240,28 +260,28 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
             <div className="provider-selector" style={{ marginBottom: 0 }}>
               <button
                 type="button"
-                className={`provider-btn ${config.provider === 'gemini' ? 'active' : ''}`}
+                className={`provider-btn ${localConfig.provider === 'gemini' ? 'active' : ''}`}
                 onClick={() => handleProviderChange('gemini')}
               >
                 Gemini
               </button>
               <button
                 type="button"
-                className={`provider-btn ${config.provider === 'openai' ? 'active' : ''}`}
+                className={`provider-btn ${localConfig.provider === 'openai' ? 'active' : ''}`}
                 onClick={() => handleProviderChange('openai')}
               >
                 OpenAI
               </button>
               <button
                 type="button"
-                className={`provider-btn ${config.provider === 'deepseek' ? 'active' : ''}`}
+                className={`provider-btn ${localConfig.provider === 'deepseek' ? 'active' : ''}`}
                 onClick={() => handleProviderChange('deepseek')}
               >
                 DeepSeek
               </button>
               <button
                 type="button"
-                className={`provider-btn ${config.provider === 'custom' ? 'active' : ''}`}
+                className={`provider-btn ${localConfig.provider === 'custom' ? 'active' : ''}`}
                 onClick={() => handleProviderChange('custom')}
               >
                 自定义 / 代理
@@ -275,9 +295,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               <input
                 type={showKey ? 'text' : 'password'}
                 className="form-input"
-                placeholder={config.provider === 'gemini' ? 'AIzaSy...' : config.provider === 'deepseek' ? 'sk-...' : 'sk-...'}
-                value={config.apiKey}
-                onChange={e => updateConfig('apiKey', e.target.value)}
+                placeholder={localConfig.provider === 'gemini' ? 'AIzaSy...' : localConfig.provider === 'deepseek' ? 'sk-...' : 'sk-...'}
+                value={localConfig.apiKey}
+                onChange={e => updateLocalConfig('apiKey', e.target.value)}
                 style={{ paddingRight: '2.5rem' }}
               />
               <button
@@ -301,15 +321,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
             </div>
           </div>
 
-          {config.provider === 'custom' && (
+          {localConfig.provider === 'custom' && (
             <div className="form-group">
               <label className="form-label">API 代理端点 (Endpoint)</label>
               <input
                 type="text"
                 className="form-input"
                 placeholder="https://api.yourproxy.com/v1"
-                value={config.customEndpoint}
-                onChange={e => updateConfig('customEndpoint', e.target.value)}
+                value={localConfig.customEndpoint}
+                onChange={e => updateLocalConfig('customEndpoint', e.target.value)}
               />
               <span className="switch-sublabel" style={{ marginTop: '0.25rem', display: 'block' }}>
                 支持 OpenAI 格式的代理或本地大模型接口（如 Ollama, DeepSeek API）。
@@ -320,31 +340,31 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           <div className="form-row">
             <div className="form-group">
               <label className="form-label">翻译模型 (Model)</label>
-              {config.provider === 'gemini' ? (
+              {localConfig.provider === 'gemini' ? (
                 <select
                   className="form-select"
-                  value={config.model}
-                  onChange={e => updateConfig('model', e.target.value)}
+                  value={localConfig.model}
+                  onChange={e => updateLocalConfig('model', e.target.value)}
                 >
                   <option value="gemini-2.5-flash">gemini-2.5-flash (推荐 - 快速)</option>
                   <option value="gemini-2.5-pro">gemini-2.5-pro (高质量 - 慢)</option>
                   <option value="gemini-1.5-flash">gemini-1.5-flash (稳定)</option>
                   <option value="gemini-1.5-pro">gemini-1.5-pro (精细)</option>
                 </select>
-              ) : config.provider === 'openai' ? (
+              ) : localConfig.provider === 'openai' ? (
                 <select
                   className="form-select"
-                  value={config.model}
-                  onChange={e => updateConfig('model', e.target.value)}
+                  value={localConfig.model}
+                  onChange={e => updateLocalConfig('model', e.target.value)}
                 >
                   <option value="gpt-4o-mini">gpt-4o-mini (推荐 - 性价比)</option>
                   <option value="gpt-4o">gpt-4o (全能旗舰)</option>
                 </select>
-              ) : config.provider === 'deepseek' ? (
+              ) : localConfig.provider === 'deepseek' ? (
                 <select
                   className="form-select"
-                  value={config.model}
-                  onChange={e => updateConfig('model', e.target.value)}
+                  value={localConfig.model}
+                  onChange={e => updateLocalConfig('model', e.target.value)}
                 >
                   <option value="deepseek-chat">deepseek-chat (DeepSeek V3 / 极速)</option>
                   <option value="deepseek-reasoner">deepseek-reasoner (DeepSeek R1 / 推理)</option>
@@ -354,8 +374,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                   type="text"
                   className="form-input"
                   placeholder="deepseek-chat"
-                  value={config.model}
-                  onChange={e => updateConfig('model', e.target.value)}
+                  value={localConfig.model}
+                  onChange={e => updateLocalConfig('model', e.target.value)}
                 />
               )}
             </div>
@@ -364,8 +384,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               <label className="form-label">图片文字语言 (Source Language)</label>
               <select
                 className="form-select"
-                value={config.sourceLang}
-                onChange={e => updateConfig('sourceLang', e.target.value)}
+                value={localConfig.sourceLang}
+                onChange={e => updateLocalConfig('sourceLang', e.target.value)}
               >
                 {SOURCE_LANGUAGES.map(lang => (
                   <option key={lang.code} value={lang.code}>
@@ -381,8 +401,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               <label className="form-label">目标翻译语言 (Target Language)</label>
               <select
                 className="form-select"
-                value={config.targetLang}
-                onChange={e => updateConfig('targetLang', e.target.value)}
+                value={localConfig.targetLang}
+                onChange={e => updateLocalConfig('targetLang', e.target.value)}
               >
                 {LANGUAGES.map(lang => (
                   <option key={lang.code} value={lang.code}>
@@ -392,24 +412,34 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               </select>
             </div>
 
-            <div className="form-group" style={{ marginTop: '2rem' }}>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                style={{ width: '100%', gap: '8px' }}
-                onClick={handleTestConnection}
-                disabled={isTesting}
-              >
-                {isTesting ? (
-                  <Loader2 size={16} className="pulse" style={{ animation: 'spin 1.5s linear infinite' }} />
-                ) : null}
-                {isTesting ? '正在发送测试请求...' : '测试大模型连接'}
-              </button>
+            <div className="form-group" style={{ marginTop: '2rem', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{ flex: 1, gap: '8px', padding: '0.5rem' }}
+                  onClick={handleTestConnection}
+                  disabled={isTesting}
+                >
+                  {isTesting ? (
+                    <Loader2 size={16} className="pulse" style={{ animation: 'spin 1.5s linear infinite' }} />
+                  ) : null}
+                  {isTesting ? '测试中...' : '测试大模型连接'}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  style={{ flex: 1, gap: '8px', padding: '0.5rem', backgroundColor: isSaved ? 'var(--color-success)' : undefined }}
+                  onClick={handleSaveConfig}
+                >
+                  {isSaved ? '已保存并应用！' : '保存 API 设置'}
+                </button>
+              </div>
 
               {testResult && (
                 <div 
                   style={{ 
-                    marginTop: '1rem', 
+                    marginTop: '0.5rem', 
                     padding: '0.75rem 1rem', 
                     borderRadius: 'var(--radius-md)', 
                     fontSize: '0.85rem',

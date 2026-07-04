@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import type { ImageItem, TranslationBlock, StyleConfig } from '../types';
+import { getApiBaseUrl } from '../utils/config';
 import { renderTranslatedCanvas, renderErasedCanvas, wrapText, getFontFallbackString } from '../utils/canvasExporter';
 import { 
   Download, 
@@ -305,7 +306,7 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
       }
       try {
         setDebugStatus('Checking local server health...');
-        const checkOcr = await fetch('http://127.0.0.1:5000/health').then(r => r.ok).catch(() => false);
+        const checkOcr = await fetch(`${getApiBaseUrl()}/health`).then(r => r.ok).catch(() => false);
         if (!checkOcr) {
           setErasedUrl(null);
           setDebugStatus('Local server is offline');

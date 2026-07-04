@@ -1,6 +1,7 @@
 import Tesseract from 'tesseract.js';
 import type { TranslationBlock } from '../types';
 import { getImageDimensions } from './translator';
+import { getApiBaseUrl } from './config';
 
 // Estimates text and background colors inside a bounding box of an image
 export const analyzeBlockColors = (
@@ -132,7 +133,7 @@ const checkLocalOcrServer = async (): Promise<boolean> => {
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 5000); // 5000ms generous ping for GPU startup
-    const res = await fetch('http://127.0.0.1:5000/health', { signal: controller.signal });
+    const res = await fetch(`${getApiBaseUrl()}/health`, { signal: controller.signal });
     clearTimeout(timeoutId);
     if (res.ok) {
       const data = await res.json();
@@ -177,7 +178,7 @@ export const performLocalOCR = async (
         const formData = new FormData();
         formData.append('image', file);
         
-        const res = await fetch('http://127.0.0.1:5000/ocr', {
+        const res = await fetch(`${getApiBaseUrl()}/ocr`, {
           method: 'POST',
           body: formData
         });

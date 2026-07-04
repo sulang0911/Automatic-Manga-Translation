@@ -1,4 +1,5 @@
 import type { TranslationBlock, StyleConfig } from '../types';
+import { getApiBaseUrl } from './config';
 
 interface ErasedCacheEntry {
   originalImageSrc: string;
@@ -91,7 +92,7 @@ const checkServerActive = async (): Promise<boolean> => {
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 600);
-    const res = await fetch('http://127.0.0.1:5000/health', { signal: controller.signal });
+    const res = await fetch(`${getApiBaseUrl()}/health`, { signal: controller.signal });
     clearTimeout(timeoutId);
     if (res.ok) {
       const data = await res.json();
@@ -118,6 +119,7 @@ export const renderTranslatedCanvas = async (
     
     if (erasedImageSrc) {
       backgroundSrc = erasedImageSrc;
+      isServerActive = true; // Fix: We have the erased image, so don't draw flat masks on top
     } else {
       try {
         isServerActive = await checkServerActive();
@@ -462,7 +464,7 @@ export const renderErasedCanvas = async (
       formData.append('blocks', JSON.stringify(blocks));
       formData.append('style', JSON.stringify(style));
       
-      const inpaintRes = await fetch('http://127.0.0.1:5000/inpaint', {
+      const inpaintRes = await fetch(`${getApiBaseUrl()}/inpaint`, {
         method: 'POST',
         body: formData
       });

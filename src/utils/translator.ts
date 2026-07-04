@@ -1,5 +1,30 @@
 import type { ImageItem, TranslateConfig, TranslationBlock } from '../types';
 import { performLocalOCR } from './ocr';
+import { getApiBaseUrl } from './config';
+
+// Helper function to send API requests via the local Python translation proxy to bypass CORS
+const fetchViaProxy = async (url: string, options: RequestInit): Promise<Response> => {
+  try {
+    const proxyUrl = `${getApiBaseUrl()}/translate_proxy`;
+    const bodyStr = typeof options.body === 'string' ? JSON.parse(options.body) : options.body;
+    
+    const res = await fetch(proxyUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        url,
+        headers: options.headers || {},
+        body: bodyStr
+      })
+    });
+    return res;
+  } catch (err) {
+    console.warn('Proxy fetch failed, falling back to direct fetch:', err);
+    return fetch(url, options);
+  }
+};
 
 // Helper to extract and parse JSON from a response string robustly
 const extractJson = (text: string): any => {
@@ -221,7 +246,7 @@ Return your results in a structured JSON object strictly conforming to the reque
     headers['Authorization'] = `Bearer ${apiKey}`;
   }
 
-  const response = await fetch(url, {
+  const response = await fetchViaProxy(url, {
     method: 'POST',
     headers,
     body: JSON.stringify(requestBody)
@@ -315,7 +340,7 @@ const translateWithOpenAI = async (
     temperature: 0.1
   };
 
-  const response = await fetch(url, {
+  const response = await fetchViaProxy(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -404,7 +429,7 @@ Return ONLY the raw JSON object. Do not include markdown code block syntax.`;
     temperature: 0.1
   };
 
-  const response = await fetch(endpoint, {
+  const response = await fetchViaProxy(endpoint, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -452,7 +477,7 @@ const checkLocalOcrServerActive = async (): Promise<boolean> => {
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 5000); // 5000ms generous ping for GPU startup
-    const res = await fetch('http://127.0.0.1:5000/health', { signal: controller.signal });
+    const res = await fetch(`${getApiBaseUrl()}/health`, { signal: controller.signal });
     clearTimeout(timeoutId);
     if (res.ok) {
       const data = await res.json();
@@ -537,7 +562,7 @@ ${JSON.stringify(blocks.map(b => ({
     headers['Authorization'] = `Bearer ${apiKey}`;
   }
 
-  const response = await fetch(url, {
+  const response = await fetchViaProxy(url, {
     method: 'POST',
     headers,
     body: JSON.stringify(requestBody)
@@ -617,7 +642,7 @@ Return ONLY the raw JSON object. Do not include markdown code block syntax.`;
     temperature: 0.1
   };
 
-  const response = await fetch(url, {
+  const response = await fetchViaProxy(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -746,7 +771,7 @@ export const testApiConnection = async (config: TranslateConfig): Promise<string
       headers['Authorization'] = `Bearer ${apiKey}`;
     }
 
-    const response = await fetch(url, {
+    const response = await fetchViaProxy(url, {
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -779,7 +804,7 @@ export const testApiConnection = async (config: TranslateConfig): Promise<string
       }
     }
 
-    const response = await fetch(url, {
+    const response = await fetchViaProxy(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
