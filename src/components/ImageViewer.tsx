@@ -840,7 +840,21 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
                       fontWeight: styleConfig.fontBold ? 'bold' : 'normal',
                       fontStyle: styleConfig.fontItalic ? 'italic' : 'normal',
                       textShadow: styleConfig.textShadow ? '1px 1px 2px rgba(0,0,0,0.8)' : 'none',
-                      WebkitTextStroke: styleConfig.textStroke ? `${styleConfig.strokeWidth}px ${styleConfig.strokeColor}` : 'none',
+                      WebkitTextStroke: (() => {
+                        const mode = styleConfig.strokeMode ?? (styleConfig.textStroke ? 'manual' : 'auto');
+                        if (mode === 'auto') {
+                          const hex = textColor.replace('#', '');
+                          const r = parseInt(hex.slice(0,2),16)||0;
+                          const g = parseInt(hex.slice(2,4),16)||0;
+                          const b2 = parseInt(hex.slice(4,6),16)||0;
+                          const lum = 0.2126*r + 0.7152*g + 0.0722*b2;
+                          const autoColor = lum > 140 ? 'rgba(0,0,0,0.85)' : 'rgba(255,255,255,0.85)';
+                          const autoW = Math.min(2.5, Math.max(0.3, fontSize * 0.06));
+                          return `${autoW}px ${autoColor}`;
+                        }
+                        if (mode === 'manual') return `${styleConfig.strokeWidth}px ${styleConfig.strokeColor}`;
+                        return 'none';
+                      })(),
                       writingMode: isVertical ? 'vertical-rl' : 'horizontal-tb',
                       WebkitWritingMode: isVertical ? 'vertical-rl' : 'horizontal-tb',
                       flexDirection: isVertical ? 'row' : 'column',
@@ -1258,21 +1272,29 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
 
                 <div style={{ height: '1px', background: 'var(--border-color)', margin: '0.5rem 0' }} />
 
-                <div className="switch-group" style={{ marginBottom: 0 }}>
-                  <div className="switch-label-container">
-                    <span className="form-label" style={{ marginBottom: 0 }}>文字描边 (Text Stroke)</span>
+                {/* ── Stroke Mode ─────────────────────────────── */}
+                <div className="form-group" style={{ marginBottom: '0.5rem' }}>
+                  <label className="form-label">文字描边 (Text Stroke)</label>
+                  <div className="provider-selector" style={{ marginBottom: '0.4rem' }}>
+                    {(['auto', 'manual', 'off'] as const).map((mode) => (
+                      <button
+                        key={mode}
+                        className={`provider-btn ${(styleConfig.strokeMode ?? 'auto') === mode ? 'active' : ''}`}
+                        onClick={() => {
+                          updateStyle('strokeMode', mode);
+                          updateStyle('textStroke', mode === 'manual');
+                        }}
+                      >
+                        {mode === 'auto' ? '自动' : mode === 'manual' ? '手动' : '关闭'}
+                      </button>
+                    ))}
                   </div>
-                  <label className="switch">
-                    <input
-                      type="checkbox"
-                      checked={styleConfig.textStroke}
-                      onChange={e => updateStyle('textStroke', e.target.checked)}
-                    />
-                    <span className="slider"></span>
-                  </label>
+                  {(styleConfig.strokeMode ?? 'auto') === 'auto' && (
+                    <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', margin: 0 }}>字号×6%，颜色自动对比</p>
+                  )}
                 </div>
 
-                {styleConfig.textStroke && (
+                {(styleConfig.strokeMode ?? 'auto') === 'manual' && (
                   <div className="form-row" style={{ marginBottom: 0 }}>
                     <div className="form-group" style={{ marginBottom: 0 }}>
                       <label className="form-label">描边颜色</label>
@@ -1291,11 +1313,11 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
                       </div>
                       <input
                         type="range"
-                        min="1"
+                        min="0.3"
                         max="6"
-                        step="1"
+                        step="0.1"
                         value={styleConfig.strokeWidth}
-                        onChange={e => updateStyle('strokeWidth', parseInt(e.target.value))}
+                        onChange={e => updateStyle('strokeWidth', parseFloat(e.target.value))}
                       />
                     </div>
                   </div>

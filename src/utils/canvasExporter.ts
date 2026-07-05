@@ -264,12 +264,34 @@ export const renderTranslatedCanvas = async (
           ctx.shadowOffsetX = 0;
           ctx.shadowOffsetY = 0;
         }
-        
-        if (style.textStroke) {
+
+        // ── Stroke logic ──────────────────────────────────────────────────────
+        // strokeMode: 'auto' | 'manual' | 'off'
+        // Backward compat: if strokeMode is absent, fall back to textStroke bool
+        const effectiveStrokeMode = style.strokeMode ?? (style.textStroke ? 'manual' : 'off');
+
+        if (effectiveStrokeMode === 'auto') {
+          // Proportional width — scales with font size so it stays subtle at any size
+          // 6% of font size, clamped to [0.3px, 2.5px]
+          const autoWidth = Math.min(2.5, Math.max(0.3, fontSize * 0.06));
+          // Auto contrast color: parse text color luminance to pick contrasting outline
+          const hex = textColor.replace('#', '');
+          const r = parseInt(hex.slice(0, 2), 16) || 0;
+          const g = parseInt(hex.slice(2, 4), 16) || 0;
+          const b = parseInt(hex.slice(4, 6), 16) || 0;
+          // Perceived luminance (ITU-R BT.709)
+          const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+          // Light text → dark stroke; dark text → light stroke
+          const autoColor = lum > 140 ? 'rgba(0,0,0,0.85)' : 'rgba(255,255,255,0.85)';
+          ctx.strokeStyle = autoColor;
+          ctx.lineWidth = autoWidth;
+          ctx.lineJoin = 'round';
+        } else if (effectiveStrokeMode === 'manual' || style.textStroke) {
           ctx.strokeStyle = style.strokeColor || '#000000';
           ctx.lineWidth = style.strokeWidth || 2;
           ctx.lineJoin = 'round';
         }
+        // 'off' → no stroke (default canvas state)
 
         if (isVertical) {
           // --- Vertical text layout ---

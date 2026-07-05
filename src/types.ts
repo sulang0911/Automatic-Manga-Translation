@@ -27,16 +27,17 @@ export type OverlayStyle = 'cover' | 'mask' | 'comparison' | 'original' | 'subti
 
 export interface StyleConfig {
   fontFamily: string;
-  fontSizeScale: number; // e.g. 1.0 (default), 1.2, 0.8
+  fontSizeScale: number;
   textColorMode: 'original' | 'custom';
   customTextColor: string;
   bgColorMode: 'original' | 'custom' | 'none';
   customBgColor: string;
-  bgOpacity: number; // 0 to 100
+  bgOpacity: number;
   textShadow: boolean;
   textStroke: boolean;
+  strokeMode: 'auto' | 'manual' | 'off'; // 'auto' = proportional+auto-color, 'manual' = user-defined, 'off' = none
   strokeColor: string;
-  strokeWidth: number; // px
+  strokeWidth: number; // px — only used when strokeMode === 'manual'
   fontBold: boolean;
   fontItalic: boolean;
   autoFitFontSize: boolean;

@@ -625,23 +625,38 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               <Palette size={14} /> Text FX 辅助渲染特效
             </h4>
             
-            <div className="switch-group">
-              <div className="switch-label-container">
-                <span className="form-label" style={{ marginBottom: 0 }}>文字描边 (Text Stroke)</span>
-                <span className="switch-sublabel">在边缘生成描边以提高可读性</span>
+            {/* ── Stroke Mode ─────────────────────────────────── */}
+            <div className="form-group" style={{ marginBottom: '0.75rem' }}>
+              <label className="form-label">文字描边 (Text Stroke)</label>
+              <div className="provider-selector" style={{ marginBottom: '0.5rem' }}>
+                {(['auto', 'manual', 'off'] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    className={`provider-btn ${(styleConfig.strokeMode ?? 'auto') === mode ? 'active' : ''}`}
+                    onClick={() => {
+                      updateStyle('strokeMode', mode);
+                      // keep textStroke in sync for backward compat
+                      updateStyle('textStroke', mode === 'manual');
+                    }}
+                    title={
+                      mode === 'auto' ? '自动：根据字号比例自动计算描边宽度，颜色自动对比' :
+                      mode === 'manual' ? '手动：自行设置描边颜色与宽度' :
+                      '关闭：不添加描边'
+                    }
+                  >
+                    {mode === 'auto' ? '自动' : mode === 'manual' ? '手动' : '关闭'}
+                  </button>
+                ))}
               </div>
-              <label className="switch">
-                <input
-                  type="checkbox"
-                  checked={styleConfig.textStroke}
-                  onChange={e => updateStyle('textStroke', e.target.checked)}
-                />
-                <span className="slider"></span>
-              </label>
+              {(styleConfig.strokeMode ?? 'auto') === 'auto' && (
+                <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', margin: 0, lineHeight: 1.5 }}>
+                  自动模式：描边宽度 = 字号 × 6%，颜色根据文字明暗自动对比取反，无需手动设置。
+                </p>
+              )}
             </div>
 
-            {styleConfig.textStroke && (
-              <div className="form-row" style={{ marginTop: '0.5rem', marginBottom: '1rem' }}>
+            {(styleConfig.strokeMode ?? 'auto') === 'manual' && (
+              <div className="form-row" style={{ marginTop: '-0.25rem', marginBottom: '1rem' }}>
                 <div className="form-group" style={{ marginBottom: 0 }}>
                   <label className="form-label">描边颜色</label>
                   <input
@@ -659,11 +674,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                   </div>
                   <input
                     type="range"
-                    min="1"
+                    min="0.3"
                     max="6"
-                    step="1"
+                    step="0.1"
                     value={styleConfig.strokeWidth}
-                    onChange={e => updateStyle('strokeWidth', parseInt(e.target.value))}
+                    onChange={e => updateStyle('strokeWidth', parseFloat(e.target.value))}
                   />
                 </div>
               </div>

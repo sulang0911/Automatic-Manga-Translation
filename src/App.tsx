@@ -51,6 +51,7 @@ const DEFAULT_STYLE: StyleConfig = {
   bgOpacity: 90,
   textShadow: true,
   textStroke: false,
+  strokeMode: 'auto',
   strokeColor: '#000000',
   strokeWidth: 2,
   fontBold: true,
@@ -61,7 +62,7 @@ const DEFAULT_STYLE: StyleConfig = {
 };
 
 const getRenderHash = (blocks: TranslationBlock[], style: StyleConfig): string => {
-  return `${style.fontFamily}-${style.fontSizeScale}-${style.textColorMode}-${style.customTextColor}-${style.bgColorMode}-${style.customBgColor}-${style.bgOpacity}-${style.textShadow}-${style.textStroke}-${style.strokeColor}-${style.strokeWidth}-${style.fontBold}-${style.fontItalic}-${style.autoFitFontSize}-${style.onomatopoeiaMode}-${blocks.map(b => `${b.translated_text}-${b.text_color}-${b.bg_color}-${b.type || 'bubble'}`).join(',')}`;
+  return `${style.fontFamily}-${style.fontSizeScale}-${style.textColorMode}-${style.customTextColor}-${style.bgColorMode}-${style.customBgColor}-${style.bgOpacity}-${style.textShadow}-${style.strokeMode ?? style.textStroke}-${style.strokeColor}-${style.strokeWidth}-${style.fontBold}-${style.fontItalic}-${style.autoFitFontSize}-${style.onomatopoeiaMode}-${blocks.map(b => `${b.translated_text}-${b.text_color}-${b.bg_color}-${b.type || 'bubble'}`).join(',')}`;
 };
 
 export default function App() {
@@ -72,7 +73,12 @@ export default function App() {
 
   const [styleConfig, setStyleConfig] = useState<StyleConfig>(() => {
     const saved = localStorage.getItem(LOCAL_STORAGE_KEY_STYLE);
-    return saved ? JSON.parse(saved) : DEFAULT_STYLE;
+    const parsed = saved ? JSON.parse(saved) : DEFAULT_STYLE;
+    // Migrate old saves that may lack strokeMode
+    if (!parsed.strokeMode) {
+      parsed.strokeMode = parsed.textStroke ? 'manual' : 'auto';
+    }
+    return parsed;
   });
 
   const [images, setImages] = useState<ImageItem[]>([]);
@@ -1102,7 +1108,15 @@ export default function App() {
 
       } catch (err) {
         console.error(err);
-        const errMsg = (err as Error).message || '未知错误';
+        let errMsg = (err as Error).message || '未知错误';
+        
+        // Optimize display for quota errors so user knows exactly what to do
+        if (errMsg.includes('insufficient_quota') || errMsg.includes('quota') || errMsg.includes('free quota has been exhausted')) {
+          errMsg = '您的 API Key 额度已用尽（欠费或免费限额耗尽），请前往服务商处充值或更换 API Key。';
+        } else if (errMsg.includes('data_inspection_failed') || errMsg.includes('inappropriate content')) {
+          errMsg = '图片因服务商的安全合规检测未通过而拦截（判定可能包含敏感或不适宜内容）。';
+        }
+        
         setImages(prev => prev.map(item => item.id === img.id ? { ...item, status: 'failed', error: errMsg } : item));
         addToast(`图片 "${img.name}" 翻译失败: ${errMsg}`, 'error');
       }
