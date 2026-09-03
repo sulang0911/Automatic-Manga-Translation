@@ -452,9 +452,14 @@ class MainWindow(QMainWindow):
                 cache_mgr = get_cache_manager()
                 cached = cache_mgr.load_page_cache(path, load_images=True)
 
-                blocks = cached.get("blocks") or item_data.get("blocks", [])
-                erased = cached.get("erased_img") or item_data.get("erased_img")
-                translated = cached.get("rendered_img") or item_data.get("translated_img")
+                cached_blocks = cached.get("blocks")
+                blocks = cached_blocks if cached_blocks else item_data.get("blocks", [])
+
+                cached_erased = cached.get("erased_img")
+                erased = cached_erased if cached_erased is not None else item_data.get("erased_img")
+
+                cached_rendered = cached.get("rendered_img")
+                translated = cached_rendered if cached_rendered is not None else item_data.get("translated_img")
 
                 # If blocks exist and erased exists but rendered image not on disk yet, render on demand
                 if translated is None and blocks and (erased is not None or cv_img is not None):
