@@ -45,6 +45,7 @@ class InspectorPanel(QFrame):
     sig_block_selected = pyqtSignal(str)
     sig_blocks_reordered = pyqtSignal(list)
     sig_add_bubble_requested = pyqtSignal()
+    sig_ocr_translate_block_requested = pyqtSignal(dict)
 
     def __init__(self, config: Optional[AppConfig] = None, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -204,12 +205,19 @@ class InspectorPanel(QFrame):
 
         detail_layout.addWidget(merge_group)
 
-        # Apply Re-render Button
+        # Action Buttons Row: Apply and Single-Block OCR Translate
+        row_apply_actions = QHBoxLayout()
         self.apply_block_btn = QPushButton("✨ 应用修改 (Ctrl+Enter)", self.detail_frame)
         self.apply_block_btn.setProperty("class", "primaryBtn")
         self.apply_block_btn.setToolTip("快捷键: Ctrl+Enter 提交当前修改并自动跳转至下一个气泡")
         self.apply_block_btn.clicked.connect(self._on_apply_and_next_clicked)
-        detail_layout.addWidget(self.apply_block_btn)
+        row_apply_actions.addWidget(self.apply_block_btn, 1)
+
+        self.ocr_translate_block_btn = QPushButton("🔍 识别并翻译此框", self.detail_frame)
+        self.ocr_translate_block_btn.setToolTip("对当前框选区域重新运行 OCR 识别与大模型翻译")
+        self.ocr_translate_block_btn.clicked.connect(self._on_ocr_translate_block_clicked)
+        row_apply_actions.addWidget(self.ocr_translate_block_btn, 1)
+        detail_layout.addLayout(row_apply_actions)
 
         splitter.addWidget(self.detail_frame)
         splitter.setSizes([130, 250])
@@ -714,6 +722,7 @@ class InspectorPanel(QFrame):
         act_swap_next.setEnabled(row < len(self.current_blocks) - 1)
 
         menu.addSeparator()
+        act_ocr_trans = menu.addAction("🔍 重新识别并翻译此框")
         act_del = menu.addAction("🗑️ 删除气泡")
 
         action = menu.exec(self.bubble_list.mapToGlobal(pos))
@@ -725,8 +734,15 @@ class InspectorPanel(QFrame):
             self._swap_blocks_translation(row, row - 1)
         elif action == act_swap_next:
             self._swap_blocks_translation(row, row + 1)
+        elif action == act_ocr_trans:
+            self.sig_ocr_translate_block_requested.emit(b)
         elif action == act_del:
             self._on_delete_block()
+
+    def _on_ocr_translate_block_clicked(self):
+        if not self.selected_block:
+            return
+        self.sig_ocr_translate_block_requested.emit(self.selected_block)
 
     def _on_merge_prev_clicked(self):
         if not self.selected_block:
