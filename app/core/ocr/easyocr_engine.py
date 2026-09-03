@@ -109,7 +109,18 @@ class EasyOCREngine(BaseOCREngine):
 
             aspect = (xmax - xmin) / max(1, (ymax - ymin))
             is_bubble = not (aspect > 4.0 or aspect < 0.15)
-            is_vertical = (ymax - ymin) > (xmax - xmin) * 1.15
+            # Use a more conservative threshold (1.5 instead of 1.15) to avoid
+            # false-positive vertical detection on wide-ish bubbles. Borderline
+            # boxes (1.0–1.5 ratio) are marked AUTO so the typography engine
+            # can decide at render time based on the final translated text.
+            box_h = ymax - ymin
+            box_w = xmax - xmin
+            if box_h > box_w * 1.5:
+                ocr_direction = TextDirection.VERTICAL.value
+            elif box_w >= box_h:
+                ocr_direction = TextDirection.HORIZONTAL.value
+            else:
+                ocr_direction = TextDirection.AUTO.value  # borderline – let renderer decide
 
             block = TranslationBlock.from_pixel_box(
                 xmin=xmin,
@@ -124,7 +135,7 @@ class EasyOCREngine(BaseOCREngine):
                 confidence=b["conf"],
                 line_count=b.get("line_count", 1),
                 type=BlockType.BUBBLE.value if is_bubble else BlockType.ONOMATOPOEIA.value,
-                direction=TextDirection.VERTICAL.value if is_vertical else TextDirection.HORIZONTAL.value
+                direction=ocr_direction
             )
             blocks.append(block)
 

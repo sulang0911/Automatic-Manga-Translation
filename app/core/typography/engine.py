@@ -283,13 +283,21 @@ class TypographyEngine:
                 continue
 
             # Determine text direction
+            # Key fix: OCR records direction from ORIGINAL (Japanese/source) text layout.
+            # When rendering translated Chinese text, we re-evaluate based on the rendered
+            # box shape and target text language, NOT the OCR source-direction flag.
+            # A box is only treated as vertical if it is clearly taller than wide (ratio > 1.5)
+            # AND the translated text is CJK. Landscape bubbles always use horizontal layout.
+            text_is_cjk = LineBreaker.is_cjk(text)
+            box_is_tall = (h > w * 1.5)
             if block.direction == TextDirection.VERTICAL.value:
-                is_vertical = True
+                # Override: if the box is landscape or text is not CJK, switch to horizontal
+                is_vertical = box_is_tall and text_is_cjk
             elif block.direction == TextDirection.HORIZONTAL.value:
                 is_vertical = False
             else:
-                # Auto direction heuristic: vertical if h > w * 1.15 and text is CJK
-                is_vertical = (h > w * 1.15) and LineBreaker.is_cjk(text)
+                # AUTO: conservative vertical only when box is clearly portrait + CJK text
+                is_vertical = box_is_tall and text_is_cjk
 
             # Font styling resolution
             font_family = block.font_family_override or cfg.font_family
