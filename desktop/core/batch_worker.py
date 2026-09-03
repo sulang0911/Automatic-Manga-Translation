@@ -2,12 +2,13 @@ import os
 import cv2
 import numpy as np
 from PyQt6.QtCore import QThread, pyqtSignal
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from .ocr_engine import OCREngine
 from .inpaint_engine import InpaintEngine
 from .translation_engine import TranslationEngine
 from .typography_engine import TypographyEngine
+from app.core.pipeline.exporter import MangaExporter
 
 class BatchWorker(QThread):
     sig_batch_progress = pyqtSignal(int, int, str, int, str) # current, total, filename, pct, msg
@@ -15,15 +16,54 @@ class BatchWorker(QThread):
     sig_batch_finished = pyqtSignal(int, int) # success_count, fail_count
     sig_item_failed = pyqtSignal(str, str) # image_id, error_msg
 
-    def __init__(self, queue_items: List[Dict[str, Any]], config: Dict[str, Any], export_dir: str = "", parent=None):
+    def __init__(
+        self,
+        queue_items: List[Dict[str, Any]],
+        config: Dict[str, Any],
+        export_dir: str = "",
+        root_dir: Optional[str] = None,
+        parent=None
+    ):
         super().__init__(parent)
         self.queue_items = queue_items
         self.config = config
         self.export_dir = export_dir
+        self.root_dir = root_dir
         self._is_cancelled = False
+
+        if not self.root_dir and self.queue_items:
+            valid_roots = list(dict.fromkeys(it.get("root_dir") for it in self.queue_items if it.get("root_dir")))
+            if len(valid_roots) == 1:
+                self.root_dir = valid_roots[0]
+            elif len(valid_roots) > 1:
+                try:
+                    self.root_dir = os.path.commonpath(valid_roots)
+                except Exception:
+                    self.root_dir = None
 
     def cancel(self):
         self._is_cancelled = True
+
+    def resolve_export_path(self, item: Dict[str, Any]) -> Optional[str]:
+        """Resolves target export destination path preserving relative subfolder structure."""
+        if not self.export_dir:
+            return None
+        img_path = item.get("path", "")
+        if not img_path:
+            return None
+        filename = os.path.basename(img_path)
+        if item.get("rel_path") or item.get("root_dir") or self.root_dir:
+            try:
+                return MangaExporter.compute_export_path(
+                    image_path=img_path,
+                    export_dir=self.export_dir,
+                    rel_path=item.get("rel_path"),
+                    root_dir=item.get("root_dir") or self.root_dir
+                )
+            except Exception:
+                pass
+        name_without_ext = os.path.splitext(filename)[0]
+        return os.path.join(self.export_dir, f"{name_without_ext}_translated.png")
 
     def run(self):
         total = len(self.queue_items)
@@ -92,13 +132,21 @@ class BatchWorker(QThread):
                 translated_img = typo_eng.render_translations(base_bg, blocks, self.config)
 
                 # Auto save if export_dir specified
-                export_path = None
-                if self.export_dir and os.path.exists(self.export_dir):
-                    name_without_ext = os.path.splitext(filename)[0]
-                    export_path = os.path.join(self.export_dir, f"{name_without_ext}_translated.png")
-                    _, buf = cv2.imencode(".png", translated_img)
-                    with open(export_path, "wb") as f:
-                        f.write(buf.tobytes())
+                export_path = self.resolve_export_path(item)
+                if export_path:
+                    compressed = False
+                    if hasattr(self.config, "style"):
+                        compressed = getattr(self.config.style, "export_compressed", False)
+                    elif isinstance(self.config, dict):
+                        style_cfg = self.config.get("style", {})
+                        if isinstance(style_cfg, dict):
+                            compressed = style_cfg.get("export_compressed", False)
+                    MangaExporter.export_hierarchical_image(
+                        translated_img,
+                        export_path,
+                        source_path=img_path,
+                        compressed=compressed
+                    )
 
                 self.sig_batch_progress.emit(idx + 1, total, filename, 100, "完成")
                 self.sig_item_completed.emit(img_id, {

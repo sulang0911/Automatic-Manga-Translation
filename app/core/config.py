@@ -61,6 +61,7 @@ class AppConfig:
     source_lang: str = "自动识别"
     target_lang: str = "简体中文"
     cache_dir: str = "translation_cache"
+    export_dir: str = "exported_chapter"
     auto_save_cache: bool = True
     max_concurrent_workers: int = 2
 
@@ -74,6 +75,7 @@ class AppConfig:
             "source_lang": self.source_lang,
             "target_lang": self.target_lang,
             "cache_dir": self.cache_dir,
+            "export_dir": self.export_dir,
             "auto_save_cache": self.auto_save_cache,
             "max_concurrent_workers": self.max_concurrent_workers,
         }
@@ -89,6 +91,8 @@ class AppConfig:
             cfg.target_lang = data["target_lang"]
         if "cache_dir" in data:
             cfg.cache_dir = data["cache_dir"]
+        if "export_dir" in data:
+            cfg.export_dir = data["export_dir"]
         if "auto_save_cache" in data:
             cfg.auto_save_cache = data["auto_save_cache"]
         if "max_concurrent_workers" in data:

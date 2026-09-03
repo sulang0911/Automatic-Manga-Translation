@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from PyQt6.QtGui import QIcon, QPixmap, QDragEnterEvent, QDropEvent
+from app.ui.sidebar.page_list import is_ignored_cache_or_export, natural_sort_path_key
 
 class QueueItemWidget(QWidget):
     def __init__(self, item_data: dict, parent=None):
@@ -152,40 +153,63 @@ class QueuePanel(QFrame):
     def add_paths(self, paths: list):
         valid_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
         collected = []
-        ignored_suffixes = (
-            ".erased.webp", ".erased.png",
-            ".rendered.webp", ".rendered.png",
-            "_erased.png", "_translated.png",
-            ".blocks.json"
-        )
-        for p in paths:
-            if os.path.isfile(p):
-                fname = os.path.basename(p).lower()
-                if any(fname.endswith(s) for s in ignored_suffixes):
+        valid_input_paths = [p for p in paths if p and os.path.exists(p)]
+        dir_paths = [os.path.normpath(os.path.abspath(p)) for p in valid_input_paths if os.path.isdir(p)]
+
+        batch_root = None
+        if len(dir_paths) > 1:
+            try:
+                common = os.path.commonpath(dir_paths)
+                if os.path.isdir(common) and all(p != common for p in dir_paths):
+                    batch_root = common
+            except Exception:
+                batch_root = None
+
+        for p in valid_input_paths:
+            p_abs = os.path.normpath(os.path.abspath(p))
+            if os.path.isfile(p_abs):
+                if is_ignored_cache_or_export(p_abs):
                     continue
-                ext = os.path.splitext(p)[1].lower()
+                ext = os.path.splitext(p_abs)[1].lower()
                 if ext in valid_exts:
-                    collected.append(p)
-            elif os.path.isdir(p):
-                for root, dirs, files in os.walk(p):
+                    collected.append({
+                        "path": p_abs,
+                        "rel_path": os.path.basename(p_abs),
+                        "root_dir": os.path.dirname(p_abs),
+                    })
+            elif os.path.isdir(p_abs):
+                effective_root = batch_root if batch_root else p_abs
+                dir_name = os.path.basename(p_abs).lower()
+                if dir_name.startswith(".") or dir_name in ("translation_cache", "__pycache__", ".amt_cache"):
+                    continue
+                for root, dirs, files in os.walk(p_abs):
                     dirs[:] = [
                         d for d in dirs
-                        if not d.startswith(".") and d not in ("translation_cache", "__pycache__", ".amt_cache")
+                        if not d.startswith(".") and d.lower() not in ("translation_cache", "__pycache__", ".amt_cache")
                     ]
-                    for f in sorted(files):
-                        fl = f.lower()
-                        if any(fl.endswith(s) for s in ignored_suffixes):
+                    for f in files:
+                        full_f = os.path.normpath(os.path.join(root, f))
+                        if is_ignored_cache_or_export(full_f, base_dir=effective_root):
                             continue
                         ext = os.path.splitext(f)[1].lower()
                         if ext in valid_exts:
-                            collected.append(os.path.join(root, f))
+                            collected.append({
+                                "path": full_f,
+                                "rel_path": os.path.relpath(full_f, effective_root),
+                                "root_dir": effective_root,
+                            })
 
-        for p in collected:
+        collected.sort(key=lambda it: natural_sort_path_key(it["path"]))
+
+        for item_info in collected:
+            p = item_info["path"]
             if any(it["path"] == p for it in self.items_data):
                 continue
             item_data = {
                 "id": str(uuid.uuid4())[:8],
                 "path": p,
+                "rel_path": item_info["rel_path"],
+                "root_dir": item_info["root_dir"],
                 "index": len(self.items_data) + 1,
                 "status": "pending",
                 "blocks": None,

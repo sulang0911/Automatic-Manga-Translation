@@ -38,9 +38,10 @@ def temp_dir():
         pass
 
 @pytest.fixture
-def isolated_config(temp_dir):
+def isolated_config(temp_dir, monkeypatch):
     """Provides a clean ConfigManager instance backed by a temporary JSON file."""
     cfg_path = os.path.join(temp_dir, "test_config.json")
+    monkeypatch.setattr("desktop.core.config_manager.CONFIG_FILE_PATH", cfg_path)
     mgr = ConfigManager()
     mgr._data = DEFAULT_CONFIG.copy()
     yield mgr

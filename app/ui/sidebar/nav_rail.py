@@ -49,20 +49,21 @@ class NavRail(QFrame):
         self._layout.addStretch()
 
         # Bottom items
-        self._add_nav_item("settings", "settings", "全局设置")
+        self._add_nav_item("settings", "settings", "全局设置", is_action=True)
 
-    def _add_nav_item(self, key: str, icon_name: str, tooltip: str, checked: bool = False):
+    def _add_nav_item(self, key: str, icon_name: str, tooltip: str, checked: bool = False, is_action: bool = False):
         btn = QToolButton(self)
         btn.setIcon(get_icon(icon_name, color="#A1A1AA", active_color="#3B82F6", size=20))
         btn.setIconSize(QSize(20, 20))
         btn.setToolTip(tooltip)
-        btn.setCheckable(True)
-        btn.setChecked(checked)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        btn.clicked.connect(lambda: self.sig_nav_changed.emit(key))
+        if not is_action:
+            btn.setCheckable(True)
+            btn.setChecked(checked)
+            self._btn_group.addButton(btn)
 
-        self._btn_group.addButton(btn)
+        btn.clicked.connect(lambda: self.sig_nav_changed.emit(key))
         self._buttons[key] = btn
         self._layout.addWidget(btn)
 

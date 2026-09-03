@@ -1,4 +1,4 @@
-﻿"""
+"""
 tests/unit/test_bubble_inspector.py
 Unit tests for M3 Interactive Bubble Editor & Inspector Panel in app/ architecture.
 Tests F-EDT-01, F-EDT-02, F-EDT-03, F-EDT-04, F-EDT-05, and F-EDT-06.
@@ -157,19 +157,30 @@ def test_inspector_panel_style_controls(qapp):
     cfg = AppConfig()
     panel = InspectorPanel(cfg)
 
-    # Font combo
-    panel.font_combo.setCurrentText("SimHei")
-    assert cfg.style.font_family == "SimHei"
+    # Populate blocks and select block 0
+    blocks = [
+        {"id": "b1", "original_text": "Hello", "translated_text": "你好"},
+        {"id": "b2", "original_text": "World", "translated_text": "世界"},
+    ]
+    panel.set_blocks(blocks)
+    assert panel.selected_block["id"] == "b1"
 
-    # Scale slider
-    panel.size_slider.setValue(15)  # 1.5x
-    assert cfg.style.font_size_scale == 1.5
+    # Enable block-level override
+    panel.block_style_override_cb.setChecked(True)
+    panel.block_font_combo.setCurrentIndex(1)  # 幼圆
+    assert panel.selected_block["font_family_override"] == "幼圆"
+    assert cfg.style.font_family != "幼圆"  # Global config remains isolated and clean!
 
-    # Checkboxes
-    panel.auto_fit_cb.setChecked(False)
-    assert cfg.style.auto_fit_font_size is False
-    panel.bold_cb.setChecked(True)
-    assert cfg.style.font_bold is True
+    panel.block_bold_cb.setChecked(False)
+    assert panel.selected_block["font_bold_override"] is False
+
+    # Test Ctrl+Enter quick translation workflow
+    panel.trans_text_edit.setPlainText("你好呀！")
+    panel._on_apply_and_next_clicked()
+    # Verified b1 was updated and selection automatically advanced to b2
+    assert blocks[0]["translated_text"] == "你好呀！"
+    assert panel.selected_block["id"] == "b2"
+
     panel.close()
 
 

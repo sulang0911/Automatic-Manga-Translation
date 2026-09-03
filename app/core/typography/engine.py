@@ -21,41 +21,45 @@ from app.core.typography.vertical_layout import VerticalLayoutEngine
 from app.core.typography.stroke_renderer import (
     StrokeRenderer, StrokeStyle, DropShadowStyle
 )
+from app.core.inpaint.color_analyzer import get_background_color_rgb
 
 logger = logging.getLogger(__name__)
 
 
 class PilTextMeasurer(TextWidthMeasurer):
     """Measures text width using PIL FreeType font instances."""
-    def __init__(self, font_loader: Callable[[float], ImageFont.FreeTypeFont]):
+    def __init__(self, font_loader: Callable[[float], ImageFont.FreeTypeFont], is_bold: bool = False):
         self.font_loader = font_loader
+        self.is_bold = is_bold
 
     def measure_width(self, text: str, font_size: float) -> float:
+        bold_pad = (font_size * 0.09) if self.is_bold else 0.0
         try:
             font = self.font_loader(font_size)
             bbox = font.getbbox(text)
-            return float(bbox[2] - bbox[0])
+            return float(bbox[2] - bbox[0]) + (bold_pad * len(text))
         except Exception:
             # Fallback heuristic: 1.0em for CJK, 0.55em for Latin
             import re
             w = 0.0
             for ch in text:
                 if re.search(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]', ch):
-                    w += font_size * 1.0
+                    w += font_size * 1.0 + bold_pad
                 else:
-                    w += font_size * 0.55
+                    w += font_size * 0.55 + bold_pad
             return w
 
 
 class TypographyLayoutEvaluator:
     """Evaluates whether text at a given font size fits inside width/height bounds."""
-    def __init__(self, font_loader: Callable[[float], ImageFont.FreeTypeFont], line_breaker: LineBreaker, vertical_layout: VerticalLayoutEngine):
+    def __init__(self, font_loader: Callable[[float], ImageFont.FreeTypeFont], line_breaker: LineBreaker, vertical_layout: VerticalLayoutEngine, is_bold: bool = False):
         self.font_loader = font_loader
         self.line_breaker = line_breaker
         self.vertical_layout = vertical_layout
+        self.is_bold = is_bold
 
     def evaluate(self, text: str, font_size: float, max_w: float, max_h: float, is_vertical: bool) -> LayoutResult:
-        measurer = PilTextMeasurer(self.font_loader)
+        measurer = PilTextMeasurer(self.font_loader, is_bold=self.is_bold)
         if is_vertical:
             raw_cols = self.vertical_layout.wrap_vertical_columns(text, max_h, font_size)
             col_width = font_size * self.vertical_layout.column_spacing_ratio
@@ -124,6 +128,11 @@ class TypographyEngine:
         "霞鹜文楷": "LXGWWenKaiLite-Regular.ttf",
         "lxgw wenkai": "LXGWWenKaiLite-Regular.ttf",
         "lxgwwenkai": "LXGWWenKaiLite-Regular.ttf",
+        "可爱字体": "LXGWWenKaiLite-Regular.ttf",
+        "可爱": "LXGWWenKaiLite-Regular.ttf",
+        "萌系": "LXGWWenKaiLite-Regular.ttf",
+        "萌系字体": "LXGWWenKaiLite-Regular.ttf",
+        "日漫可爱": "LXGWWenKaiLite-Regular.ttf",
         "得意黑": "SmileySans-Oblique.ttf",
         "smileysans": "SmileySans-Oblique.ttf",
         "smiley sans": "SmileySans-Oblique.ttf",
@@ -140,7 +149,7 @@ class TypographyEngine:
         "stxihei": "STXIHEI.TTF",
     }
 
-    def __init__(self, default_font_family: str = "Microsoft YaHei"):
+    def __init__(self, default_font_family: str = "霞鹜文楷"):
         self.default_font_family = default_font_family
         self.auto_fit_engine = AutoFitEngine()
         self.line_breaker = LineBreaker()
@@ -284,9 +293,10 @@ class TypographyEngine:
 
             # Font styling resolution
             font_family = block.font_family_override or cfg.font_family
+            is_bold = bool(block.font_bold_override if block.font_bold_override is not None else cfg.font_bold)
             font_loader = lambda fs: self.get_font(font_family, fs)
 
-            evaluator = TypographyLayoutEvaluator(font_loader, self.line_breaker, self.vertical_layout)
+            evaluator = TypographyLayoutEvaluator(font_loader, self.line_breaker, self.vertical_layout, is_bold=is_bold)
 
             # Font size calculation
             if block.font_size_override is not None:
@@ -307,10 +317,38 @@ class TypographyEngine:
 
             font = self.get_font(font_family, font_size)
 
+            # Sample background color and luminance underneath this bubble
+            bg_rgb = (255, 255, 255)
+            bg_lum = 255.0
+            bx1, by1 = max(0, int(x)), max(0, int(y))
+            bx2, by2 = min(w_img, int(x + w)), min(h_img, int(y + h))
+            if bx2 > bx1 and by2 > by1:
+                crop = erased_image[by1:by2, bx1:bx2]
+                bg_rgb = get_background_color_rgb(crop)
+                bg_lum = 0.299 * bg_rgb[0] + 0.587 * bg_rgb[1] + 0.114 * bg_rgb[2]
+
             # Color resolution
-            text_color_hex = block.text_color_override or (
-                cfg.custom_text_color if cfg.text_color_mode == TextColorMode.CUSTOM.value else block.text_color
-            )
+            if block.text_color_override:
+                text_color_hex = block.text_color_override
+            elif cfg.text_color_mode == TextColorMode.CUSTOM.value:
+                text_color_hex = cfg.custom_text_color
+            else:
+                # Automatic / original mode: check candidate color
+                cand_hex = block.text_color or "#000000"
+                cr = int(cand_hex[1:3], 16) if len(cand_hex) >= 7 else 0
+                cg = int(cand_hex[3:5], 16) if len(cand_hex) >= 7 else 0
+                cb = int(cand_hex[5:7], 16) if len(cand_hex) >= 7 else 0
+                cand_lum = 0.299 * cr + 0.587 * cg + 0.114 * cb
+
+                # If candidate text color lacks contrast with the background (e.g. black text on dark/black bubble)
+                if abs(cand_lum - bg_lum) < 70.0:
+                    if bg_lum < 128.0:
+                        text_color_hex = "#FFFFFF"  # White text on dark/black background (黑底白字)
+                    else:
+                        text_color_hex = "#000000"  # Black text on light/white background (白底黑字)
+                else:
+                    text_color_hex = cand_hex
+
             r = int(text_color_hex[1:3], 16) if len(text_color_hex) >= 7 else 0
             g = int(text_color_hex[3:5], 16) if len(text_color_hex) >= 7 else 0
             b = int(text_color_hex[5:7], 16) if len(text_color_hex) >= 7 else 0
@@ -320,7 +358,7 @@ class TypographyEngine:
             stroke_mode = block.stroke_mode_override or cfg.stroke_mode
             stroke = None
             if stroke_mode == StrokeMode.AUTO.value:
-                stroke = StrokeRenderer.get_auto_contrast_stroke((r, g, b), font_size)
+                stroke = StrokeRenderer.get_auto_contrast_stroke((r, g, b), font_size, bg_rgb=bg_rgb)
             elif stroke_mode == StrokeMode.MANUAL.value:
                 stroke_hex = block.stroke_color_override or cfg.stroke_color
                 sr = int(stroke_hex[1:3], 16) if len(stroke_hex) >= 7 else 255
@@ -355,10 +393,11 @@ class TypographyEngine:
                             font=font,
                             fill_rgba=fill_rgba,
                             stroke=stroke,
-                            shadow=shadow
+                            shadow=shadow,
+                            is_bold=is_bold
                         )
             else:
-                measurer = PilTextMeasurer(font_loader)
+                measurer = PilTextMeasurer(font_loader, is_bold=is_bold)
                 px, py = self.auto_fit_engine.calculate_padding(w, h)
                 avail_w = max(4.0, w - 2 * px)
                 lines = self.line_breaker.wrap_text(text, avail_w, font_size, measurer)
@@ -378,7 +417,8 @@ class TypographyEngine:
                         font=font,
                         fill_rgba=fill_rgba,
                         stroke=stroke,
-                        shadow=shadow
+                        shadow=shadow,
+                        is_bold=is_bold
                     )
 
         # Convert back to OpenCV BGR

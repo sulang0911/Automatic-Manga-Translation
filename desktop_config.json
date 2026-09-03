@@ -28,7 +28,7 @@
     "auto_fit_font_size": true,
     "min_font_size": 8,
     "max_font_size": 72,
-    "line_spacing": 1.15,
+    "line_spacing": 1.1,
     "text_color_mode": "original",
     "custom_text_color": "#000000",
     "bg_color_mode": "original",
@@ -41,15 +41,16 @@
     "stroke_mode": "auto",
     "stroke_color": "#FFFFFF",
     "stroke_width": 2.0,
-    "font_bold": false,
+    "font_bold": true,
     "font_italic": false,
     "onomatopoeia_mode": "ignore",
     "reading_direction": "manga_rtl",
     "export_compressed": false
   },
-  "source_lang": "日语",
+  "source_lang": "自动识别",
   "target_lang": "简体中文",
   "cache_dir": "translation_cache",
+  "export_dir": "exported_chapter",
   "auto_save_cache": true,
   "max_concurrent_workers": 2
 }

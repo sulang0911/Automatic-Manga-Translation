@@ -81,9 +81,9 @@ def test_tier3_05_queue_selection_to_canvas_display(qapp, sample_manga_image_fil
     assert win.canvas_view.original_cv.shape == sample_manga_image_np.shape
     win.close()
 
-def test_tier3_06_settings_to_typography_config_propagation(qapp, sample_manga_image_np, sample_translation_blocks):
+def test_tier3_06_settings_to_typography_config_propagation(qapp, sample_manga_image_np, sample_translation_blocks, isolated_config):
     """Pairwise Interaction 6: ConfigManager updates affect typography rendering style."""
-    cfg = ConfigManager()
+    cfg = isolated_config
     cfg.set("text_color", "#0A84FF")
     cfg.set("font_size_scale", 1.8)
 

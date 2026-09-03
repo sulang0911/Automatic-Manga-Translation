@@ -47,4 +47,6 @@ ocr_config.json
 translation_cache/
 desktop_run.log
 test_desktop_pipeline.py
+exported_chapter/
+
 

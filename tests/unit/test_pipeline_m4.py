@@ -1,4 +1,4 @@
-﻿"""
+"""
 tests/unit/test_pipeline_m4.py
 Unit tests for Milestone M4: PipelineWorker, BatchWorker, MangaExporter, SettingsDialog, and Toast.
 Tests F-EXP-01, F-EXP-02, F-EXP-03, F-EXP-04, F-ASY-01, F-ASY-02, F-ASY-03, and F-ERR-01.
@@ -148,6 +148,6 @@ def test_toast_widget(qapp):
 def test_settings_dialog_creation(qapp):
     cfg = AppConfig()
     dialog = SettingsDialog(cfg)
-    assert dialog.nav_list.count() == 4
-    assert dialog.stack.count() == 4
+    assert dialog.nav_list.count() == 5
+    assert dialog.stack.count() == 5
     dialog.close()

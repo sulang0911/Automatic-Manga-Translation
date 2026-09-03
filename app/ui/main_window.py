@@ -17,7 +17,7 @@ from PyQt6.QtCore import Qt, QSize, QTimer
 from PyQt6.QtGui import QIcon, QKeySequence, QShortcut, QColor, QDragEnterEvent, QDropEvent
 
 from app.core.config import AppConfig
-from app.core.models import TranslationBlock
+from app.core.models import TranslationBlock, StyleConfig
 from app.core.typography.engine import TypographyEngine
 from app.core.pipeline.pipeline_worker import PipelineWorker
 from app.core.pipeline.batch_worker import BatchWorker
@@ -35,6 +35,7 @@ from app.ui.sidebar.page_list import PageListWidget
 from app.ui.sidebar.drop_zone import DropZoneWidget
 from app.ui.inspector.inspector_panel import InspectorPanel
 from app.ui.settings.settings_dialog import SettingsDialog
+from app.ui.settings.page_style_dialog import PageStyleDialog
 
 
 class MainWindow(QMainWindow):
@@ -82,9 +83,11 @@ class MainWindow(QMainWindow):
         self.canvas_view.sig_zoom_changed.connect(self._on_zoom_changed)
         self.canvas_view.sig_split_changed.connect(self._on_split_slider_moved_from_canvas)
         self.canvas_view.sig_bubble_selected.connect(self._on_bubble_selected_from_canvas)
-        self.canvas_view.sig_bubble_changed.connect(self._on_bubble_geometry_changed)
+        self.canvas_view.sig_bubble_changed.connect(self._on_bubble_moving)
+        self.canvas_view.sig_bubble_commit.connect(self._on_bubble_geometry_changed)
         self.canvas_view.sig_bubble_swap_prev.connect(self._on_canvas_bubble_swap_prev)
         self.canvas_view.sig_bubble_swap_next.connect(self._on_canvas_bubble_swap_next)
+        self.canvas_view.sig_bubble_created.connect(self._on_bubble_created)
 
         # 2. Action Toolbar
         self.toolbar_widget = self._create_toolbar()
@@ -140,6 +143,8 @@ class MainWindow(QMainWindow):
         self.inspector_panel.sig_erase_page_requested.connect(lambda: self._start_pipeline_for_page(mode="inpaint_only"))
         self.inspector_panel.sig_export_page_requested.connect(self._export_current_page)
         self.inspector_panel.sig_open_export_dir_requested.connect(self._open_export_directory)
+        self.inspector_panel.sig_add_bubble_requested.connect(self.canvas_view.toggle_draw_tool)
+        self.inspector_panel.sig_block_selected.connect(self.canvas_view.select_bubble_by_id)
         self.splitter.addWidget(self.inspector_panel)
 
         # Set balanced initial proportions [sidebar, canvas, inspector]
@@ -180,6 +185,7 @@ class MainWindow(QMainWindow):
         self.page_list.sig_clear_requested.connect(self._on_page_list_cleared)
         self.page_list.sig_translate_page.connect(self._on_translate_page_from_list)
         self.page_list.sig_export_page.connect(self._on_export_page_from_list)
+        self.page_list.sig_edit_page_style.connect(self._open_page_style_dialog)
         drawer_layout.addWidget(self.page_list, 1)
 
         layout.addWidget(self.sidebar_drawer, 1)
@@ -264,37 +270,6 @@ class MainWindow(QMainWindow):
 
         layout.addStretch()
 
-        # Canvas Zoom Controls
-        self.fit_btn = QToolButton(toolbar)
-        self.fit_btn.setIcon(get_icon("fit_window", color="#A1A1AA", size=16))
-        self.fit_btn.setToolTip("适应窗口 (Fit in View)")
-        self.fit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.fit_btn.clicked.connect(self.canvas_view.fit_in_view)
-        layout.addWidget(self.fit_btn)
-
-        self.actual_size_btn = QToolButton(toolbar)
-        self.actual_size_btn.setIcon(get_icon("actual_size", color="#A1A1AA", size=16))
-        self.actual_size_btn.setToolTip("实际大小 1:1")
-        self.actual_size_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.actual_size_btn.clicked.connect(self.canvas_view.reset_zoom)
-        layout.addWidget(self.actual_size_btn)
-
-        self.zoom_out_btn = QToolButton(toolbar)
-        self.zoom_out_btn.setIcon(get_icon("zoom_out", color="#A1A1AA", size=16))
-        self.zoom_out_btn.setToolTip("缩小 (Ctrl -)")
-        self.zoom_out_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.zoom_out_btn.clicked.connect(self.canvas_view.zoom_out)
-        layout.addWidget(self.zoom_out_btn)
-
-        self.zoom_in_btn = QToolButton(toolbar)
-        self.zoom_in_btn.setIcon(get_icon("zoom_in", color="#A1A1AA", size=16))
-        self.zoom_in_btn.setToolTip("放大 (Ctrl +)")
-        self.zoom_in_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.zoom_in_btn.clicked.connect(self.canvas_view.zoom_in)
-        layout.addWidget(self.zoom_in_btn)
-
-        layout.addSpacing(12)
-
         # Theme Switcher Button
         self.theme_btn = QToolButton(toolbar)
         self.theme_btn.setIcon(get_icon("sun" if self._current_theme == "dark" else "moon", color="#A1A1AA", size=16))
@@ -306,9 +281,18 @@ class MainWindow(QMainWindow):
         # Settings Button
         self.settings_btn = QPushButton("设置", toolbar)
         self.settings_btn.setIcon(get_icon("settings", color="#A1A1AA", size=16))
+        self.settings_btn.setToolTip("全局系统偏好与默认文字设置")
         self.settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.settings_btn.clicked.connect(self._open_settings_dialog)
         layout.addWidget(self.settings_btn)
+
+        # Single Page Style Button
+        self.page_style_btn = QPushButton("单页文字", toolbar)
+        self.page_style_btn.setIcon(get_icon("sparkles", color="#3B82F6", size=16))
+        self.page_style_btn.setToolTip("修改当前单页文字排版与样式 (单独配置，仅对当前页生效)")
+        self.page_style_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.page_style_btn.clicked.connect(self._open_current_page_style_dialog)
+        layout.addWidget(self.page_style_btn)
 
         # Export Button
         self.export_btn = QPushButton("导出", toolbar)
@@ -371,6 +355,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+0"), self, self.canvas_view.reset_zoom)
         QShortcut(QKeySequence("Ctrl+F"), self, self.canvas_view.fit_in_view)
         QShortcut(QKeySequence("Ctrl+B"), self, self.toggle_sidebar)
+        QShortcut(QKeySequence("R"), self, self.canvas_view.toggle_draw_tool)
 
     # -------------------------------------------------------------------------
     # Event Handlers & View Synchronization
@@ -469,7 +454,8 @@ class MainWindow(QMainWindow):
                         for b in blocks
                     ]
                     try:
-                        translated = self.typo_engine.render_page(base_bg, model_blocks, self.config.style)
+                        page_style = item_data.get("style") or self.config.style
+                        translated = self.typo_engine.render_page(base_bg, model_blocks, page_style)
                         cache_mgr.save_page_cache(path, rendered_img=translated)
                     except Exception as e:
                         print(f"[-] Auto render on select error: {e}")
@@ -487,8 +473,57 @@ class MainWindow(QMainWindow):
         if b_id:
             self.inspector_panel.select_block_by_id(b_id)
 
+    def _on_bubble_moving(self, block_data: Dict[str, Any]):
+        """Live syncs block coordinates in current_image_data while dragging without heavy re-render."""
+        if not self.current_image_data:
+            return
+        target_id = str(block_data.get("id"))
+        blocks = self.current_image_data.get("blocks", [])
+        for b in blocks:
+            bid = str(b.get("id") if isinstance(b, dict) else getattr(b, "id", None))
+            if bid == target_id:
+                if isinstance(b, dict):
+                    b.update(block_data)
+                else:
+                    for k, v in block_data.items():
+                        if hasattr(b, k):
+                            setattr(b, k, v)
+                break
+        if self.inspector_panel.selected_block and str(self.inspector_panel.selected_block.get("id")) == target_id:
+            if isinstance(self.inspector_panel.selected_block, dict):
+                self.inspector_panel.selected_block.update(block_data)
+            self.inspector_panel.block_title.setText(
+                f"气泡 #{str(target_id)[:6]} (位置: {block_data.get('xmin', 0):.1f}%, {block_data.get('ymin', 0):.1f}%)"
+            )
+
     def _on_bubble_geometry_changed(self, block_data: Dict[str, Any]):
-        self._schedule_rerender()
+        """Committed when user releases mouse after dragging or resizing bubble on canvas."""
+        self._on_bubble_moving(block_data)
+        self._re_render_current_page()
+
+    def _on_bubble_created(self, new_block: Dict[str, Any]):
+        """Handles manual bubble creation from canvas drag selection."""
+        if not self.current_image_data:
+            self.toast.show_message("请先载入并选择一张漫画页面！", "warning")
+            return
+
+        blocks = self.current_image_data.get("blocks", [])
+        blocks.append(new_block)
+        self.current_image_data["blocks"] = blocks
+
+        # Re-set data to update overlays & inspector
+        self.canvas_view.set_data(
+            original_cv=self.canvas_view.original_cv,
+            translated_cv=self.canvas_view.translated_cv,
+            erased_cv=self.canvas_view.erased_cv,
+            blocks=blocks
+        )
+        self.inspector_panel.set_blocks(blocks)
+        self.inspector_panel.select_block_by_id(new_block["id"])
+        self.inspector_panel.tab_widget.setCurrentIndex(0)
+        self.inspector_panel.trans_text_edit.setFocus()
+
+        self.toast.show_message(f"已新建气泡 #{str(new_block['id'])[:4]}，可直接在右侧输入译文！", "success")
 
     def _on_canvas_bubble_swap_prev(self, block_id: str):
         self.inspector_panel.select_block_by_id(block_id)
@@ -560,15 +595,11 @@ class MainWindow(QMainWindow):
         ]
 
         try:
-            rendered = self.typo_engine.render_page(base_img, model_blocks, self.config.style)
+            page_style = self.current_image_data.get("style") or self.config.style
+            rendered = self.typo_engine.render_page(base_img, model_blocks, page_style)
             self.current_image_data["translated_img"] = rendered
             self.canvas_view.translated_cv = rendered
-            self.canvas_view.set_data(
-                original_cv=self.canvas_view.original_cv,
-                translated_cv=rendered,
-                erased_cv=base_img,
-                blocks=blocks
-            )
+            self.canvas_view.update_translated_image(rendered, erased_cv=base_img)
             # Ensure view mode displays translated artwork
             if self.canvas_view.view_mode in ("original", "inpainted"):
                 self.canvas_view.set_view_mode("translated")
@@ -614,7 +645,8 @@ class MainWindow(QMainWindow):
 
     def _open_export_directory(self):
         """Opens the exported chapter directory in OS file manager."""
-        export_dir = os.path.join(os.getcwd(), "exported_chapter")
+        export_dir = getattr(self.config, "export_dir", "") or os.path.join(os.getcwd(), "exported_chapter")
+        export_dir = os.path.abspath(export_dir)
         os.makedirs(export_dir, exist_ok=True)
         import subprocess
         subprocess.Popen(f'explorer "{os.path.normpath(export_dir)}"')
@@ -644,6 +676,7 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(build_stylesheet(tokens))
         self.theme_btn.setIcon(get_icon("sun" if theme_name == "dark" else "moon", color=tokens.text_secondary, size=16))
         self.settings_btn.setIcon(get_icon("settings", color=tokens.text_secondary, size=16))
+        self.page_style_btn.setIcon(get_icon("sparkles", color=tokens.accent_primary, size=16))
         self.export_btn.setIcon(get_icon("download", color=tokens.text_secondary, size=16))
         self.batch_toolbar_btn.setIcon(get_icon("play_all", color=tokens.accent_primary, size=16))
         self.canvas_view.setBackgroundBrush(QColor(tokens.canvas_bg))
@@ -656,7 +689,188 @@ class MainWindow(QMainWindow):
         """Opens Apple HIG system settings preference modal."""
         dialog = SettingsDialog(config=self.config, parent=self)
         if dialog.exec():
-            self.toast.show_message("设置已成功保存并生效！", "success")
+            if getattr(dialog, "re_render_all_requested", False):
+                self._re_render_all_pages()
+            else:
+                self.toast.show_message("设置已成功保存并生效！", "success")
+
+    def _open_page_style_dialog(self, item_data: Dict[str, Any]):
+        """Opens page-specific typography modal for the given page."""
+        cur_style = item_data.get("style")
+        dialog = PageStyleDialog(
+            item_data=item_data,
+            global_style=self.config.style,
+            current_page_style=cur_style,
+            parent=self
+        )
+        if dialog.exec():
+            new_style = dialog.applied_style
+            item_data["style"] = new_style
+            self._re_render_single_page(item_data, new_style)
+
+    def _open_current_page_style_dialog(self):
+        """Opens page-specific typography modal for current canvas page."""
+        if self.current_image_data and "path" in self.current_image_data:
+            self._open_page_style_dialog(self.current_image_data)
+        elif self.page_list.items_data:
+            self._open_page_style_dialog(self.page_list.items_data[0])
+        else:
+            self.toast.show_message("请先载入漫画图片或选择页面！", "warning")
+
+    def _re_render_all_pages(self):
+        """
+        Re-renders all pages in the chapter queue that have translation blocks.
+        Uses page-specific StyleConfig if set, otherwise falls back to global self.config.style.
+        """
+        cache_mgr = get_cache_manager()
+        items = self.page_list.items_data
+        if not items:
+            self.toast.show_message("当前列表无页面，全局文字设置已保存！", "info")
+            return
+
+        re_rendered_count = 0
+        current_path = self.current_image_data.get("path") if self.current_image_data else None
+
+        for item in items:
+            path = item.get("path")
+            if not path or not os.path.exists(path):
+                continue
+
+            is_current = (current_path == path)
+
+            # Get blocks
+            blocks = None
+            if is_current and self.current_image_data and self.current_image_data.get("blocks"):
+                blocks = self.current_image_data["blocks"]
+            elif item.get("blocks"):
+                blocks = item["blocks"]
+            else:
+                cached = cache_mgr.load_page_cache(path, load_images=False)
+                blocks = cached.get("blocks")
+
+            if not blocks:
+                continue
+
+            # Get base image (erased or original)
+            erased_img = None
+            if is_current and self.current_image_data and self.current_image_data.get("erased_img") is not None:
+                erased_img = self.current_image_data["erased_img"]
+            elif item.get("erased_img") is not None:
+                erased_img = item["erased_img"]
+            else:
+                cached_full = cache_mgr.load_page_cache(path, load_images=True)
+                erased_img = cached_full.get("erased_img")
+
+            if erased_img is None:
+                erased_img = safe_cv2_imread(path)
+            if erased_img is None:
+                continue
+
+            model_blocks = [
+                b if isinstance(b, TranslationBlock) else TranslationBlock.from_dict(b)
+                for b in blocks
+            ]
+
+            effective_style = item.get("style") or self.config.style
+
+            try:
+                rendered = self.typo_engine.render_page(erased_img, model_blocks, effective_style)
+                item["translated_img"] = rendered
+                cache_mgr.save_page_cache(path, erased_img=erased_img, blocks=model_blocks, rendered_img=rendered)
+                re_rendered_count += 1
+
+                if is_current:
+                    self.current_image_data["translated_img"] = rendered
+                    self.canvas_view.translated_cv = rendered
+                    self.canvas_view.set_data(
+                        original_cv=self.canvas_view.original_cv,
+                        translated_cv=rendered,
+                        erased_cv=erased_img,
+                        blocks=blocks
+                    )
+            except Exception as e:
+                print(f"[-] Re-render page error for {path}: {e}")
+
+        if re_rendered_count > 0:
+            self.toast.show_message(f"全局文字设置已生效，已重新渲染全部 {re_rendered_count} 个页面！", "success")
+            self.status_label.setText(f"排版重绘完成: 全部 {re_rendered_count} 个页面已重新渲染并保存")
+        else:
+            self.toast.show_message("全局设置已保存（尚未识别翻译的页面将在翻译时自动套用新排版）", "info")
+
+    def _re_render_single_page(self, item_data: Dict[str, Any], page_style: Optional[StyleConfig]):
+        """
+        Re-renders only the specified page using its dedicated page style or global style.
+        """
+        path = item_data.get("path")
+        if not path or not os.path.exists(path):
+            return
+
+        cache_mgr = get_cache_manager()
+        is_current = (self.current_image_data and self.current_image_data.get("path") == path)
+
+        # Get blocks
+        blocks = None
+        if is_current and self.current_image_data and self.current_image_data.get("blocks"):
+            blocks = self.current_image_data["blocks"]
+        elif item_data.get("blocks"):
+            blocks = item_data["blocks"]
+        else:
+            cached = cache_mgr.load_page_cache(path, load_images=False)
+            blocks = cached.get("blocks")
+
+        # Get base image
+        erased_img = None
+        if is_current and self.current_image_data and self.current_image_data.get("erased_img") is not None:
+            erased_img = self.current_image_data["erased_img"]
+        elif item_data.get("erased_img") is not None:
+            erased_img = item_data["erased_img"]
+        else:
+            cached_full = cache_mgr.load_page_cache(path, load_images=True)
+            erased_img = cached_full.get("erased_img")
+
+        if erased_img is None:
+            erased_img = safe_cv2_imread(path)
+
+        if not blocks:
+            filename = os.path.basename(path)
+            self.toast.show_message(f"页面【{filename}】排版设置已保存，将在执行翻译时生效！", "info")
+            return
+
+        if erased_img is None:
+            self.toast.show_message(f"无法读取底图文件: {path}", "error")
+            return
+
+        model_blocks = [
+            b if isinstance(b, TranslationBlock) else TranslationBlock.from_dict(b)
+            for b in blocks
+        ]
+
+        style_to_use = page_style if page_style is not None else self.config.style
+
+        try:
+            rendered = self.typo_engine.render_page(erased_img, model_blocks, style_to_use)
+            item_data["translated_img"] = rendered
+            cache_mgr.save_page_cache(path, erased_img=erased_img, blocks=model_blocks, rendered_img=rendered)
+
+            if is_current:
+                self.current_image_data["translated_img"] = rendered
+                self.canvas_view.translated_cv = rendered
+                self.canvas_view.set_data(
+                    original_cv=self.canvas_view.original_cv,
+                    translated_cv=rendered,
+                    erased_cv=erased_img,
+                    blocks=blocks
+                )
+                if self.canvas_view.view_mode in ("original", "inpainted"):
+                    self.canvas_view.set_view_mode("translated")
+                    if "translated" in self._mode_buttons:
+                        self._mode_buttons["translated"].setChecked(True)
+
+            filename = os.path.basename(path)
+            self.toast.show_message(f"页面【{filename}】文字设置已应用并重新渲染！", "success")
+            self.status_label.setText(f"单页重绘完成: 页面【{filename}】已重新渲染并保存")
+        except Exception as e:
+            self.toast.show_message(f"单页重排版失败: {e}", "error")
 
     def _on_run_clicked(self):
         """Starts single page translation or cancels active worker."""
@@ -776,7 +990,8 @@ class MainWindow(QMainWindow):
         if hasattr(self.page_list, "batch_btn"):
             self.page_list.batch_btn.setText("⏹ 取消批处理")
 
-        export_dir = os.path.join(os.getcwd(), "exported_chapter")
+        export_dir = getattr(self.config, "export_dir", "") or os.path.join(os.getcwd(), "exported_chapter")
+        export_dir = os.path.abspath(export_dir)
         os.makedirs(export_dir, exist_ok=True)
 
         self.active_batch_worker = BatchWorker(

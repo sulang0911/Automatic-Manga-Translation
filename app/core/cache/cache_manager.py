@@ -36,17 +36,27 @@ def safe_cv2_imread(path: str) -> Optional[np.ndarray]:
         return None
 
 
-def safe_cv2_imwrite(path: str, img: np.ndarray, ext: str = ".webp", quality: int = 95) -> bool:
+def safe_cv2_imwrite(path: str, img: np.ndarray, ext: Optional[str] = None, quality: int = 95) -> bool:
     """
     Safely writes an image using OpenCV, supporting Windows Unicode and non-ASCII paths.
+    If ext is not specified, infers extension from the target path (defaults to .webp).
     Uses WebP with quality 95 by default; falls back to PNG if WebP encoding fails.
     """
     if img is None or img.size == 0:
         return False
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        if ext is None:
+            file_ext = os.path.splitext(path)[1].lower()
+            ext = file_ext if file_ext in {".png", ".jpg", ".jpeg", ".webp", ".bmp"} else ".webp"
         is_webp = ext.lower().endswith(".webp")
-        params = [cv2.IMWRITE_WEBP_QUALITY, quality] if is_webp else []
+        is_jpg = ext.lower() in {".jpg", ".jpeg"}
+        if is_webp:
+            params = [int(cv2.IMWRITE_WEBP_QUALITY), quality]
+        elif is_jpg:
+            params = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
+        else:
+            params = []
         ok, buf = cv2.imencode(ext, img, params)
         if not ok and is_webp:
             # Fallback to PNG

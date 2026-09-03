@@ -48,14 +48,23 @@ class StrokeRenderer:
         cls,
         text_rgb: Tuple[int, int, int],
         font_size: float,
-        threshold: float = 140.0
+        threshold: float = 140.0,
+        bg_rgb: Optional[Tuple[int, int, int]] = None
     ) -> StrokeStyle:
-        lum = cls.calculate_bt709_luminance(*text_rgb)
-        # High luminance (light text) -> Dark stroke; Low luminance (dark text) -> Light stroke
-        if lum > threshold:
-            color = (0, 0, 0, 217)       # 85% black
+        if bg_rgb is not None:
+            bg_lum = cls.calculate_bt709_luminance(*bg_rgb)
+            # On dark backgrounds, stroke must be dark (black) to keep white text clean and crisp
+            if bg_lum < 120:
+                color = (0, 0, 0, 220)
+            else:
+                color = (255, 255, 255, 220)
         else:
-            color = (255, 255, 255, 217) # 85% white
+            lum = cls.calculate_bt709_luminance(*text_rgb)
+            # High luminance (light text) -> Dark stroke; Low luminance (dark text) -> Light stroke
+            if lum > threshold:
+                color = (0, 0, 0, 217)       # 85% black
+            else:
+                color = (255, 255, 255, 217) # 85% white
 
         # 6% of font size clamped to [0.5, 3.5]px
         stroke_w = max(0.5, min(3.5, font_size * 0.06))
@@ -88,20 +97,27 @@ class StrokeRenderer:
         font: Any,
         fill_rgba: Tuple[int, int, int, int],
         stroke: Optional[StrokeStyle] = None,
-        shadow: Optional[DropShadowStyle] = None
+        shadow: Optional[DropShadowStyle] = None,
+        is_bold: bool = False
     ) -> None:
         """
-        Render text glyph with stroke and drop shadow using PIL onto target_image.
+        Render text glyph with stroke, bolding, and drop shadow using PIL onto target_image.
         """
+        font_size = getattr(font, "size", 20)
+        bold_extra = max(1, int(round(font_size * 0.045))) if is_bold else 0
+
         # 1. Drop shadow layer
         if shadow and shadow.enabled:
             shadow_layer = Image.new("RGBA", target_image.size, (0, 0, 0, 0))
             shadow_draw = ImageDraw.Draw(shadow_layer)
+            shadow_stroke_w = int(round(stroke.width + bold_extra)) if (stroke and stroke.width > 0) else bold_extra
             shadow_draw.text(
                 (x + shadow.offset_x, y + shadow.offset_y),
                 text,
                 font=font,
-                fill=shadow.color_rgba
+                fill=shadow.color_rgba,
+                stroke_width=shadow_stroke_w,
+                stroke_fill=shadow.color_rgba if shadow_stroke_w > 0 else None
             )
             blurred_shadow = shadow_layer.filter(ImageFilter.GaussianBlur(shadow.blur_radius))
             target_image.alpha_composite(blurred_shadow)
@@ -111,14 +127,45 @@ class StrokeRenderer:
         stroke_w = int(round(stroke.width)) if stroke else 0
         stroke_fill = stroke.color_rgba if stroke else None
 
-        draw.text(
-            (x, y),
-            text,
-            font=font,
-            fill=fill_rgba,
-            stroke_width=stroke_w,
-            stroke_fill=stroke_fill
-        )
+        if is_bold:
+            if stroke_w > 0:
+                # Outer stroke layer with faux-bold expansion
+                draw.text(
+                    (x, y),
+                    text,
+                    font=font,
+                    fill=stroke_fill,
+                    stroke_width=stroke_w + bold_extra,
+                    stroke_fill=stroke_fill
+                )
+                # Inner glyph body stroked in fill color for true bold weight
+                draw.text(
+                    (x, y),
+                    text,
+                    font=font,
+                    fill=fill_rgba,
+                    stroke_width=bold_extra,
+                    stroke_fill=fill_rgba
+                )
+            else:
+                # No stroke, bold text body
+                draw.text(
+                    (x, y),
+                    text,
+                    font=font,
+                    fill=fill_rgba,
+                    stroke_width=bold_extra,
+                    stroke_fill=fill_rgba
+                )
+        else:
+            draw.text(
+                (x, y),
+                text,
+                font=font,
+                fill=fill_rgba,
+                stroke_width=stroke_w,
+                stroke_fill=stroke_fill
+            )
 
     # --------------------------------------------------------------------------
     # PyQt6 / QPainter Vector Drawing Pipeline
@@ -133,7 +180,8 @@ class StrokeRenderer:
         font: Any,
         fill_rgba: Tuple[int, int, int, int],
         stroke: Optional[StrokeStyle] = None,
-        shadow: Optional[DropShadowStyle] = None
+        shadow: Optional[DropShadowStyle] = None,
+        is_bold: bool = False
     ) -> None:
         """
         Render vector text with antialiased stroke and shadow via QPainterPath.
@@ -157,9 +205,10 @@ class StrokeRenderer:
         # 2. Stroke outline pass
         if stroke and stroke.width > 0:
             cr, cg, cb, ca = stroke.color_rgba
+            extra = 1.0 if is_bold else 0.0
             pen = QPen(
                 QColor(cr, cg, cb, ca),
-                stroke.width,
+                stroke.width + extra,
                 Qt.PenStyle.SolidLine,
                 Qt.PenCapStyle.RoundCap,
                 Qt.PenJoinStyle.RoundJoin
@@ -169,3 +218,6 @@ class StrokeRenderer:
         # 3. Fill glyph body pass
         fr, fg, fb, fa = fill_rgba
         painter.fillPath(path, QBrush(QColor(fr, fg, fb, fa)))
+        if is_bold and (not stroke or stroke.width <= 0):
+            bold_pen = QPen(QColor(fr, fg, fb, fa), 1.0, Qt.PenStyle.SolidLine)
+            painter.strokePath(path, bold_pen)

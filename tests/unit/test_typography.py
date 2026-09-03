@@ -196,3 +196,36 @@ def test_typography_engine_render_translations_unpacks_nested_style_config():
     assert rendered.shape == (300, 300, 3)
     assert "霞鹜文楷" in called_fonts
 
+
+def test_auto_contrast_black_and_white_backgrounds():
+    """Verify dark background automatically renders white text and white background renders black text."""
+    engine = TypographyEngine()
+    cfg = StyleConfig()
+
+    # Black background (黑底)
+    black_bg = np.zeros((300, 300, 3), dtype=np.uint8)
+    block_black = TranslationBlock(
+        id="b_dark",
+        original_text="テスト",
+        translated_text="黑底白字测试",
+        xmin=10.0, ymin=10.0, xmax=60.0, ymax=60.0,
+        text_color="#000000"  # Default/accidental black should auto-invert to white
+    )
+    res_dark = engine.render_page(black_bg, [block_black], cfg)
+    crop_dark = res_dark[30:180, 30:180]
+    assert np.max(crop_dark) > 200, "Dark background must render bright text (white)"
+
+    # White background (白底)
+    white_bg = np.full((300, 300, 3), 255, dtype=np.uint8)
+    block_white = TranslationBlock(
+        id="b_light",
+        original_text="テスト",
+        translated_text="白底黑字测试",
+        xmin=10.0, ymin=10.0, xmax=60.0, ymax=60.0,
+        text_color="#FFFFFF"  # Default/accidental white should auto-invert to black
+    )
+    res_light = engine.render_page(white_bg, [block_white], cfg)
+    crop_light = res_light[30:180, 30:180]
+    assert np.min(crop_light) < 50, "Light background must render dark text (black)"
+
+

@@ -286,6 +286,16 @@ class OCREngine:
 
             crop = image[ymin:ymax, xmin:xmax]
             bg_color = get_background_color_hex(crop)
+            r_val = int(bg_color[1:3], 16) if len(bg_color) >= 7 else 255
+            g_val = int(bg_color[3:5], 16) if len(bg_color) >= 7 else 255
+            b_val = int(bg_color[5:7], 16) if len(bg_color) >= 7 else 255
+
+            try:
+                from app.core.inpaint.color_analyzer import analyze_text_color
+                detected_text_color = analyze_text_color(crop, (b_val, g_val, r_val))
+            except Exception:
+                bg_lum = 0.299 * r_val + 0.587 * g_val + 0.114 * b_val
+                detected_text_color = "#FFFFFF" if bg_lum < 128 else "#000000"
 
             # Determine type (bubble vs onomatopoeia) based on aspect ratio & background
             is_bubble = True
@@ -302,7 +312,7 @@ class OCREngine:
                 xmax=round((xmax / w_img) * 100.0, 2),
                 ymax=round((ymax / h_img) * 100.0, 2),
                 bg_color=bg_color,
-                text_color="#000000",
+                text_color=detected_text_color,
                 type="bubble" if is_bubble else "onomatopoeia",
                 confidence=float(box.get("conf", 1.0)),
                 line_count=int(box.get("line_count", 1))

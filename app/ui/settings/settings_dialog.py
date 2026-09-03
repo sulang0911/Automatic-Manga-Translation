@@ -7,12 +7,16 @@ from typing import Optional
 from PyQt6.QtWidgets import (
     QWidget, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QTextEdit, QComboBox, QSlider, QCheckBox,
-    QStackedWidget, QListWidget, QListWidgetItem, QGroupBox, QFileDialog, QScrollArea, QFrame
+    QStackedWidget, QListWidget, QListWidgetItem, QGroupBox, QFileDialog, QScrollArea, QFrame,
+    QColorDialog
 )
 from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal
+from PyQt6.QtGui import QColor
 
 from app.core.config import AppConfig, DEFAULT_SYSTEM_PROMPT
+from app.core.models import StyleConfig, TextColorMode, BgColorMode, StrokeMode
 from desktop.core.translation_engine import TranslationEngine
+from app.ui.settings.page_style_dialog import FONT_CHOICES
 
 
 class AppModelTestWorker(QThread):
@@ -49,13 +53,15 @@ class SettingsDialog(QDialog):
     Apple HIG System Settings Dialog with categorized navigation list on the left
     and tabbed preference panels on the right.
     """
+    sig_apply_all_pages = pyqtSignal()
 
     def __init__(self, config: Optional[AppConfig] = None, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.config = config or AppConfig()
+        self.re_render_all_requested = False
         self.setWindowTitle("系统偏好设置")
-        self.resize(720, 640)
-        self.setMinimumSize(680, 560)
+        self.resize(760, 680)
+        self.setMinimumSize(700, 600)
 
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(16, 16, 16, 16)
@@ -70,7 +76,8 @@ class SettingsDialog(QDialog):
             ("🤖 AI 翻译大模型", 0),
             ("🔍 OCR 文字识别", 1),
             ("🧹 图像背景修复", 2),
-            ("🎨 排版与导出", 3),
+            ("📝 译文文字设置", 3),
+            ("💾 导出与缓存", 4),
         ]
         for name, _ in categories:
             item = QListWidgetItem(name)
@@ -87,6 +94,7 @@ class SettingsDialog(QDialog):
         self.stack.addWidget(self._create_llm_page())
         self.stack.addWidget(self._create_ocr_page())
         self.stack.addWidget(self._create_inpaint_page())
+        self.stack.addWidget(self._create_typography_page())
         self.stack.addWidget(self._create_export_page())
 
         self.nav_list.currentRowChanged.connect(self.stack.setCurrentIndex)
@@ -100,10 +108,27 @@ class SettingsDialog(QDialog):
         self.cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(self.cancel_btn)
 
-        self.save_btn = QPushButton("保存配置", self)
-        self.save_btn.setProperty("class", "primaryBtn")
+        self.save_btn = QPushButton("仅保存配置", self)
         self.save_btn.clicked.connect(self._on_save)
         btn_layout.addWidget(self.save_btn)
+
+        self.apply_all_btn = QPushButton("✨ 保存并应用到全部页面", self)
+        self.apply_all_btn.setProperty("class", "primaryBtn")
+        self.apply_all_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3B82F6;
+                color: #FFFFFF;
+                border-radius: 6px;
+                padding: 6px 16px;
+                font-weight: 600;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #2563EB;
+            }
+        """)
+        self.apply_all_btn.clicked.connect(self._on_apply_all)
+        btn_layout.addWidget(self.apply_all_btn)
 
         right_container.addLayout(btn_layout)
         main_layout.addLayout(right_container)
@@ -252,49 +277,189 @@ class SettingsDialog(QDialog):
         layout.addStretch()
         return widget
 
+    def _create_typography_page(self) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("background: transparent;")
+
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(8, 4, 12, 4)
+        layout.setSpacing(12)
+
+        # 1. 默认字体与排版
+        box_font = QGroupBox("全局默认字体与排版风格")
+        box_font_layout = QVBoxLayout(box_font)
+        box_font_layout.setSpacing(8)
+
+        box_font_layout.addWidget(QLabel("默认字体 (默认可爱字体 - 霞鹜文楷):"))
+        self.typo_font_combo = QComboBox()
+        for label, _ in FONT_CHOICES:
+            self.typo_font_combo.addItem(label)
+
+        current_font = getattr(self.config.style, "font_family", "霞鹜文楷")
+        selected_idx = 0
+        for i, (label, real_font) in enumerate(FONT_CHOICES):
+            if real_font.lower() in current_font.lower() or current_font.lower() in label.lower():
+                selected_idx = i
+                break
+        self.typo_font_combo.setCurrentIndex(selected_idx)
+        box_font_layout.addWidget(self.typo_font_combo)
+
+        row_checks = QHBoxLayout()
+        self.typo_bold_cb = QCheckBox("粗体 (Bold - 默认开启)")
+        self.typo_bold_cb.setChecked(getattr(self.config.style, "font_bold", True))
+        self.typo_bold_cb.setStyleSheet("font-weight: 600;")
+        row_checks.addWidget(self.typo_bold_cb)
+
+        self.typo_italic_cb = QCheckBox("斜体 (Italic)")
+        self.typo_italic_cb.setChecked(getattr(self.config.style, "font_italic", False))
+        row_checks.addWidget(self.typo_italic_cb)
+
+        self.typo_auto_fit_cb = QCheckBox("自动适应气泡大小 (二分寻优)")
+        self.typo_auto_fit_cb.setChecked(getattr(self.config.style, "auto_fit_font_size", True))
+        row_checks.addWidget(self.typo_auto_fit_cb)
+        box_font_layout.addLayout(row_checks)
+
+        # Font scale
+        scale_row = QHBoxLayout()
+        scale_row.addWidget(QLabel("字号缩放比例:"))
+        self.typo_scale_lbl = QLabel(f"{getattr(self.config.style, 'font_size_scale', 1.0):.1f}x")
+        self.typo_scale_lbl.setStyleSheet("font-weight: 600; color: #3B82F6;")
+        scale_row.addWidget(self.typo_scale_lbl)
+        scale_row.addStretch()
+        box_font_layout.addLayout(scale_row)
+
+        self.typo_scale_slider = QSlider(Qt.Orientation.Horizontal)
+        self.typo_scale_slider.setRange(5, 30)
+        self.typo_scale_slider.setValue(int(getattr(self.config.style, "font_size_scale", 1.0) * 10))
+        self.typo_scale_slider.valueChanged.connect(lambda v: self.typo_scale_lbl.setText(f"{v/10.0:.1f}x"))
+        box_font_layout.addWidget(self.typo_scale_slider)
+
+        # Line spacing
+        spacing_row = QHBoxLayout()
+        spacing_row.addWidget(QLabel("行间距比例:"))
+        self.typo_spacing_lbl = QLabel(f"{getattr(self.config.style, 'line_spacing', 1.15):.2f}x")
+        spacing_row.addWidget(self.typo_spacing_lbl)
+        spacing_row.addStretch()
+        box_font_layout.addLayout(spacing_row)
+
+        self.typo_spacing_slider = QSlider(Qt.Orientation.Horizontal)
+        self.typo_spacing_slider.setRange(10, 20)
+        self.typo_spacing_slider.setValue(int(getattr(self.config.style, "line_spacing", 1.15) * 10))
+        self.typo_spacing_slider.valueChanged.connect(lambda v: self.typo_spacing_lbl.setText(f"{v/10.0:.2f}x"))
+        box_font_layout.addWidget(self.typo_spacing_slider)
+
+        layout.addWidget(box_font)
+
+        # 2. 颜色与描边
+        box_color = QGroupBox("文字颜色与外边缘描边")
+        box_color_layout = QVBoxLayout(box_color)
+        box_color_layout.setSpacing(8)
+
+        # Text Color
+        row_txt_color = QHBoxLayout()
+        row_txt_color.addWidget(QLabel("文字颜色:"))
+        self.typo_txt_color_mode = QComboBox()
+        self.typo_txt_color_mode.addItem("原文提取颜色", TextColorMode.ORIGINAL.value)
+        self.typo_txt_color_mode.addItem("自定义纯色", TextColorMode.CUSTOM.value)
+        mode_idx = 1 if getattr(self.config.style, "text_color_mode", "original") == TextColorMode.CUSTOM.value else 0
+        self.typo_txt_color_mode.setCurrentIndex(mode_idx)
+        self.typo_txt_color_mode.currentIndexChanged.connect(lambda idx: self.typo_txt_color_btn.setEnabled(idx == 1))
+        row_txt_color.addWidget(self.typo_txt_color_mode, 1)
+
+        self._global_custom_text_color = getattr(self.config.style, "custom_text_color", "#000000")
+        self.typo_txt_color_btn = QPushButton("选择颜色")
+        self.typo_txt_color_btn.setFixedWidth(80)
+        self.typo_txt_color_btn.setStyleSheet(f"background-color: {self._global_custom_text_color}; color: #FFFFFF; font-size: 11px;")
+        self.typo_txt_color_btn.setEnabled(mode_idx == 1)
+        self.typo_txt_color_btn.clicked.connect(self._pick_global_text_color)
+        row_txt_color.addWidget(self.typo_txt_color_btn)
+        box_color_layout.addLayout(row_txt_color)
+
+        # Stroke Mode
+        row_stroke = QHBoxLayout()
+        row_stroke.addWidget(QLabel("文字描边:"))
+        self.typo_stroke_mode = QComboBox()
+        self.typo_stroke_mode.addItem("智能对比度 (推荐)", StrokeMode.AUTO.value)
+        self.typo_stroke_mode.addItem("自定义描边", StrokeMode.MANUAL.value)
+        self.typo_stroke_mode.addItem("关闭描边", StrokeMode.OFF.value)
+        cur_stroke = getattr(self.config.style, "stroke_mode", "auto")
+        s_idx = 0
+        if cur_stroke == StrokeMode.MANUAL.value:
+            s_idx = 1
+        elif cur_stroke == StrokeMode.OFF.value:
+            s_idx = 2
+        self.typo_stroke_mode.setCurrentIndex(s_idx)
+        self.typo_stroke_mode.currentIndexChanged.connect(lambda idx: self.typo_stroke_w_slider.setEnabled(idx != 2))
+        row_stroke.addWidget(self.typo_stroke_mode, 1)
+        box_color_layout.addLayout(row_stroke)
+
+        # Stroke Width
+        row_sw = QHBoxLayout()
+        row_sw.addWidget(QLabel("描边粗细 (px):"))
+        self.typo_stroke_w_lbl = QLabel(f"{getattr(self.config.style, 'stroke_width', 2.0):.1f}px")
+        row_sw.addWidget(self.typo_stroke_w_lbl)
+        row_sw.addStretch()
+        box_color_layout.addLayout(row_sw)
+
+        self.typo_stroke_w_slider = QSlider(Qt.Orientation.Horizontal)
+        self.typo_stroke_w_slider.setRange(5, 50)
+        self.typo_stroke_w_slider.setValue(int(getattr(self.config.style, "stroke_width", 2.0) * 10))
+        self.typo_stroke_w_slider.setEnabled(s_idx != 2)
+        self.typo_stroke_w_slider.valueChanged.connect(lambda v: self.typo_stroke_w_lbl.setText(f"{v/10.0:.1f}px"))
+        box_color_layout.addWidget(self.typo_stroke_w_slider)
+
+        # Bg mode
+        row_bg = QHBoxLayout()
+        row_bg.addWidget(QLabel("背景气泡覆盖:"))
+        self.typo_bg_mode = QComboBox()
+        self.typo_bg_mode.addItem("原图周边环境自适应", BgColorMode.ORIGINAL.value)
+        self.typo_bg_mode.addItem("纯白覆盖", BgColorMode.CUSTOM.value)
+        self.typo_bg_mode.addItem("透明无背景仅文字", BgColorMode.NONE.value)
+        cur_bg = getattr(self.config.style, "bg_color_mode", "original")
+        bg_idx = 0
+        if cur_bg == BgColorMode.CUSTOM.value:
+            bg_idx = 1
+        elif cur_bg == BgColorMode.NONE.value:
+            bg_idx = 2
+        self.typo_bg_mode.setCurrentIndex(bg_idx)
+        row_bg.addWidget(self.typo_bg_mode, 1)
+        box_color_layout.addLayout(row_bg)
+
+        layout.addWidget(box_color)
+        layout.addStretch()
+
+        scroll.setWidget(widget)
+        return scroll
+
     def _create_export_page(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setSpacing(12)
 
-        # Typography Font Selection
-        box_font = QGroupBox("漫画排版默认字体")
-        box_font_layout = QVBoxLayout(box_font)
-        box_font_layout.addWidget(QLabel("全局默认漫画字体 (可在右侧检查器单块覆盖):"))
-        self.default_font_combo = QComboBox()
-        self.default_font_combo.addItems([
-            "霞鹜文楷 (日漫萌系)",
-            "幼圆 (圆润可爱)",
-            "得意黑 (潮流漫画)",
-            "Comic Sans MS (卡通英文)",
-            "Ink Free (随性手绘)",
-            "Segoe Print (手写涂鸦)",
-            "楷体 (清秀书法)",
-            "Microsoft YaHei",
-            "SimHei",
-        ])
-        current_default_font = getattr(self.config.style, "font_family", "霞鹜文楷")
-        for i in range(self.default_font_combo.count()):
-            if current_default_font.lower() in self.default_font_combo.itemText(i).lower():
-                self.default_font_combo.setCurrentIndex(i)
-                break
-        box_font_layout.addWidget(self.default_font_combo)
-        layout.addWidget(box_font)
-
-        box = QGroupBox("导出与缓存选项")
+        box = QGroupBox("导出与磁盘缓存")
         box_layout = QVBoxLayout(box)
+        box_layout.setSpacing(10)
 
-        self.compress_cb = QCheckBox("导出时启用视觉无损压缩 (大幅缩减体积)")
+        self.compress_cb = QCheckBox("导出时启用视觉无损压缩 (大幅缩减输出文件体积)")
         self.compress_cb.setChecked(getattr(self.config.style, "export_compressed", False))
         box_layout.addWidget(self.compress_cb)
 
-        self.auto_cache_cb = QCheckBox("自动保存中间结果到本地磁盘缓存")
+        self.auto_cache_cb = QCheckBox("自动保存中间结果到本地磁盘缓存 (.amt_cache)")
         self.auto_cache_cb.setChecked(getattr(self.config, "auto_save_cache", True))
         box_layout.addWidget(self.auto_cache_cb)
 
         layout.addWidget(box)
         layout.addStretch()
         return widget
+
+    def _pick_global_text_color(self):
+        color = QColorDialog.getColor(QColor(self._global_custom_text_color), self, "选择全局文字颜色")
+        if color.isValid():
+            self._global_custom_text_color = color.name()
+            self.typo_txt_color_btn.setStyleSheet(f"background-color: {self._global_custom_text_color}; color: #FFFFFF; font-size: 11px;")
 
     def _on_provider_changed(self, provider: str):
         defaults = {
@@ -346,26 +511,51 @@ class SettingsDialog(QDialog):
                 "border: 1px solid rgba(255, 69, 58, 0.3); border-radius: 6px; font-size: 12px;"
             )
 
-    def _on_save(self):
-        # Update config attributes
+    def _save_to_config(self):
+        # LLM
         self.config.llm.provider = self.provider_combo.currentText()
         self.config.llm.api_key = self.api_key_edit.text().strip()
         self.config.llm.model = self.model_edit.text().strip()
         self.config.llm.endpoint = self.endpoint_edit.text().strip()
         self.config.llm.system_prompt = self.sys_prompt_edit.toPlainText().strip() or DEFAULT_SYSTEM_PROMPT
 
+        # OCR
         self.config.ocr.engine = self.ocr_engine_combo.currentText()
         self.config.ocr.force_cpu = not self.gpu_cb.isChecked()
         self.config.source_lang = self.source_lang_combo.currentText()
 
+        # Inpaint
         self.config.inpaint.engine = self.inpaint_combo.currentText()
         self.config.inpaint.opencv_method = self.inpaint_method_combo.currentText()
         self.config.inpaint.vram_safe_downscale = self.vram_safe_cb.isChecked()
 
-        clean_font = self.default_font_combo.currentText().split("(")[0].split("（")[0].strip()
-        self.config.style.font_family = clean_font
+        # Typography Style
+        _, real_font = FONT_CHOICES[self.typo_font_combo.currentIndex()]
+        self.config.style.font_family = real_font
+        self.config.style.font_bold = self.typo_bold_cb.isChecked()
+        self.config.style.font_italic = self.typo_italic_cb.isChecked()
+        self.config.style.auto_fit_font_size = self.typo_auto_fit_cb.isChecked()
+        self.config.style.font_size_scale = self.typo_scale_slider.value() / 10.0
+        self.config.style.line_spacing = self.typo_spacing_slider.value() / 10.0
+        self.config.style.text_color_mode = self.typo_txt_color_mode.currentData()
+        self.config.style.custom_text_color = self._global_custom_text_color
+        self.config.style.stroke_mode = self.typo_stroke_mode.currentData()
+        self.config.style.stroke_width = self.typo_stroke_w_slider.value() / 10.0
+        self.config.style.bg_color_mode = self.typo_bg_mode.currentData()
+
+        # Export & cache
         self.config.style.export_compressed = self.compress_cb.isChecked()
         self.config.auto_save_cache = self.auto_cache_cb.isChecked()
 
         self.config.save("desktop_config.json")
+
+    def _on_save(self):
+        self._save_to_config()
+        self.re_render_all_requested = False
+        self.accept()
+
+    def _on_apply_all(self):
+        self._save_to_config()
+        self.re_render_all_requested = True
+        self.sig_apply_all_pages.emit()
         self.accept()

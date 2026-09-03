@@ -92,6 +92,7 @@ class TranslationBlock:
     stroke_mode_override: Optional[str] = None
     stroke_color_override: Optional[str] = None
     stroke_width_override: Optional[float] = None
+    font_bold_override: Optional[bool] = None
 
     def __post_init__(self):
         # Validate and clamp coordinates to [0.0, 100.0]
@@ -172,7 +173,7 @@ class StyleConfig:
     """
     Global typography and rendering configuration.
     """
-    font_family: str = "Microsoft YaHei"
+    font_family: str = "霞鹜文楷"
     font_size_scale: float = 1.0
     auto_fit_font_size: bool = True
     min_font_size: int = 8
@@ -190,7 +191,7 @@ class StyleConfig:
     stroke_mode: str = StrokeMode.AUTO.value
     stroke_color: str = "#FFFFFF"
     stroke_width: float = 2.0
-    font_bold: bool = False
+    font_bold: bool = True
     font_italic: bool = False
     onomatopoeia_mode: str = OnomatopoeiaMode.IGNORE.value
     reading_direction: str = ReadingOrderMode.MANGA_RTL.value
