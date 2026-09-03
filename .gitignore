@@ -39,3 +39,11 @@ ocr_config.json
 
 # Release Packages
 *.zip
+
+# Agent Scratchpads & Test Caches
+.agents/
+.pytest_cache/
+translation_cache/
+desktop_run.log
+test_desktop_pipeline.py
+

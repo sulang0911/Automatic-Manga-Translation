@@ -1,0 +1,54 @@
+{
+  "theme": "dark",
+  "llm": {
+    "provider": "openai",
+    "api_key": "demo",
+    "model": "gpt-4o-mini",
+    "endpoint": "http://langchain4j.dev/demo/openai/v1",
+    "temperature": 0.2,
+    "timeout_seconds": 60.0,
+    "max_retries": 3
+  },
+  "ocr": {
+    "engine": "easyocr",
+    "lang": "japan",
+    "force_cpu": false,
+    "confidence_threshold": 0.25
+  },
+  "inpaint": {
+    "engine": "lama",
+    "opencv_method": "telea",
+    "vram_safe_downscale": true,
+    "max_dimension": 2048
+  },
+  "style": {
+    "font_family": "霞鹜文楷",
+    "font_size_scale": 1.0,
+    "auto_fit_font_size": true,
+    "min_font_size": 8,
+    "max_font_size": 72,
+    "line_spacing": 1.15,
+    "text_color_mode": "original",
+    "custom_text_color": "#000000",
+    "bg_color_mode": "original",
+    "custom_bg_color": "#FFFFFF",
+    "bg_opacity": 0.95,
+    "text_shadow": false,
+    "shadow_color": "rgba(0,0,0,0.5)",
+    "shadow_blur": 3.0,
+    "text_stroke": true,
+    "stroke_mode": "auto",
+    "stroke_color": "#FFFFFF",
+    "stroke_width": 2.0,
+    "font_bold": false,
+    "font_italic": false,
+    "onomatopoeia_mode": "ignore",
+    "reading_direction": "manga_rtl",
+    "export_compressed": false
+  },
+  "source_lang": "自动识别",
+  "target_lang": "简体中文",
+  "cache_dir": "translation_cache",
+  "auto_save_cache": true,
+  "max_concurrent_workers": 2
+}

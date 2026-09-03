@@ -1,0 +1,219 @@
+/*
+app/ui/theme/style.qss
+Apple Human Interface Guidelines Minimalist Dark Theme (Warm Zinc #18181B)
+*/
+
+QWidget {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", "Segoe UI", "Inter", sans-serif;
+    font-size: 13px;
+    color: #F4F4F5;
+    background-color: transparent;
+    selection-background-color: #3B82F6;
+    selection-color: #FFFFFF;
+    outline: none;
+}
+
+QMainWindow {
+    background-color: #18181B;
+}
+
+QFrame[class="card"], QWidget[class="card"] {
+    background-color: #202024;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+}
+
+QFrame[class="sidebar"] {
+    background-color: #121214;
+    border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+QFrame[class="toolbar"] {
+    background-color: #202024;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    padding: 4px 12px;
+}
+
+QPushButton {
+    background-color: #27272D;
+    color: #F4F4F5;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 6px;
+    padding: 6px 14px;
+    font-weight: 500;
+}
+
+QPushButton:hover {
+    background-color: #303036;
+    border-color: #3B82F6;
+}
+
+QPushButton:pressed {
+    background-color: rgba(59, 130, 246, 0.15);
+}
+
+QPushButton:disabled {
+    color: #71717A;
+    background-color: #202024;
+    border-color: transparent;
+}
+
+QPushButton[class="primaryBtn"], QPushButton#primaryBtn {
+    background-color: #3B82F6;
+    color: #FFFFFF;
+    border: none;
+    font-weight: 600;
+}
+
+QPushButton[class="primaryBtn"]:hover, QPushButton#primaryBtn:hover {
+    background-color: #2563EB;
+}
+
+QPushButton[class="primaryBtn"]:pressed, QPushButton#primaryBtn:pressed {
+    background-color: #2563EB;
+}
+
+QToolButton[class="segment-btn"] {
+    background-color: transparent;
+    color: #A1A1AA;
+    border: none;
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-weight: 500;
+}
+
+QToolButton[class="segment-btn"]:hover {
+    color: #F4F4F5;
+    background-color: #27272D;
+}
+
+QToolButton[class="segment-btn"]:checked {
+    background-color: #3B82F6;
+    color: #FFFFFF;
+    font-weight: 600;
+}
+
+QScrollBar:vertical {
+    border: none;
+    background: transparent;
+    width: 8px;
+    margin: 0px;
+}
+
+QScrollBar::handle:vertical {
+    background: rgba(255, 255, 255, 0.08);
+    min-height: 24px;
+    border-radius: 4px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background: #71717A;
+}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+
+QScrollBar:horizontal {
+    border: none;
+    background: transparent;
+    height: 8px;
+    margin: 0px;
+}
+
+QScrollBar::handle:horizontal {
+    background: rgba(255, 255, 255, 0.08);
+    min-width: 24px;
+    border-radius: 4px;
+}
+
+QScrollBar::handle:horizontal:hover {
+    background: #71717A;
+}
+
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    width: 0px;
+}
+
+QListWidget {
+    background-color: transparent;
+    border: none;
+    outline: none;
+}
+
+QListWidget::item {
+    padding: 8px 10px;
+    border-radius: 10px;
+    margin: 2px 4px;
+    color: #F4F4F5;
+}
+
+QListWidget::item:hover {
+    background-color: #27272D;
+}
+
+QListWidget::item:selected {
+    background-color: rgba(59, 130, 246, 0.15);
+    color: #3B82F6;
+    font-weight: 600;
+    border: 1px solid #3B82F6;
+}
+
+QLineEdit, QTextEdit, QPlainTextEdit {
+    background-color: #27272D;
+    color: #F4F4F5;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 6px;
+    padding: 6px 10px;
+}
+
+QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {
+    border-color: #3B82F6;
+    background-color: #202024;
+}
+
+QSlider::groove:horizontal {
+    height: 4px;
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 2px;
+}
+
+QSlider::sub-page:horizontal {
+    background: #3B82F6;
+    border-radius: 2px;
+}
+
+QSlider::handle:horizontal {
+    background: #FFFFFF;
+    border: 2px solid #3B82F6;
+    width: 16px;
+    margin-top: -6px;
+    margin-bottom: -6px;
+    border-radius: 8px;
+}
+
+QProgressBar {
+    background-color: #27272D;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 9999px;
+    height: 8px;
+    text-align: center;
+    font-size: 10px;
+}
+
+QProgressBar::chunk {
+    background-color: #3B82F6;
+    border-radius: 9999px;
+}
+
+QSplitter::handle {
+    background-color: rgba(255, 255, 255, 0.08);
+}
+
+QSplitter::handle:horizontal {
+    width: 1px;
+}
+
+QSplitter::handle:vertical {
+    height: 1px;
+}
