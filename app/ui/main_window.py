@@ -499,6 +499,20 @@ class MainWindow(QMainWindow):
         self.inspector_panel._on_swap_next_clicked()
 
     def _on_block_updated_from_inspector(self, block_data: Dict[str, Any]):
+        if not self.current_image_data:
+            return
+        target_id = str(block_data.get("id"))
+        blocks = self.current_image_data.get("blocks", [])
+        for idx, b in enumerate(blocks):
+            bid = str(b.get("id") if isinstance(b, dict) else getattr(b, "id", None))
+            if bid == target_id:
+                if isinstance(b, dict):
+                    b.update(block_data)
+                else:
+                    for k, v in block_data.items():
+                        if hasattr(b, k):
+                            setattr(b, k, v)
+                break
         self._schedule_rerender()
 
     def _on_block_deleted(self, block_id: str):
@@ -527,6 +541,14 @@ class MainWindow(QMainWindow):
 
         base_img = self.current_image_data.get("erased_img")
         if base_img is None:
+            path = self.current_image_data.get("path")
+            if path:
+                cached = get_cache_manager().load_page_cache(path, load_images=True)
+                base_img = cached.get("erased_img")
+                if base_img is not None:
+                    self.current_image_data["erased_img"] = base_img
+
+        if base_img is None:
             base_img = self.canvas_view.original_cv
         if base_img is None:
             return
@@ -544,12 +566,19 @@ class MainWindow(QMainWindow):
             self.canvas_view.set_data(
                 original_cv=self.canvas_view.original_cv,
                 translated_cv=rendered,
-                erased_cv=self.canvas_view.erased_cv,
+                erased_cv=base_img,
                 blocks=blocks
             )
+            # Ensure view mode displays translated artwork
+            if self.canvas_view.view_mode in ("original", "inpainted"):
+                self.canvas_view.set_view_mode("translated")
+                if "translated" in self._mode_buttons:
+                    self._mode_buttons["translated"].setChecked(True)
+
             path = self.current_image_data.get("path")
             if path:
                 get_cache_manager().save_page_cache(path, blocks=model_blocks, rendered_img=rendered)
+            self.status_label.setText("排版重绘完成并已自动保存")
         except Exception as e:
             self.status_label.setText(f"重排版失败: {e}")
 

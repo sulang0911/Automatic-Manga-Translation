@@ -135,7 +135,7 @@ class InspectorPanel(QFrame):
         # Apply Re-render Button
         self.apply_block_btn = QPushButton("✨ 应用修改并重绘", self.detail_frame)
         self.apply_block_btn.setProperty("class", "primaryBtn")
-        self.apply_block_btn.clicked.connect(self.sig_re_render_requested.emit)
+        self.apply_block_btn.clicked.connect(self._on_apply_block_clicked)
         detail_layout.addWidget(self.apply_block_btn)
 
         layout.addWidget(self.detail_frame)
@@ -343,6 +343,14 @@ class InspectorPanel(QFrame):
         block = item.data(Qt.ItemDataRole.UserRole)
         if block:
             self._populate_detail(block)
+
+    def _on_apply_block_clicked(self):
+        """Explicitly saves text edits and triggers immediate typography re-render."""
+        if self.selected_block:
+            self.selected_block["original_text"] = self.orig_text_edit.toPlainText()
+            self.selected_block["translated_text"] = self.trans_text_edit.toPlainText()
+            self.sig_block_updated.emit(self.selected_block)
+        self.sig_re_render_requested.emit()
 
     def _on_orig_text_changed(self):
         if self.selected_block:
