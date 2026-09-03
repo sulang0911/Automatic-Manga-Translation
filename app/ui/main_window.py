@@ -22,6 +22,7 @@ from app.core.typography.engine import TypographyEngine
 from app.core.pipeline.pipeline_worker import PipelineWorker
 from app.core.pipeline.batch_worker import BatchWorker
 from app.core.pipeline.exporter import MangaExporter
+from app.core.cache.cache_manager import get_cache_manager, safe_cv2_imread, safe_cv2_imwrite
 from app.ui.theme.tokens import get_tokens, build_stylesheet
 from app.ui.theme.icons import get_icon
 from app.ui.widgets.card import CardWidget
@@ -446,11 +447,32 @@ class MainWindow(QMainWindow):
         path = item_data.get("path")
         if path and os.path.exists(path):
             self.current_image_data = item_data
-            cv_img = cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_COLOR)
+            cv_img = safe_cv2_imread(path)
             if cv_img is not None:
-                blocks = item_data.get("blocks", [])
-                erased = item_data.get("erased_img")
-                translated = item_data.get("translated_img")
+                cache_mgr = get_cache_manager()
+                cached = cache_mgr.load_page_cache(path, load_images=True)
+
+                blocks = cached.get("blocks") or item_data.get("blocks", [])
+                erased = cached.get("erased_img") or item_data.get("erased_img")
+                translated = cached.get("rendered_img") or item_data.get("translated_img")
+
+                # If blocks exist and erased exists but rendered image not on disk yet, render on demand
+                if translated is None and blocks and (erased is not None or cv_img is not None):
+                    base_bg = erased if erased is not None else cv_img
+                    model_blocks = [
+                        b if isinstance(b, TranslationBlock) else TranslationBlock.from_dict(b)
+                        for b in blocks
+                    ]
+                    try:
+                        translated = self.typo_engine.render_page(base_bg, model_blocks, self.config.style)
+                        cache_mgr.save_page_cache(path, rendered_img=translated)
+                    except Exception as e:
+                        print(f"[-] Auto render on select error: {e}")
+
+                self.current_image_data["blocks"] = blocks
+                self.current_image_data["erased_img"] = erased
+                self.current_image_data["translated_img"] = translated
+
                 self.canvas_view.set_data(cv_img, translated_cv=translated, erased_cv=erased, blocks=blocks)
                 self.canvas_view.fit_in_view()
                 self.inspector_panel.set_blocks(blocks)
@@ -520,6 +542,9 @@ class MainWindow(QMainWindow):
                 erased_cv=self.canvas_view.erased_cv,
                 blocks=blocks
             )
+            path = self.current_image_data.get("path")
+            if path:
+                get_cache_manager().save_page_cache(path, blocks=model_blocks, rendered_img=rendered)
         except Exception as e:
             self.status_label.setText(f"重排版失败: {e}")
 
@@ -739,26 +764,9 @@ class MainWindow(QMainWindow):
 
     def _on_batch_item_completed(self, image_id: str, result: Dict[str, Any]):
         self.page_list.update_item_status(image_id, "completed", "已完成")
-        # Update data cache in page list
-        for item in self.page_list.items_data:
-            if item.get("id") == image_id:
-                for k in ["blocks", "erased_img", "translated_img"]:
-                    if k in result:
-                        item[k] = result[k]
-                break
-
-        # If this is the currently active page on canvas, update canvas view!
+        # If this is the currently active page on canvas, reload from disk cache and update view
         if self.current_image_data and self.current_image_data.get("id") == image_id:
-            for k in ["blocks", "erased_img", "translated_img"]:
-                if k in result:
-                    self.current_image_data[k] = result[k]
-            self.canvas_view.set_data(
-                self.current_image_data.get("original_img"),
-                translated_cv=self.current_image_data.get("translated_img"),
-                erased_cv=self.current_image_data.get("erased_img"),
-                blocks=self.current_image_data.get("blocks", [])
-            )
-            self.inspector_panel.set_blocks(self.current_image_data.get("blocks", []))
+            self._on_page_selected(self.current_image_data)
 
     def _on_batch_item_failed(self, image_id: str, error_msg: str):
         short_err = error_msg.strip().split("\n")[-1][:20]

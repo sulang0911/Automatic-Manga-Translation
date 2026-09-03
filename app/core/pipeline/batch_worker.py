@@ -14,6 +14,8 @@ from desktop.core.inpaint_engine import InpaintEngine
 from app.core.typography.engine import TypographyEngine
 from app.core.translation import TranslationManager, ProviderConfig
 from app.core.models import TranslationBlock
+from app.core.cache.cache_manager import get_cache_manager, safe_cv2_imread, safe_cv2_imwrite
+import gc
 
 
 class BatchWorker(QThread):
@@ -78,6 +80,8 @@ class BatchWorker(QThread):
         success_count = 0
         fail_count = 0
 
+        cache_mgr = get_cache_manager()
+
         for idx, item in enumerate(self.queue_items):
             if self._is_cancelled:
                 break
@@ -87,57 +91,105 @@ class BatchWorker(QThread):
             filename = os.path.basename(img_path)
 
             try:
+                # 1. Check for full cache breakpoint resumption
+                if cache_mgr.is_fully_translated(img_path):
+                    self.sig_batch_progress.emit(idx + 1, total, filename, 90, "已命中本地缓存，正在检查导出...")
+                    cached_data = cache_mgr.load_page_cache(img_path, load_images=False)
+                    export_path = None
+                    if self.export_dir and os.path.exists(self.export_dir):
+                        name_without_ext = os.path.splitext(filename)[0]
+                        export_path = os.path.join(self.export_dir, f"{name_without_ext}_translated.png")
+                        if not os.path.exists(export_path):
+                            full_c = cache_mgr.load_page_cache(img_path, load_images=True)
+                            if full_c["rendered_img"] is not None:
+                                safe_cv2_imwrite(export_path, full_c["rendered_img"], ext=".png")
+
+                    self.sig_batch_progress.emit(idx + 1, total, filename, 100, "秒速恢复(缓存)")
+                    self.sig_item_completed.emit(img_id, {
+                        "has_cache": True,
+                        "blocks_count": len(cached_data.get("blocks", [])),
+                        "export_path": export_path
+                    })
+                    success_count += 1
+                    continue
+
+                # 2. Need processing: Load original image safely
                 self.sig_batch_progress.emit(idx + 1, total, filename, 10, "正在读取图像...")
-
-                stream = open(img_path, "rb")
-                bytes_data = bytearray(stream.read())
-                stream.close()
-                nparr = np.asarray(bytes_data, dtype=np.uint8)
-                original_img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
+                original_img = safe_cv2_imread(img_path)
                 if original_img is None:
                     raise RuntimeError("无法解码图像文件")
 
-                # OCR
-                self.sig_batch_progress.emit(idx + 1, total, filename, 30, "正在识别文字...")
-                blocks = ocr_eng.detect_and_recognize(original_img)
+                cache_status = cache_mgr.has_cache(img_path)
 
-                # Inpaint
-                self.sig_batch_progress.emit(idx + 1, total, filename, 55, "正在消除背景...")
-                erased_img = inpaint_eng.inpaint(
-                    original_img, blocks,
-                    bubble_dilation=self.config.get("bubble_dilation", 3),
-                    onomatopoeia_dilation=self.config.get("onomatopoeia_dilation", 6),
-                    feather_radius=self.config.get("feather_radius", 4)
+                # 3. OCR Stage (Check cache first)
+                if cache_status["blocks"]:
+                    self.sig_batch_progress.emit(idx + 1, total, filename, 25, "正在读取已识别文本缓存...")
+                    cached_blocks = cache_mgr.load_page_cache(img_path, load_images=False)["blocks"]
+                    blocks = cached_blocks
+                else:
+                    self.sig_batch_progress.emit(idx + 1, total, filename, 30, "正在识别文字...")
+                    blocks = ocr_eng.detect_and_recognize(original_img)
+                    cache_mgr.save_page_cache(img_path, blocks=blocks)
+
+                # 4. Inpaint Stage (Check cache first)
+                erased_img = None
+                if cache_status["erased"]:
+                    self.sig_batch_progress.emit(idx + 1, total, filename, 50, "正在载入已消除底图缓存...")
+                    erased_img = cache_mgr.load_page_cache(img_path, load_images=True)["erased_img"]
+                else:
+                    self.sig_batch_progress.emit(idx + 1, total, filename, 55, "正在消除背景...")
+                    erased_img = inpaint_eng.inpaint(
+                        original_img, blocks,
+                        bubble_dilation=self.config.get("bubble_dilation", 3),
+                        onomatopoeia_dilation=self.config.get("onomatopoeia_dilation", 6),
+                        feather_radius=self.config.get("feather_radius", 4)
+                    )
+                    cache_mgr.save_page_cache(img_path, erased_img=erased_img, blocks=blocks)
+
+                # 5. Translate Stage (Check if blocks already have translations)
+                has_translations = any(
+                    bool(getattr(b, "translated_text", "") if hasattr(b, "translated_text") else b.get("translated_text", ""))
+                    for b in blocks
                 )
+                if not has_translations:
+                    self.sig_batch_progress.emit(idx + 1, total, filename, 75, "正在大模型翻译...")
+                    blocks = trans_mgr.translate(blocks=blocks, mode="text", source_lang=source_lang, target_lang=target_lang)
+                    cache_mgr.save_page_cache(img_path, blocks=blocks)
 
-                # Translate
-                self.sig_batch_progress.emit(idx + 1, total, filename, 75, "正在大模型翻译...")
-                blocks = trans_mgr.translate(blocks=blocks, mode="text", source_lang=source_lang, target_lang=target_lang)
-
-                # Render
+                # 6. Render Stage
                 self.sig_batch_progress.emit(idx + 1, total, filename, 90, "正在生成排版...")
                 base_bg = erased_img if erased_img is not None else original_img
                 translated_img = typo_eng.render_translations(base_bg, blocks, self.config)
 
-                # Auto save if export_dir specified
+                # 7. Persist complete cache to disk (.amt_cache/)
+                cache_mgr.save_page_cache(
+                    img_path,
+                    erased_img=erased_img,
+                    blocks=blocks,
+                    rendered_img=translated_img
+                )
+
+                # 8. Auto export if export_dir specified
                 export_path = None
                 if self.export_dir and os.path.exists(self.export_dir):
                     name_without_ext = os.path.splitext(filename)[0]
                     export_path = os.path.join(self.export_dir, f"{name_without_ext}_translated.png")
-                    _, buf = cv2.imencode(".png", translated_img)
-                    with open(export_path, "wb") as f:
-                        f.write(buf.tobytes())
+                    safe_cv2_imwrite(export_path, translated_img, ext=".png")
 
-                self.sig_batch_progress.emit(idx + 1, total, filename, 100, "完成")
+                self.sig_batch_progress.emit(idx + 1, total, filename, 100, "完成并已存盘")
                 self.sig_item_completed.emit(img_id, {
-                    "original_img": original_img,
-                    "blocks": blocks,
-                    "erased_img": erased_img,
-                    "translated_img": translated_img,
+                    "has_cache": True,
+                    "blocks_count": len(blocks),
                     "export_path": export_path
                 })
                 success_count += 1
+
+                # 9. Free heavy arrays from RAM immediately!
+                del original_img
+                del erased_img
+                del translated_img
+                if (idx + 1) % 4 == 0:
+                    gc.collect()
 
             except Exception as e:
                 print(f"[-] Batch item failed: {filename}: {e}")

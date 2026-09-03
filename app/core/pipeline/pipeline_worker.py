@@ -14,6 +14,7 @@ from desktop.core.inpaint_engine import InpaintEngine
 from app.core.typography.engine import TypographyEngine
 from app.core.translation import TranslationManager, ProviderConfig
 from app.core.models import TranslationBlock
+from app.core.cache.cache_manager import get_cache_manager
 
 
 class PipelineWorker(QThread):
@@ -64,23 +65,34 @@ class PipelineWorker(QThread):
             erased_img = self.existing_erased
             translated_img = None
 
+            cache_mgr = get_cache_manager()
+            cache_status = cache_mgr.has_cache(self.image_path)
+
             # 1. OCR Stage
             if blocks is None or self.mode in ["full", "ocr_only"]:
                 if self._is_cancelled:
                     return
-                self.sig_progress.emit(15, "正在执行本地高精度 OCR 识别...")
-                ocr_cfg = self.config.get("ocr", {}) if isinstance(self.config.get("ocr"), dict) else {}
-                ocr_eng = OCREngine(
-                    engine_type=ocr_cfg.get("engine", self.config.get("ocr_engine", "easyocr")),
-                    use_gpu=not ocr_cfg.get("force_cpu", False) if "force_cpu" in ocr_cfg else self.config.get("use_gpu", True),
-                    lang=ocr_cfg.get("lang", self.config.get("ocr_lang", "japan"))
-                )
+                # Check cache for blocks if available
+                if cache_status["blocks"] and self.mode != "ocr_only":
+                    self.sig_progress.emit(25, "从本地缓存恢复 OCR 识别结果...")
+                    blocks = cache_mgr.load_page_cache(self.image_path, load_images=False)["blocks"]
+                    blocks = [b.to_dict() if hasattr(b, "to_dict") else b for b in blocks]
+                    self.sig_step_done.emit("ocr", blocks)
+                else:
+                    self.sig_progress.emit(15, "正在执行本地高精度 OCR 识别...")
+                    ocr_cfg = self.config.get("ocr", {}) if isinstance(self.config.get("ocr"), dict) else {}
+                    ocr_eng = OCREngine(
+                        engine_type=ocr_cfg.get("engine", self.config.get("ocr_engine", "easyocr")),
+                        use_gpu=not ocr_cfg.get("force_cpu", False) if "force_cpu" in ocr_cfg else self.config.get("use_gpu", True),
+                        lang=ocr_cfg.get("lang", self.config.get("ocr_lang", "japan"))
+                    )
 
-                def ocr_cb(pct, msg):
-                    self.sig_progress.emit(int(15 + pct * 0.25), msg)
+                    def ocr_cb(pct, msg):
+                        self.sig_progress.emit(int(15 + pct * 0.25), msg)
 
-                blocks = ocr_eng.detect_and_recognize(original_img, progress_callback=ocr_cb)
-                self.sig_step_done.emit("ocr", blocks)
+                    blocks = ocr_eng.detect_and_recognize(original_img, progress_callback=ocr_cb)
+                    cache_mgr.save_page_cache(self.image_path, blocks=blocks)
+                    self.sig_step_done.emit("ocr", blocks)
 
                 if self.mode == "ocr_only":
                     self.sig_finished.emit({
@@ -92,7 +104,11 @@ class PipelineWorker(QThread):
                     return
 
             # 2. Inpainting Stage
-            if erased_img is None or self.mode in ["full", "inpaint_only"]:
+            if erased_img is None and cache_status["erased"] and self.mode != "inpaint_only":
+                self.sig_progress.emit(50, "从本地缓存直接载入无字底图(免重复擦除)...")
+                erased_img = cache_mgr.load_page_cache(self.image_path, load_images=True)["erased_img"]
+                self.sig_step_done.emit("inpaint", erased_img)
+            elif erased_img is None or self.mode in ["full", "inpaint_only"]:
                 if self._is_cancelled:
                     return
                 self.sig_progress.emit(45, "正在执行图像背景文字清除与智能修复...")
@@ -109,6 +125,7 @@ class PipelineWorker(QThread):
                     feather_radius=self.config.get("feather_radius", 4),
                     progress_callback=inpaint_cb
                 )
+                cache_mgr.save_page_cache(self.image_path, erased_img=erased_img, blocks=blocks)
                 self.sig_step_done.emit("inpaint", erased_img)
 
                 if self.mode == "inpaint_only":
@@ -161,6 +178,7 @@ class PipelineWorker(QThread):
                     target_lang=target_lang,
                     progress_callback=trans_cb
                 )
+                cache_mgr.save_page_cache(self.image_path, blocks=blocks)
                 self.sig_step_done.emit("translate", blocks)
 
             # 4. Typography Rendering Stage
@@ -170,9 +188,10 @@ class PipelineWorker(QThread):
             typo_eng = TypographyEngine()
             base_bg = erased_img if erased_img is not None else original_img
             translated_img = typo_eng.render_translations(base_bg, blocks, self.config)
+            cache_mgr.save_page_cache(self.image_path, erased_img=erased_img, blocks=blocks, rendered_img=translated_img)
             self.sig_step_done.emit("render", translated_img)
 
-            self.sig_progress.emit(100, "处理完成！")
+            self.sig_progress.emit(100, "处理完成并已存入缓存！")
             self.sig_finished.emit({
                 "original_img": original_img,
                 "blocks": blocks,

@@ -36,6 +36,7 @@ __pycache__/
 *_erased.png
 *_blocks.json
 ocr_config.json
+.amt_cache/
 
 # Release Packages
 *.zip

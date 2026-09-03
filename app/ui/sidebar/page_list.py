@@ -16,6 +16,7 @@ from PyQt6.QtGui import QPixmap, QIcon, QColor, QPainter, QBrush, QDragEnterEven
 
 from app.ui.widgets.progress_pill import StatusDot
 from app.ui.theme.icons import get_icon
+from app.core.cache.cache_manager import get_cache_manager
 
 
 def natural_sort_key(s: str) -> list:
@@ -232,14 +233,25 @@ class PageListWidget(QWidget):
 
         existing_paths = {item["path"] for item in self.items_data}
         new_items = []
+        cache_mgr = get_cache_manager()
         for path in discovered_files:
             if path not in existing_paths:
                 existing_paths.add(path)
+                if cache_mgr.is_fully_translated(path):
+                    status = "completed"
+                    status_text = "已完成(缓存)"
+                elif cache_mgr.has_cache(path)["erased"]:
+                    status = "processing"
+                    status_text = "已擦除(缓存)"
+                else:
+                    status = "queued"
+                    status_text = "等待中"
+
                 item_data = {
                     "id": str(uuid.uuid4()),
                     "path": path,
-                    "status": "queued",
-                    "status_text": "等待中",
+                    "status": status,
+                    "status_text": status_text,
                 }
                 new_items.append(item_data)
                 self.items_data.append(item_data)
@@ -325,6 +337,7 @@ class PageListWidget(QWidget):
         menu.addSeparator()
         act_locate = menu.addAction(get_icon("folder_open", color="#A1A1AA", size=14), "在文件资源管理器中定位")
         menu.addSeparator()
+        act_clear_cache = menu.addAction(get_icon("trash", color="#F59E0B", size=14), "清除本页缓存 (.amt_cache)")
         act_remove = menu.addAction(get_icon("trash", color="#EF4444", size=14), "从列表中移除")
 
         chosen = menu.exec(self.list_widget.mapToGlobal(pos))
@@ -336,6 +349,10 @@ class PageListWidget(QWidget):
             if path and os.path.exists(path):
                 import subprocess
                 subprocess.Popen(f'explorer /select,"{os.path.normpath(path)}"')
+        elif chosen == act_clear_cache:
+            if path:
+                get_cache_manager().clear_cache(path)
+                self.update_item_status(data["id"], "queued", "等待中")
         elif chosen == act_remove:
             self.remove_item(data["id"])
 
