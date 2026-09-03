@@ -6,6 +6,14 @@ import numpy as np
 import cv2
 from typing import List, Dict, Any, Optional
 
+try:
+    from app.core.ocr.base import merge_adjacent_boxes
+except ImportError:
+    _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    if _root not in sys.path:
+        sys.path.insert(0, _root)
+    from app.core.ocr.base import merge_adjacent_boxes
+
 def get_background_color_hex(crop: np.ndarray) -> str:
     if crop is None or crop.size == 0:
         return "#FFFFFF"
@@ -39,31 +47,33 @@ class OCREngine:
             import os
             os.environ["OMP_NUM_THREADS"] = "4"
             os.environ["MKL_NUM_THREADS"] = "4"
-            device_str = "gpu" if self.use_gpu else "cpu"
+            use_gpu_flag = bool(self.use_gpu)
             try:
                 import paddle
                 paddle.set_flags({"FLAGS_use_onednn": False})
                 paddle.set_num_threads(4)
-                has_cuda = paddle.device.is_compiled_with_cuda() and self.use_gpu
-                device_str = "gpu" if has_cuda else "cpu"
             except Exception:
                 pass
 
             from paddleocr import PaddleOCR
-            print(f"[*] Initializing PaddleOCR (lang={self.lang}, device={device_str})...")
+            device_str = "gpu" if use_gpu_flag else "cpu"
+            print(f"[*] Initializing PaddleOCR (lang={self.lang}, device={device_str}, use_gpu={use_gpu_flag})...")
             try:
-                # PaddleOCR 3.7.0 configuration: device instead of use_gpu, no show_log
+                # PaddleOCR configuration: device and use_gpu for cross-version compatibility
                 self._paddle_ocr = PaddleOCR(
                     lang=self.lang,
                     device=device_str,
+                    use_gpu=use_gpu_flag,
                     use_textline_orientation=True
                 )
             except Exception as e:
-                print(f"[!] Warning: PaddleOCR init with device={device_str} failed: {e}. Retrying CPU mode...")
+                print(f"[!] Warning: PaddleOCR init with use_gpu={use_gpu_flag} failed: {e}. Retrying CPU mode...")
+                self.use_gpu = False
                 try:
                     self._paddle_ocr = PaddleOCR(
                         lang=self.lang,
                         device="cpu",
+                        use_gpu=False,
                         use_textline_orientation=True
                     )
                 except Exception as e2:
@@ -212,7 +222,9 @@ class OCREngine:
                 "ymax": round((ymax / h_img) * 100.0, 2),
                 "bg_color": bg_color,
                 "text_color": "#000000",
-                "type": "bubble" if is_bubble else "onomatopoeia"
+                "type": "bubble" if is_bubble else "onomatopoeia",
+                "confidence": float(box.get("conf", 1.0)),
+                "line_count": int(box.get("line_count", 1))
             }
             blocks.append(block)
 
@@ -222,55 +234,7 @@ class OCREngine:
         return blocks
 
     def _merge_adjacent_boxes(self, boxes: List[Dict[str, Any]], w_img: int, h_img: int) -> List[Dict[str, Any]]:
-        if not boxes:
-            return []
-
-        # Distance thresholds (scaled by image size)
-        vertical_dist_thresh = int(h_img * 0.025)
-        horizontal_dist_thresh = int(w_img * 0.035)
-
-        merged = []
-        used = [False] * len(boxes)
-
-        for i in range(len(boxes)):
-            if used[i]:
-                continue
-            cur_xmin = boxes[i]["xmin"]
-            cur_ymin = boxes[i]["ymin"]
-            cur_xmax = boxes[i]["xmax"]
-            cur_ymax = boxes[i]["ymax"]
-            cur_texts = [boxes[i]["text"]]
-            used[i] = True
-
-            changed = True
-            while changed:
-                changed = False
-                for j in range(len(boxes)):
-                    if used[j]:
-                        continue
-                    b = boxes[j]
-                    # Check overlap or proximity
-                    x_overlap = not (b["xmax"] < cur_xmin - horizontal_dist_thresh or b["xmin"] > cur_xmax + horizontal_dist_thresh)
-                    y_overlap = not (b["ymax"] < cur_ymin - vertical_dist_thresh or b["ymin"] > cur_ymax + vertical_dist_thresh)
-                    
-                    if x_overlap and y_overlap:
-                        cur_xmin = min(cur_xmin, b["xmin"])
-                        cur_ymin = min(cur_ymin, b["ymin"])
-                        cur_xmax = max(cur_xmax, b["xmax"])
-                        cur_ymax = max(cur_ymax, b["ymax"])
-                        cur_texts.append(b["text"])
-                        used[j] = True
-                        changed = True
-
-            merged.append({
-                "xmin": cur_xmin,
-                "ymin": cur_ymin,
-                "xmax": cur_xmax,
-                "ymax": cur_ymax,
-                "text": "\n".join(cur_texts)
-            })
-
-        return merged
+        return merge_adjacent_boxes(boxes, w_img, h_img)
 
     def _sort_manga_reading_order(self, boxes: List[Dict[str, Any]], w_img: int) -> List[Dict[str, Any]]:
         """
