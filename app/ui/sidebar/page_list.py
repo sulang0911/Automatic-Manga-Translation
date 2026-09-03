@@ -186,6 +186,13 @@ class PageItemWidget(QWidget):
 
         AsyncThumbnailManager.instance().request_thumbnail(path, (36, 48), _on_ready, sync=sync)
 
+    def reload_thumbnail(self):
+        """Forces refreshing thumbnail from disk."""
+        path = self.item_data.get("path")
+        if path:
+            AsyncThumbnailManager.instance().invalidate(path)
+            self._load_thumbnail(path, sync=True)
+
     def update_status(self, status: str, message: str = ""):
         if not message:
             status_map = {
@@ -227,6 +234,7 @@ class PageListWidget(QWidget):
     sig_translate_page = pyqtSignal(dict)
     sig_export_page = pyqtSignal(dict)
     sig_edit_page_style = pyqtSignal(dict)
+    sig_cache_cleared = pyqtSignal(dict)
     sig_count_changed = pyqtSignal(int)
 
     def __init__(self, parent: Optional[QWidget] = None):
@@ -569,7 +577,14 @@ class PageListWidget(QWidget):
         elif chosen == act_clear_cache:
             if path:
                 get_cache_manager().clear_cache(path)
+                data["blocks"] = []
+                data["erased_img"] = None
+                data["translated_img"] = None
                 self.update_item_status(data["id"], "queued", "等待中")
+                item_widget = self._item_widgets.get(data["id"])
+                if item_widget:
+                    item_widget.reload_thumbnail()
+                self.sig_cache_cleared.emit(data)
         elif chosen == act_remove:
             self.remove_item(data["id"])
 

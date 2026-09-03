@@ -76,6 +76,11 @@ class AsyncThumbnailManager:
         """Returns cached QPixmap if already decoded, else None."""
         return self._cache.get(path)
 
+    def invalidate(self, path: str):
+        """Removes a specific path from thumbnail cache to force reload."""
+        self._cache.pop(path, None)
+        self._pending_callbacks.pop(path, None)
+
     def _on_thumbnail_loaded(self, path: str, qimg: QImage):
         if qimg.isNull():
             return

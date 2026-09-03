@@ -383,14 +383,52 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
         background-color: {tokens.bg_surface};
     }}
 
-    /* Dropdown Combo Boxes */
+    /* QMenu - Context Menus and Cascading Submenus (一级与二级右键菜单) */
+    QMenu {{
+        background-color: {tokens.bg_surface};
+        color: {tokens.text_primary};
+        border: 1px solid {tokens.border_focus};
+        border-radius: {tokens.radius_sm}px;
+        padding: 4px;
+    }}
+
+    QMenu::item {{
+        background-color: transparent;
+        color: {tokens.text_primary};
+        padding: 6px 26px 6px 12px;
+        border-radius: 4px;
+        font-size: 12px;
+        min-width: 140px;
+    }}
+
+    QMenu::item:selected {{
+        background-color: {tokens.accent_primary};
+        color: #FFFFFF;
+    }}
+
+    QMenu::item:disabled {{
+        color: {tokens.text_muted};
+        background-color: transparent;
+    }}
+
+    QMenu::separator {{
+        height: 1px;
+        background-color: {tokens.border_subtle};
+        margin: 4px 6px;
+    }}
+
+    QMenu::right-arrow {{
+        margin-right: 8px;
+    }}
+
+    /* Dropdown Combo Boxes (二级下拉列表) */
     QComboBox {{
         background-color: {tokens.bg_surface_hover};
         color: {tokens.text_primary};
         border: {tokens.border_width}px solid {tokens.border_subtle};
         border-radius: {tokens.radius_sm}px;
         padding: 5px 10px;
-        min-height: 20px;
+        min-height: 22px;
     }}
 
     QComboBox:focus, QComboBox:hover {{
@@ -398,17 +436,47 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
     }}
 
     QComboBox::drop-down {{
-        border: none;
-        width: 20px;
+        subcontrol-origin: padding;
+        subcontrol-position: top right;
+        width: 24px;
+        border-left-width: 0px;
+        border-top-right-radius: {tokens.radius_sm}px;
+        border-bottom-right-radius: {tokens.radius_sm}px;
     }}
 
-    QComboBox QAbstractItemView {{
+    /* QComboBox Popup Container & Item View (100% Solid Opaque Surface) */
+    QComboBoxPrivateContainer,
+    QComboBox QAbstractItemView,
+    QComboBox QListView {{
         background-color: {tokens.bg_surface};
         color: {tokens.text_primary};
-        border: {tokens.border_width}px solid {tokens.border_subtle};
+        border: 1px solid {tokens.border_focus};
+        border-radius: {tokens.radius_sm}px;
+        padding: 4px;
         selection-background-color: {tokens.accent_primary};
         selection-color: #FFFFFF;
         outline: none;
+    }}
+
+    QComboBox QAbstractItemView::item,
+    QComboBox QListView::item {{
+        background-color: transparent;
+        color: {tokens.text_primary};
+        min-height: 26px;
+        padding: 4px 10px;
+        border-radius: 4px;
+    }}
+
+    QComboBox QAbstractItemView::item:hover,
+    QComboBox QListView::item:hover {{
+        background-color: {tokens.bg_surface_hover};
+        color: {tokens.text_primary};
+    }}
+
+    QComboBox QAbstractItemView::item:selected,
+    QComboBox QListView::item:selected {{
+        background-color: {tokens.accent_primary};
+        color: #FFFFFF;
     }}
 
     /* Tabs */

@@ -11,7 +11,7 @@ import cv2
 
 from PyQt6.QtWidgets import (
     QGraphicsView, QWidget, QFrame, QHBoxLayout, QToolButton,
-    QLabel, QGraphicsRectItem
+    QLabel, QGraphicsRectItem, QMenu
 )
 from PyQt6.QtCore import Qt, QRectF, QPoint, QPointF, pyqtSignal
 from PyQt6.QtGui import (
@@ -21,6 +21,7 @@ from PyQt6.QtGui import (
 
 from app.ui.canvas.scene import MangaCanvasScene
 from app.ui.canvas.items.bubble_item import BubbleItem
+from app.ui.theme.icons import get_icon
 
 
 def cvimg_to_qpixmap(cv_img: Optional[np.ndarray]) -> QPixmap:
@@ -55,6 +56,7 @@ class CanvasZoomHud(QFrame):
     sig_zoom_reset = pyqtSignal()
     sig_zoom_fit = pyqtSignal()
     sig_tool_draw_toggled = pyqtSignal(bool)
+    sig_tool_ocr_draw_toggled = pyqtSignal(bool)
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -97,10 +99,19 @@ class CanvasZoomHud(QFrame):
         self.btn_draw = QToolButton(self)
         self.btn_draw.setText("➕ 框选 (R)")
         self.btn_draw.setCheckable(True)
-        self.btn_draw.setToolTip("手动在画布上拖拽框选新建气泡 (快捷键: R)")
+        self.btn_draw.setToolTip("手动在画布上拖拽框选新建空文字框 (快捷键: R)")
         self.btn_draw.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_draw.toggled.connect(self.sig_tool_draw_toggled.emit)
         layout.addWidget(self.btn_draw)
+
+        # OCR & Translate tool button
+        self.btn_ocr_draw = QToolButton(self)
+        self.btn_ocr_draw.setText("🔍 框选识别 (O)")
+        self.btn_ocr_draw.setCheckable(True)
+        self.btn_ocr_draw.setToolTip("手动框选文字区域，立即执行 OCR 识别与大模型翻译 (快捷键: O)")
+        self.btn_ocr_draw.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_ocr_draw.toggled.connect(self.sig_tool_ocr_draw_toggled.emit)
+        layout.addWidget(self.btn_ocr_draw)
 
         # Separator line
         sep = QFrame(self)
@@ -154,8 +165,12 @@ class MangaCanvasView(QGraphicsView):
     sig_bubble_merge_next = pyqtSignal(str)
     sig_bubble_delete = pyqtSignal(str)
     sig_bubble_created = pyqtSignal(dict)
+    sig_bubble_ocr_requested = pyqtSignal(dict)
     sig_bubble_commit = pyqtSignal(dict)
     sig_tool_mode_changed = pyqtSignal(str)
+    sig_clear_cache_requested = pyqtSignal()
+    sig_retranslate_requested = pyqtSignal()
+    sig_open_style_requested = pyqtSignal()
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -213,6 +228,7 @@ class MangaCanvasView(QGraphicsView):
         self.hud.sig_zoom_reset.connect(self.reset_zoom)
         self.hud.sig_zoom_fit.connect(self.fit_in_view)
         self.hud.sig_tool_draw_toggled.connect(self._on_hud_draw_toggled)
+        self.hud.sig_tool_ocr_draw_toggled.connect(self._on_hud_ocr_draw_toggled)
 
     def _init_viewport(self):
         """Initializes QOpenGLWidget viewport with graceful software fallback."""
@@ -254,10 +270,18 @@ class MangaCanvasView(QGraphicsView):
     def _on_hud_draw_toggled(self, checked: bool):
         self.set_tool_mode("draw" if checked else "select")
 
+    def _on_hud_ocr_draw_toggled(self, checked: bool):
+        self.set_tool_mode("draw_ocr" if checked else "select")
+
     def toggle_draw_tool(self):
-        """Toggles draw tool mode (called by shortcut R)."""
+        """Toggles blank draw tool mode (called by shortcut R)."""
         new_state = (self.tool_mode != "draw")
-        self.hud.btn_draw.setChecked(new_state)
+        self.set_tool_mode("draw" if new_state else "select")
+
+    def toggle_ocr_draw_tool(self):
+        """Toggles OCR draw tool mode (called by shortcut O)."""
+        new_state = (self.tool_mode != "draw_ocr")
+        self.set_tool_mode("draw_ocr" if new_state else "select")
 
     def set_tool_mode(self, mode: str):
         self.tool_mode = mode
@@ -265,7 +289,12 @@ class MangaCanvasView(QGraphicsView):
             self.hud.btn_draw.blockSignals(True)
             self.hud.btn_draw.setChecked(mode == "draw")
             self.hud.btn_draw.blockSignals(False)
-        if mode == "draw":
+
+            self.hud.btn_ocr_draw.blockSignals(True)
+            self.hud.btn_ocr_draw.setChecked(mode == "draw_ocr")
+            self.hud.btn_ocr_draw.blockSignals(False)
+
+        if mode in ("draw", "draw_ocr"):
             self.setCursor(Qt.CursorShape.CrossCursor)
         else:
             self.unsetCursor()
@@ -446,13 +475,25 @@ class MangaCanvasView(QGraphicsView):
             self._space_held = True
             if not self.is_panning:
                 self.setCursor(Qt.CursorShape.OpenHandCursor)
+        elif event.key() == Qt.Key.Key_O:
+            self.toggle_ocr_draw_tool()
+            event.accept()
+            return
+        elif event.key() == Qt.Key.Key_R:
+            self.toggle_draw_tool()
+            event.accept()
+            return
+        elif event.key() == Qt.Key.Key_Escape:
+            self.set_tool_mode("select")
+            event.accept()
+            return
         super().keyPressEvent(event)
 
     def keyReleaseEvent(self, event: QKeyEvent):
         if event.key() == Qt.Key.Key_Space:
             self._space_held = False
             if not self.is_panning:
-                if self.tool_mode == "draw":
+                if self.tool_mode in ("draw", "draw_ocr"):
                     self.setCursor(Qt.CursorShape.CrossCursor)
                 else:
                     self.unsetCursor()
@@ -460,13 +501,14 @@ class MangaCanvasView(QGraphicsView):
 
     def mousePressEvent(self, event: QMouseEvent):
         # Draw tool active: start drawing rubber band rectangle
-        if self.tool_mode == "draw" and event.button() == Qt.MouseButton.LeftButton:
+        if self.tool_mode in ("draw", "draw_ocr") and event.button() == Qt.MouseButton.LeftButton:
             self._is_drawing_rect = True
             self._draw_start_scene_pt = self.mapToScene(event.pos())
             if self._rubber_band_item is None:
                 self._rubber_band_item = QGraphicsRectItem()
-                self._rubber_band_item.setPen(QPen(QColor("#2563EB"), 2, Qt.PenStyle.DashLine))
-                self._rubber_band_item.setBrush(QBrush(QColor(37, 99, 235, 45)))
+                border_color = QColor("#D97706") if self.tool_mode == "draw_ocr" else QColor("#2563EB")
+                self._rubber_band_item.setPen(QPen(border_color, 2, Qt.PenStyle.DashLine))
+                self._rubber_band_item.setBrush(QBrush(QColor(border_color.red(), border_color.green(), border_color.blue(), 45)))
                 self._scene.addItem(self._rubber_band_item)
             self._rubber_band_item.setRect(QRectF(self._draw_start_scene_pt, self._draw_start_scene_pt))
             self._rubber_band_item.show()
@@ -503,13 +545,14 @@ class MangaCanvasView(QGraphicsView):
 
     def mouseReleaseEvent(self, event: QMouseEvent):
         if self._is_drawing_rect:
+            is_ocr_mode = (self.tool_mode == "draw_ocr")
             self._is_drawing_rect = False
             if self._rubber_band_item and self.original_cv is not None:
                 rect = self._rubber_band_item.rect().normalized()
                 self._scene.removeItem(self._rubber_band_item)
                 self._rubber_band_item = None
 
-                if rect.width() >= 12 and rect.height() >= 12:
+                if rect.width() >= 10 and rect.height() >= 10:
                     img_h, img_w = self.original_cv.shape[:2]
                     xmin = round(max(0.0, min(100.0, (rect.left() / img_w) * 100.0)), 2)
                     ymin = round(max(0.0, min(100.0, (rect.top() / img_h) * 100.0)), 2)
@@ -526,7 +569,10 @@ class MangaCanvasView(QGraphicsView):
                         "type": "bubble",
                         "confidence": 1.0,
                     }
-                    self.sig_bubble_created.emit(new_block)
+                    if is_ocr_mode:
+                        self.sig_bubble_ocr_requested.emit(new_block)
+                    else:
+                        self.sig_bubble_created.emit(new_block)
             elif self._rubber_band_item:
                 self._scene.removeItem(self._rubber_band_item)
                 self._rubber_band_item = None
@@ -546,3 +592,35 @@ class MangaCanvasView(QGraphicsView):
             event.accept()
             return
         super().mouseReleaseEvent(event)
+
+    def contextMenuEvent(self, event):
+        item = self.itemAt(event.pos())
+        if isinstance(item, BubbleItem) or (item and item.parentItem() and isinstance(item.parentItem(), BubbleItem)):
+            super().contextMenuEvent(event)
+            return
+
+        if self.original_cv is None:
+            super().contextMenuEvent(event)
+            return
+
+        menu = QMenu(self)
+        act_ocr = menu.addAction(get_icon("search", color="#3B82F6", size=14), "🔍 框选识别并翻译 (O)")
+        act_draw = menu.addAction(get_icon("plus", color="#3B82F6", size=14), "➕ 框选新建空白气泡 (R)")
+        menu.addSeparator()
+        act_clear_cache = menu.addAction(get_icon("trash", color="#EF4444", size=14), "🧹 清除本页缓存并重置为原图 (.amt_cache)")
+        act_retrans = menu.addAction(get_icon("refresh", color="#F59E0B", size=14), "🔄 重新翻译此页面 (重译当前页)")
+        menu.addSeparator()
+        act_style = menu.addAction(get_icon("sparkles", color="#8B5CF6", size=14), "🎨 修改此页文字排版与样式...")
+
+        chosen = menu.exec(event.globalPos())
+        if chosen == act_ocr:
+            self.toggle_ocr_draw_tool()
+        elif chosen == act_draw:
+            self.toggle_draw_tool()
+        elif chosen == act_clear_cache:
+            self.sig_clear_cache_requested.emit()
+        elif chosen == act_retrans:
+            self.sig_retranslate_requested.emit()
+        elif chosen == act_style:
+            self.sig_open_style_requested.emit()
+        event.accept()

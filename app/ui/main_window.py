@@ -11,7 +11,8 @@ import cv2
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QPushButton, QLabel, QSplitter, QProgressBar,
-    QButtonGroup, QFrame, QSlider, QCheckBox, QToolButton, QFileDialog, QComboBox
+    QButtonGroup, QFrame, QSlider, QCheckBox, QToolButton, QFileDialog, QComboBox,
+    QApplication
 )
 from PyQt6.QtCore import Qt, QSize, QTimer
 from PyQt6.QtGui import QIcon, QKeySequence, QShortcut, QColor, QDragEnterEvent, QDropEvent
@@ -53,7 +54,11 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
 
         self._current_theme = theme
-        self.setStyleSheet(build_stylesheet(get_tokens(theme)))
+        tokens = get_tokens(theme)
+        app_inst = QApplication.instance()
+        if app_inst:
+            app_inst.setStyleSheet(build_stylesheet(tokens))
+        self.setStyleSheet(build_stylesheet(tokens))
 
         self.config = AppConfig.load("desktop_config.json")
         self.typo_engine = TypographyEngine()
@@ -91,6 +96,10 @@ class MainWindow(QMainWindow):
         self.canvas_view.sig_bubble_merge_next.connect(self._on_canvas_bubble_merge_next)
         self.canvas_view.sig_bubble_delete.connect(self._on_block_deleted)
         self.canvas_view.sig_bubble_created.connect(self._on_bubble_created)
+        self.canvas_view.sig_bubble_ocr_requested.connect(self._on_bubble_ocr_requested)
+        self.canvas_view.sig_clear_cache_requested.connect(self._on_canvas_clear_cache_requested)
+        self.canvas_view.sig_retranslate_requested.connect(lambda: self._start_pipeline_for_page(mode="full"))
+        self.canvas_view.sig_open_style_requested.connect(self._open_current_page_style_dialog)
 
         # 2. Action Toolbar
         self.toolbar_widget = self._create_toolbar()
@@ -149,6 +158,7 @@ class MainWindow(QMainWindow):
         self.inspector_panel.sig_add_bubble_requested.connect(self.canvas_view.toggle_draw_tool)
         self.inspector_panel.sig_block_selected.connect(self.canvas_view.select_bubble_by_id)
         self.inspector_panel.sig_blocks_reordered.connect(self._on_blocks_reordered)
+        self.inspector_panel.sig_ocr_translate_block_requested.connect(self._on_inspector_ocr_translate_block)
         self.splitter.addWidget(self.inspector_panel)
 
         # Set balanced initial proportions [sidebar, canvas, inspector]
@@ -191,6 +201,7 @@ class MainWindow(QMainWindow):
         self.page_list.sig_translate_page.connect(self._on_translate_page_from_list)
         self.page_list.sig_export_page.connect(self._on_export_page_from_list)
         self.page_list.sig_edit_page_style.connect(self._open_page_style_dialog)
+        self.page_list.sig_cache_cleared.connect(self._on_page_cache_cleared)
         drawer_layout.addWidget(self.page_list, 1)
 
         layout.addWidget(self.sidebar_drawer, 1)
@@ -538,6 +549,106 @@ class MainWindow(QMainWindow):
 
         self.toast.show_message(f"已新建气泡 #{str(new_block['id'])[:4]}，可直接在右侧输入译文！", "success")
 
+    def _on_bubble_ocr_requested(self, new_block: Dict[str, Any]):
+        """Handles manual box selection for immediate OCR and translation."""
+        if not self.current_image_data:
+            self.toast.show_message("请先载入并选择一张漫画页面！", "warning")
+            return
+
+        blocks = self.current_image_data.get("blocks", [])
+        blocks.append(new_block)
+        self.current_image_data["blocks"] = blocks
+
+        # Re-set canvas data to show the new bubble overlay immediately
+        self.canvas_view.set_data(
+            original_cv=self.canvas_view.original_cv,
+            translated_cv=self.canvas_view.translated_cv,
+            erased_cv=self.canvas_view.erased_cv,
+            blocks=blocks
+        )
+        self.inspector_panel.set_blocks(blocks)
+        self.inspector_panel.select_block_by_id(new_block["id"])
+
+        self._start_block_ocr_translate(new_block)
+
+    def _on_inspector_ocr_translate_block(self, block_data: Dict[str, Any]):
+        """Handles Inspector button request to OCR and translate the selected block."""
+        self._start_block_ocr_translate(block_data)
+
+    def _start_block_ocr_translate(self, target_block: Dict[str, Any]):
+        """Launches BlockOcrTranslateWorker for the target block."""
+        if not self.current_image_data:
+            return
+
+        original_cv = self.canvas_view.original_cv
+        if original_cv is None or original_cv.size == 0:
+            self.toast.show_message("原图未就绪，无法执行框选识别！", "warning")
+            return
+
+        image_path = self.current_image_data.get("path", "")
+        all_blocks = self.current_image_data.get("blocks", [])
+        existing_erased = self.current_image_data.get("erased_img", self.canvas_view.erased_cv)
+
+        self.progress_bar.show()
+        self.progress_bar.setValue(10)
+        self.status_label.setText("正在对框选区域执行 OCR 识别与翻译...")
+
+        from app.core.pipeline.block_worker import BlockOcrTranslateWorker
+        self.block_worker = BlockOcrTranslateWorker(
+            image_path=image_path,
+            original_cv=original_cv,
+            target_block=target_block,
+            all_blocks=all_blocks,
+            existing_erased=existing_erased,
+            config=self.config.to_dict(),
+            parent=self
+        )
+        self.block_worker.sig_progress.connect(self._on_pipeline_progress)
+        self.block_worker.sig_completed.connect(self._on_block_ocr_completed)
+        self.block_worker.sig_error.connect(self._on_block_ocr_error)
+        self.block_worker.start()
+
+    def _on_block_ocr_completed(self, result: Dict[str, Any]):
+        target_block = result["target_block"]
+        all_blocks = result["blocks"]
+        erased_img = result["erased_img"]
+        translated_img = result["translated_img"]
+
+        if self.current_image_data:
+            self.current_image_data["blocks"] = all_blocks
+            self.current_image_data["erased_img"] = erased_img
+            self.current_image_data["translated_img"] = translated_img
+
+        self.canvas_view.set_data(
+            original_cv=self.canvas_view.original_cv,
+            translated_cv=translated_img,
+            erased_cv=erased_img,
+            blocks=all_blocks
+        )
+        self.inspector_panel.set_blocks(all_blocks)
+        self.inspector_panel.select_block_by_id(target_block.get("id"))
+
+        # If user was in original view, switch to translated view so they see the rendered text
+        if self.canvas_view.view_mode == "original":
+            self.canvas_view.set_view_mode("translated")
+            if "translated" in self._mode_buttons:
+                self._mode_buttons["translated"].setChecked(True)
+
+        self.progress_bar.hide()
+        orig_text = str(target_block.get("original_text", "")).strip().replace("\n", " ")
+        trans_text = str(target_block.get("translated_text", "")).strip().replace("\n", " ")
+        if orig_text:
+            self.toast.show_message(f"已识别并翻译: 【{orig_text[:12]}】→【{trans_text[:12]}】", "success")
+            self.status_label.setText(f"框选识别翻译完成: {orig_text[:20]} -> {trans_text[:20]}")
+        else:
+            self.toast.show_message("框选区域未检测到文字，已创建气泡框供输入！", "info")
+            self.status_label.setText("框选区域未检测到文字")
+
+    def _on_block_ocr_error(self, err_msg: str):
+        self.progress_bar.hide()
+        self.toast.show_message(err_msg, "error")
+        self.status_label.setText(f"框选识别失败: {err_msg}")
+
     def _on_canvas_bubble_swap_prev(self, block_id: str):
         self.inspector_panel.select_block_by_id(block_id)
         self.inspector_panel._on_swap_prev_clicked()
@@ -696,6 +807,83 @@ class MainWindow(QMainWindow):
         self.config.source_lang = lang
         self.status_label.setText(f"翻译源语言已切换为: {lang}")
 
+    def _on_page_cache_cleared(self, item_data: Dict[str, Any]):
+        """Called when user clears cache for a page from the sidebar right-click menu."""
+        path = item_data.get("path", "")
+        filename = os.path.basename(path)
+        if not self.current_image_data or self.current_image_data.get("path") != path:
+            self.toast.show_message(f"已清除【{filename}】缓存", "success")
+            return
+
+        # Reset in-memory data
+        self.current_image_data["blocks"] = []
+        self.current_image_data["erased_img"] = None
+        self.current_image_data["translated_img"] = None
+
+        # Reset canvas to original image
+        original_cv = self.current_image_data.get("original_cv") or self.current_image_data.get("img")
+        if original_cv is None:
+            # Try to reload from disk
+            import cv2
+            if path and os.path.exists(path):
+                original_cv = cv2.imread(path)
+                if original_cv is not None:
+                    self.current_image_data["original_cv"] = original_cv
+                    self.current_image_data["img"] = original_cv
+
+        self.canvas_view.set_data(
+            original_cv=original_cv,
+            translated_cv=None,
+            erased_cv=None,
+            blocks=[]
+        )
+        self.canvas_view.set_view_mode("original")
+        if "original" in self._mode_buttons:
+            self._mode_buttons["original"].setChecked(True)
+        self.inspector_panel.set_blocks([])
+        self.status_label.setText(f"已清除【{filename}】本地缓存，已重置为原图！")
+        self.toast.show_message(f"🧹 已清除【{filename}】缓存，重置为原图", "success")
+
+    def _on_canvas_clear_cache_requested(self):
+        """Called when user clicks 'Clear Page Cache' from the canvas right-click menu."""
+        if not self.current_image_data:
+            return
+        path = self.current_image_data.get("path", "")
+        page_id = self.current_image_data.get("id", "")
+        if path:
+            from app.core.cache.cache_manager import get_cache_manager
+            get_cache_manager().clear_cache(path)
+        self.current_image_data["blocks"] = []
+        self.current_image_data["erased_img"] = None
+        self.current_image_data["translated_img"] = None
+        if page_id:
+            self.page_list.update_item_status(page_id, "queued", "等待中")
+            item_widget = self.page_list._item_widgets.get(page_id)
+            if item_widget:
+                item_widget.reload_thumbnail()
+
+        original_cv = self.current_image_data.get("original_cv") or self.current_image_data.get("img")
+        if original_cv is None and path and os.path.exists(path):
+            import cv2
+            original_cv = cv2.imread(path)
+            if original_cv is not None:
+                self.current_image_data["original_cv"] = original_cv
+                self.current_image_data["img"] = original_cv
+
+        self.canvas_view.set_data(
+            original_cv=original_cv,
+            translated_cv=None,
+            erased_cv=None,
+            blocks=[]
+        )
+        self.canvas_view.set_view_mode("original")
+        if "original" in self._mode_buttons:
+            self._mode_buttons["original"].setChecked(True)
+        self.inspector_panel.set_blocks([])
+        filename = os.path.basename(path)
+        self.status_label.setText(f"已清除【{filename}】本地缓存，已重置为原图！")
+        self.toast.show_message(f"🧹 已清除【{filename}】缓存，重置为原图", "success")
+
     def toggle_theme(self):
         """Toggles between dark and light themes."""
         new_theme = "light" if self._current_theme == "dark" else "dark"
@@ -705,7 +893,11 @@ class MainWindow(QMainWindow):
         """Applies theme stylesheet and updates theme button icon."""
         self._current_theme = theme_name
         tokens = get_tokens(theme_name)
-        self.setStyleSheet(build_stylesheet(tokens))
+        css = build_stylesheet(tokens)
+        app_inst = QApplication.instance()
+        if app_inst:
+            app_inst.setStyleSheet(css)
+        self.setStyleSheet(css)
         self.theme_btn.setIcon(get_icon("sun" if theme_name == "dark" else "moon", color=tokens.text_secondary, size=16))
         self.settings_btn.setIcon(get_icon("settings", color=tokens.text_secondary, size=16))
         self.page_style_btn.setIcon(get_icon("sparkles", color=tokens.accent_primary, size=16))

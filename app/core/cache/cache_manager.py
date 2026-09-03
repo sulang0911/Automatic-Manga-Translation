@@ -276,6 +276,22 @@ class MangaCacheManager:
                 except Exception as e:
                     logger.warning(f"Failed to remove cache file {p}: {e}")
 
+        # Also thoroughly scan and remove any remaining variant files for this image
+        cache_dir = self.get_cache_dir(image_path, create=False)
+        if os.path.isdir(cache_dir):
+            base_name = os.path.splitext(os.path.basename(image_path))[0]
+            try:
+                for fname in os.listdir(cache_dir):
+                    if fname.startswith(f"{base_name}."):
+                        full_p = os.path.join(cache_dir, fname)
+                        if os.path.isfile(full_p):
+                            try:
+                                os.remove(full_p)
+                            except Exception as e:
+                                logger.warning(f"Failed to remove cache file {full_p}: {e}")
+            except Exception as e:
+                logger.warning(f"Error listing cache dir {cache_dir}: {e}")
+
     def clear_all_cache(self, directory_path: str) -> None:
         """Removes the entire .amt_cache directory under the given folder."""
         cache_dir = os.path.join(directory_path, CACHE_DIR_NAME)
