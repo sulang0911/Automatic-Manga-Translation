@@ -67,6 +67,29 @@ class DropZoneWidget(QFrame):
 
         layout.addLayout(btn_layout)
 
+    def set_compact(self, compact: bool):
+        """Switches between expanded landing zone and compact banner when pages exist."""
+        if compact:
+            self.sub_label.hide()
+            self.btn_import_files.hide()
+            self.btn_import_folder.hide()
+            self.title_label.setText("拖入或点击添加更多页面")
+            self.title_label.setStyleSheet("font-size: 11px; font-weight: 500;")
+            self.icon_label.setPixmap(get_icon("folder_open", color="#3B82F6", size=18).pixmap(18, 18))
+            self.layout().setContentsMargins(8, 6, 8, 6)
+            self.layout().setSpacing(4)
+        else:
+            self.sub_label.show()
+            self.btn_import_files.show()
+            self.btn_import_folder.show()
+            self.title_label.setText("拖入图片或漫画文件夹")
+            self.title_label.setStyleSheet("")
+            self.icon_label.setPixmap(get_icon("folder_open", color="#3B82F6", size=28).pixmap(28, 28))
+            self.layout().setContentsMargins(12, 16, 12, 16)
+            self.layout().setSpacing(6)
+            self.btn_import_files.setFixedHeight(28)
+            self.btn_import_folder.setFixedHeight(28)
+
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             # Show a choice menu when clicking blank area

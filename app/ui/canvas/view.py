@@ -48,6 +48,8 @@ class MangaCanvasView(QGraphicsView):
     sig_split_changed = pyqtSignal(float)
     sig_bubble_selected = pyqtSignal(dict)
     sig_bubble_changed = pyqtSignal(dict)
+    sig_bubble_swap_prev = pyqtSignal(str)
+    sig_bubble_swap_next = pyqtSignal(str)
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -144,6 +146,8 @@ class MangaCanvasView(QGraphicsView):
             item.setVisible(self.show_bubbles)
             item.signals.clicked.connect(self.sig_bubble_selected.emit)
             item.signals.changed.connect(self.sig_bubble_changed.emit)
+            item.signals.swap_prev_requested.connect(self.sig_bubble_swap_prev.emit)
+            item.signals.swap_next_requested.connect(self.sig_bubble_swap_next.emit)
             self._scene.addItem(item)
             self.bubble_items.append(item)
 

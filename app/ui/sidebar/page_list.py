@@ -9,7 +9,7 @@ from typing import List, Dict, Optional, Any
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QListWidget,
-    QListWidgetItem, QToolButton, QFrame, QMenu, QFileDialog
+    QListWidgetItem, QToolButton, QFrame, QMenu, QFileDialog, QPushButton
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QSize
 from PyQt6.QtGui import QPixmap, QIcon, QColor, QPainter, QBrush, QDragEnterEvent, QDropEvent, QCursor
@@ -83,16 +83,30 @@ class PageItemWidget(QWidget):
                 )
                 self.thumb_label.setPixmap(scaled)
 
-    def update_status(self, status: str, message: str):
+    def update_status(self, status: str, message: str = ""):
+        if not message:
+            status_map = {
+                "done": "已完成",
+                "completed": "已完成",
+                "processing": "处理中",
+                "failed": "失败",
+                "error": "失败",
+                "queued": "等待中",
+                "pending": "等待中",
+            }
+            message = status_map.get(status.lower(), status)
         self.item_data["status"] = status
         self.item_data["status_text"] = message
         self.status_label.setText(message)
 
         dot_colors = {
             "queued": "#71717A",
+            "pending": "#71717A",
             "processing": "#3B82F6",
             "completed": "#10B981",
+            "done": "#10B981",
             "failed": "#EF4444",
+            "error": "#EF4444",
         }
         self.status_dot.set_color(dot_colors.get(status.lower(), "#71717A"))
 
@@ -105,6 +119,10 @@ class PageListWidget(QWidget):
     sig_page_selected = pyqtSignal(dict)
     sig_page_removed = pyqtSignal(str)
     sig_clear_requested = pyqtSignal()
+    sig_start_batch = pyqtSignal()
+    sig_translate_page = pyqtSignal(dict)
+    sig_export_page = pyqtSignal(dict)
+    sig_count_changed = pyqtSignal(int)
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -155,7 +173,37 @@ class PageListWidget(QWidget):
         self.list_widget.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
         self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.list_widget.currentRowChanged.connect(self._on_row_changed)
+        self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
         layout.addWidget(self.list_widget, 1)
+
+        # Batch Translate Button
+        self.batch_btn = QPushButton("🚀 批量翻译全部", self)
+        self.batch_btn.setToolTip("批量翻译页面队列中的全部漫画 (Batch Translate All)")
+        self.batch_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.batch_btn.setEnabled(False)
+        self.batch_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(59, 130, 246, 0.15);
+                color: #3B82F6;
+                border: 1px solid rgba(59, 130, 246, 0.35);
+                border-radius: 6px;
+                padding: 6px 12px;
+                font-weight: 600;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #3B82F6;
+                color: #FFFFFF;
+            }
+            QPushButton:disabled {
+                opacity: 0.35;
+                color: #71717A;
+                border-color: rgba(255, 255, 255, 0.08);
+            }
+        """)
+        self.batch_btn.clicked.connect(self.sig_start_batch.emit)
+        layout.addWidget(self.batch_btn)
 
     def add_paths(self, paths: List[str]):
         """
@@ -231,8 +279,19 @@ class PageListWidget(QWidget):
         self._update_count()
         self.sig_clear_requested.emit()
 
-    def update_item_status(self, item_id: str, status: str, message: str):
+    def update_item_status(self, item_id: str, status: str, message: str = ""):
         """Updates status indicator and text for a specific page."""
+        if not message:
+            status_map = {
+                "done": "已完成",
+                "completed": "已完成",
+                "processing": "处理中",
+                "failed": "失败",
+                "error": "失败",
+                "queued": "等待中",
+                "pending": "等待中",
+            }
+            message = status_map.get(status.lower(), status)
         widget = self._item_widgets.get(item_id)
         if widget:
             widget.update_status(status, message)
@@ -246,6 +305,39 @@ class PageListWidget(QWidget):
     def _update_count(self):
         count = len(self.items_data)
         self.count_badge.setText(f"{count} 页")
+        if hasattr(self, "batch_btn"):
+            self.batch_btn.setEnabled(count > 0)
+        self.sig_count_changed.emit(count)
+
+    def _show_context_menu(self, pos):
+        item = self.list_widget.itemAt(pos)
+        if not item:
+            return
+        row = self.list_widget.row(item)
+        if not (0 <= row < len(self.items_data)):
+            return
+        data = self.items_data[row]
+        path = data.get("path", "")
+
+        menu = QMenu(self)
+        act_translate = menu.addAction(get_icon("play", color="#3B82F6", size=14), "翻译此页面")
+        act_export = menu.addAction(get_icon("download", color="#10B981", size=14), "导出此页面...")
+        menu.addSeparator()
+        act_locate = menu.addAction(get_icon("folder_open", color="#A1A1AA", size=14), "在文件资源管理器中定位")
+        menu.addSeparator()
+        act_remove = menu.addAction(get_icon("trash", color="#EF4444", size=14), "从列表中移除")
+
+        chosen = menu.exec(self.list_widget.mapToGlobal(pos))
+        if chosen == act_translate:
+            self.sig_translate_page.emit(data)
+        elif chosen == act_export:
+            self.sig_export_page.emit(data)
+        elif chosen == act_locate:
+            if path and os.path.exists(path):
+                import subprocess
+                subprocess.Popen(f'explorer /select,"{os.path.normpath(path)}"')
+        elif chosen == act_remove:
+            self.remove_item(data["id"])
 
     def _on_row_changed(self, row: int):
         if 0 <= row < len(self.items_data):

@@ -13,6 +13,8 @@ class BubbleItemSignals(QObject):
     clicked = pyqtSignal(dict)
     double_clicked = pyqtSignal(dict)
     changed = pyqtSignal(dict)
+    swap_prev_requested = pyqtSignal(str)
+    swap_next_requested = pyqtSignal(str)
 
 
 class BubbleItem(QGraphicsRectItem):
@@ -68,6 +70,22 @@ class BubbleItem(QGraphicsRectItem):
     def mouseDoubleClickEvent(self, event):
         super().mouseDoubleClickEvent(event)
         self.signals.double_clicked.emit(self.block_data)
+
+    def contextMenuEvent(self, event):
+        from PyQt6.QtWidgets import QMenu
+        menu = QMenu()
+        b_id = str(self.block_data.get("id", ""))[:4]
+        title_act = menu.addAction(f"气泡 #{b_id}")
+        title_act.setEnabled(False)
+        menu.addSeparator()
+        act_swap_prev = menu.addAction("⬆️ 与上一气泡互换翻译")
+        act_swap_next = menu.addAction("⬇️ 与下一气泡互换翻译")
+        action = menu.exec(event.screenPos())
+        full_id = str(self.block_data.get("id", ""))
+        if action == act_swap_prev:
+            self.signals.swap_prev_requested.emit(full_id)
+        elif action == act_swap_next:
+            self.signals.swap_next_requested.emit(full_id)
 
     def itemChange(self, change: QGraphicsItem.GraphicsItemChange, value: Any) -> Any:
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:

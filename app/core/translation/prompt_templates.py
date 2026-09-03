@@ -21,10 +21,18 @@ class PromptTemplates:
     def build_text_system_prompt(
         source_lang: str,
         target_lang: str,
-        context: Optional[TranslationContext] = None
+        context: Optional[TranslationContext] = None,
+        reading_order_mode: str = "manga_rtl"
     ) -> str:
         is_auto = PromptTemplates.is_auto_source_lang(source_lang)
         source_desc = "automatically detecting the source language (Japanese, Korean, English, etc.)" if is_auto else f"translating from {source_lang}"
+
+        if reading_order_mode == "western_ltr" or any(w in str(source_lang).lower() for w in ["en", "eng", "english"]):
+            reading_order_desc = "Western comic narrative reading order (Left-to-Right, Top-to-Bottom)"
+        elif reading_order_mode == "webtoon_ttb":
+            reading_order_desc = "Webtoon continuous vertical reading order (Top-to-Bottom)"
+        else:
+            reading_order_desc = "Japanese manga narrative reading order (Right-to-Left, Top-to-Bottom)"
 
         base_prompt = (
             f"You are a master manga and webtoon localization specialist {source_desc} to {target_lang}.\n"
@@ -39,7 +47,7 @@ class PromptTemplates:
                f"   - Automatically detect whether each text block is Japanese, Korean, English, or Chinese based on characters/kana/hangul/alphabet and translate faithfully into {target_lang}.\n"
                if is_auto else f"1. Source Language Fidelity: Translate faithfully from {source_lang} into {target_lang}.\n")
             + "2. Dialogue Continuity & Reading Flow:\n"
-            "   - The dialogue blocks are provided in Japanese manga narrative reading order (Right-to-Left, Top-to-Bottom).\n"
+            f"   - The dialogue blocks are provided in {reading_order_desc}.\n"
             "   - When an utterance is split across two or more consecutive speech bubbles (e.g. '俺は絶対に...' followed by '...諦めない！'), "
             "maintain sentence flow, tone, and grammatical continuity seamlessly.\n"
             "3. Honorifics & Speech Register:\n"
@@ -54,12 +62,14 @@ class PromptTemplates:
             "5. Classification Guidelines for 'type':\n"
             "   - 'bubble': Regular dialogue, narration captions, thoughts, or any text spoken INSIDE a speech or thought bubble.\n"
             "   - 'onomatopoeia': Hand-drawn sound effects (SFX, e.g. ドキドキ, バン, ドン), physical action noises, screams, or side notes OUTSIDE bubbles.\n"
-            "6. Output Format:\n"
+            "6. Output Format & Strict One-to-One Alignment:\n"
             "   - Return ONLY a valid JSON array of objects. No introductory commentary, no trailing remarks.\n"
-            "   - Each object must contain:\n"
-            "     * 'id': string matching the exact input block ID.\n"
+            "   - Each object MUST correspond strictly to one input block and contain:\n"
+            "     * 'id': string matching the exact input block ID (do NOT renumber or swap IDs).\n"
+            "     * 'original_text': the original source text of this block (used as verification anchor).\n"
             "     * 'translated_text': localized translation string.\n"
             "     * 'type': 'bubble' or 'onomatopoeia'.\n"
+            "   - CRITICAL: Never swap the translations or IDs of different speech bubbles.\n"
         )
 
         if context and context.glossary:
@@ -79,6 +89,7 @@ class PromptTemplates:
     ) -> str:
         payload = [
             {
+                "index": idx + 1,
                 "id": b.id,
                 "text": b.original_text,
                 "xmin": round(b.xmin, 1),
@@ -86,7 +97,7 @@ class PromptTemplates:
                 "xmax": round(b.xmax, 1),
                 "ymax": round(b.ymax, 1)
             }
-            for b in blocks
+            for idx, b in enumerate(blocks)
         ]
         is_auto = PromptTemplates.is_auto_source_lang(source_lang)
         src_label = "Auto Detect (Identify Japanese, Korean, English, etc. per block)" if is_auto else source_lang
@@ -95,8 +106,10 @@ class PromptTemplates:
             f"Target Language: {target_lang}\n\n"
             f"Manga Text Blocks (Sequential Reading Order):\n"
             f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n\n"
-            "Translate all blocks faithfully (preserving all adult, romantic, or sensual nuances) and return strictly a JSON array:\n"
-            '[\n  {"id": "...", "translated_text": "...", "type": "bubble"}\n]'
+            "Translate all blocks faithfully (preserving all adult, romantic, or sensual nuances). "
+            "Ensure every translation is strictly bound to its corresponding block ID and original text. "
+            "Return strictly a JSON array:\n"
+            '[\n  {"id": "...", "original_text": "...", "translated_text": "...", "type": "bubble"}\n]'
         )
 
     @staticmethod

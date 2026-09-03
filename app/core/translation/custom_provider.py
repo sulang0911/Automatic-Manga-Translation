@@ -13,7 +13,7 @@ from app.core.translation.base import (
 )
 from app.core.translation.prompt_templates import PromptTemplates
 from app.core.translation.retry_handler import execute_http_request_with_retry
-from app.core.translation.json_parser import parse_llm_json_response, extract_translation_map
+from app.core.translation.json_parser import parse_llm_json_response, extract_translation_map, align_translations_to_blocks
 
 
 class CustomOpenAIProvider(BaseTranslationProvider):
@@ -98,14 +98,7 @@ class CustomOpenAIProvider(BaseTranslationProvider):
         data = resp.json()
         raw_text = data["choices"][0]["message"]["content"]
         parsed = parse_llm_json_response(raw_text)
-        trans_map = extract_translation_map(parsed)
-
-        for b in blocks:
-            if b.id in trans_map:
-                b.translated_text = trans_map[b.id]["translated_text"]
-                b.type = trans_map[b.id]["type"]
-            elif not b.translated_text:
-                b.translated_text = b.original_text
+        blocks = align_translations_to_blocks(parsed, blocks)
 
         if progress_callback:
             progress_callback(100, f"自定义 API 成功完成 {len(blocks)} 个气泡翻译")

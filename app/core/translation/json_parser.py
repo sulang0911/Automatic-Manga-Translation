@@ -5,7 +5,9 @@ Handles thinking tags, markdown wrappers, trailing commas, truncated JSON, and s
 """
 import json
 import re
-from typing import Any, List, Dict
+import difflib
+from typing import Any, List, Dict, Optional, Set
+from app.core.models import TranslationBlock
 
 
 def parse_llm_json_response(raw_text: str) -> Any:
@@ -166,34 +168,220 @@ def extract_translation_map(parsed_data: Any) -> Dict[str, Dict[str, Any]]:
     """Normalizes parsed JSON output into a lookup dictionary {id: {"translated_text": str, "type": str}}."""
     result = {}
     if isinstance(parsed_data, list):
-        for item in parsed_data:
-            if isinstance(item, dict) and "id" in item:
-                result[str(item["id"])] = {
-                    "translated_text": str(item.get("translated_text", "")).strip(),
-                    "type": item.get("type", "bubble")
+        for idx, item in enumerate(parsed_data):
+            if isinstance(item, dict):
+                item_id = str(item.get("id", item.get("block_id", idx + 1))).strip()
+                result[item_id] = {
+                    "translated_text": str(item.get("translated_text", item.get("translation", ""))).strip(),
+                    "type": item.get("type", "bubble"),
+                    "original_text": str(item.get("original_text", item.get("text", ""))).strip()
+                }
+            elif isinstance(item, str):
+                result[str(idx + 1)] = {
+                    "translated_text": item.strip(),
+                    "type": "bubble",
+                    "original_text": ""
                 }
     elif isinstance(parsed_data, dict):
         # Direct single-block dict handling: {"id": "...", "translated_text": "..."}
-        if "id" in parsed_data and "translated_text" in parsed_data:
+        if ("id" in parsed_data or "block_id" in parsed_data) and ("translated_text" in parsed_data or "translation" in parsed_data):
+            bid = str(parsed_data.get("id", parsed_data.get("block_id", "1"))).strip()
             return {
-                str(parsed_data["id"]): {
-                    "translated_text": str(parsed_data.get("translated_text", "")).strip(),
-                    "type": parsed_data.get("type", "bubble")
+                bid: {
+                    "translated_text": str(parsed_data.get("translated_text", parsed_data.get("translation", ""))).strip(),
+                    "type": parsed_data.get("type", "bubble"),
+                    "original_text": str(parsed_data.get("original_text", parsed_data.get("text", ""))).strip()
                 }
             }
         for key in ["translations", "blocks", "data", "results", "result", "items", "dialogues", "output", "response", "content"]:
-            if key in parsed_data and isinstance(parsed_data[key], list):
+            if key in parsed_data and isinstance(parsed_data[key], (list, dict)):
                 return extract_translation_map(parsed_data[key])
         # Fallback for any key that wraps a list of block dictionaries
         for val in parsed_data.values():
-            if isinstance(val, list) and val and isinstance(val[0], dict) and ("id" in val[0] or "translated_text" in val[0]):
+            if isinstance(val, list) and val and isinstance(val[0], (dict, str)):
                 return extract_translation_map(val)
         for k, v in parsed_data.items():
-            if isinstance(v, dict) and "translated_text" in v:
+            if isinstance(v, dict) and ("translated_text" in v or "translation" in v):
                 result[str(k)] = {
-                    "translated_text": str(v.get("translated_text", "")).strip(),
-                    "type": v.get("type", "bubble")
+                    "translated_text": str(v.get("translated_text", v.get("translation", ""))).strip(),
+                    "type": v.get("type", "bubble"),
+                    "original_text": str(v.get("original_text", v.get("text", ""))).strip()
                 }
             elif isinstance(v, str):
-                result[str(k)] = {"translated_text": v.strip(), "type": "bubble"}
+                result[str(k)] = {"translated_text": v.strip(), "type": "bubble", "original_text": ""}
     return result
+
+
+def _text_similarity(s1: str, s2: str) -> float:
+    """Calculates normalized text similarity between two strings."""
+    if not s1 or not s2:
+        return 0.0
+    s1_c = "".join(s1.lower().split())
+    s2_c = "".join(s2.lower().split())
+    if s1_c == s2_c:
+        return 1.0
+    if s1_c in s2_c or s2_c in s1_c:
+        min_l = min(len(s1_c), len(s2_c))
+        max_l = max(len(s1_c), len(s2_c))
+        if min_l >= 3 and (min_l / max_l) >= 0.4:
+            return 0.90
+    return difflib.SequenceMatcher(None, s1_c, s2_c).ratio()
+
+
+def align_translations_to_blocks(parsed_data: Any, blocks: List[TranslationBlock]) -> List[TranslationBlock]:
+    """
+    Multi-Tier Resilient Alignment Engine (五级鲁棒对齐引擎).
+    Guarantees translated texts are assigned to the correct speech bubbles,
+    even when LLM swaps IDs, outputs integer indices, truncates hashes, or drifts attention.
+    """
+    if not blocks:
+        return []
+
+    # 1. Normalize parsed_data into a list of candidate translation items
+    candidates: List[Dict[str, Any]] = []
+
+    if isinstance(parsed_data, list):
+        for idx, item in enumerate(parsed_data):
+            if isinstance(item, dict):
+                candidates.append({
+                    "raw_id": str(item.get("id", item.get("block_id", ""))).strip(),
+                    "orig_text": str(item.get("original_text", item.get("text", item.get("source_text", "")))).strip(),
+                    "trans_text": str(item.get("translated_text", item.get("translation", ""))).strip(),
+                    "type": item.get("type", "bubble"),
+                    "index": idx
+                })
+            elif isinstance(item, str):
+                candidates.append({
+                    "raw_id": "",
+                    "orig_text": "",
+                    "trans_text": item.strip(),
+                    "type": "bubble",
+                    "index": idx
+                })
+    elif isinstance(parsed_data, dict):
+        for key in ["translations", "blocks", "data", "results", "result", "items", "dialogues", "output", "response", "content"]:
+            if key in parsed_data and isinstance(parsed_data[key], list):
+                return align_translations_to_blocks(parsed_data[key], blocks)
+        for val in parsed_data.values():
+            if isinstance(val, list) and val and isinstance(val[0], dict) and ("id" in val[0] or "translated_text" in val[0]):
+                return align_translations_to_blocks(val, blocks)
+        # Direct dict mapping: {id: text} or {id: {translated_text: ...}}
+        for idx, (k, v) in enumerate(parsed_data.items()):
+            if isinstance(v, dict):
+                candidates.append({
+                    "raw_id": str(k).strip(),
+                    "orig_text": str(v.get("original_text", v.get("text", ""))).strip(),
+                    "trans_text": str(v.get("translated_text", v.get("translation", ""))).strip(),
+                    "type": v.get("type", "bubble"),
+                    "index": idx
+                })
+            elif isinstance(v, str):
+                candidates.append({
+                    "raw_id": str(k).strip(),
+                    "orig_text": "",
+                    "trans_text": v.strip(),
+                    "type": "bubble",
+                    "index": idx
+                })
+
+    matched_blocks: Set[int] = set()
+    matched_candidates: Set[int] = set()
+    assignments: Dict[int, Dict[str, Any]] = {}  # block_idx -> candidate
+
+    # Tier 1: Original text semantic similarity matching
+    # If the LLM returned original_text, match by content first to heal any swapped IDs!
+    for c_idx, cand in enumerate(candidates):
+        if not cand["orig_text"] or not cand["trans_text"]:
+            continue
+        best_b_idx = None
+        best_score = 0.0
+        for b_idx, block in enumerate(blocks):
+            if b_idx in matched_blocks:
+                continue
+            sim = _text_similarity(cand["orig_text"], block.original_text)
+            if sim > best_score:
+                best_score = sim
+                best_b_idx = b_idx
+        if best_b_idx is not None and best_score >= 0.55:
+            assignments[best_b_idx] = cand
+            matched_blocks.add(best_b_idx)
+            matched_candidates.add(c_idx)
+
+    # Tier 2: Exact ID match
+    for c_idx, cand in enumerate(candidates):
+        if c_idx in matched_candidates or not cand["raw_id"] or not cand["trans_text"]:
+            continue
+        for b_idx, block in enumerate(blocks):
+            if b_idx in matched_blocks:
+                continue
+            if cand["raw_id"].lower() == block.id.lower():
+                assignments[b_idx] = cand
+                matched_blocks.add(b_idx)
+                matched_candidates.add(c_idx)
+                break
+
+    # Tier 3: Prefix / Suffix / Hash match (e.g. 'aba5' matches 'aba5e381' or '#aba5')
+    for c_idx, cand in enumerate(candidates):
+        if c_idx in matched_candidates or not cand["raw_id"] or not cand["trans_text"]:
+            continue
+        c_clean = cand["raw_id"].lstrip("#").lower()
+        if len(c_clean) < 3:
+            continue
+        for b_idx, block in enumerate(blocks):
+            if b_idx in matched_blocks:
+                continue
+            b_clean = block.id.lstrip("#").lower()
+            if b_clean.startswith(c_clean) or c_clean.startswith(b_clean):
+                assignments[b_idx] = cand
+                matched_blocks.add(b_idx)
+                matched_candidates.add(c_idx)
+                break
+
+    # Tier 4: Reading Order or Sequential Index match (e.g. '1', '2', 'block_1')
+    for c_idx, cand in enumerate(candidates):
+        if c_idx in matched_candidates or not cand["trans_text"]:
+            continue
+        c_clean = cand["raw_id"].lower().replace("block_", "").replace("bubble_", "").replace("b", "")
+        if c_clean.isdigit():
+            k = int(c_clean)
+            for b_idx, block in enumerate(blocks):
+                if b_idx in matched_blocks:
+                    continue
+                if block.reading_order == k or (b_idx + 1) == k or b_idx == k:
+                    assignments[b_idx] = cand
+                    matched_blocks.add(b_idx)
+                    matched_candidates.add(c_idx)
+                    break
+
+    # Tier 4b: Sequential alignment for remaining unmatched
+    remaining_b_indices = [i for i in range(len(blocks)) if i not in matched_blocks]
+    remaining_c_indices = [i for i in range(len(candidates)) if i not in matched_candidates and candidates[i]["trans_text"]]
+    for b_idx, c_idx in zip(remaining_b_indices, remaining_c_indices):
+        assignments[b_idx] = candidates[c_idx]
+        matched_blocks.add(b_idx)
+        matched_candidates.add(c_idx)
+
+    # Apply assignments
+    for b_idx, block in enumerate(blocks):
+        if b_idx in assignments:
+            cand = assignments[b_idx]
+            block.translated_text = cand["trans_text"]
+            if cand.get("type"):
+                block.type = cand["type"]
+        elif not block.translated_text:
+            block.translated_text = block.original_text
+
+    # Tier 5: Length Ratio Inversion Anomaly Detection & Self-Healing
+    # Detect cases where long dialogue and short label got swapped
+    for i in range(len(blocks)):
+        for j in range(i + 1, len(blocks)):
+            b1, b2 = blocks[i], blocks[j]
+            o1, o2 = len(b1.original_text), len(b2.original_text)
+            t1, t2 = len(b1.translated_text), len(b2.translated_text)
+            # If b1 is much longer than b2 in original, but b2 is much longer than b1 in translation:
+            if o1 >= 50 and o2 <= 25 and t1 <= 18 and t2 >= 35:
+                # Anomaly detected: severe length inversion
+                b1.translated_text, b2.translated_text = b2.translated_text, b1.translated_text
+                b1.type, b2.type = b2.type, b1.type
+
+    return blocks

@@ -2,9 +2,11 @@ import json
 import re
 import requests
 from typing import List, Dict, Any, Optional
+from app.core.models import TranslationBlock
+from app.core.translation.json_parser import align_translations_to_blocks, parse_llm_json_response
 
 DEFAULT_SYSTEM_PROMPT = (
-    "你是一个专业且中立的漫画 (manga dialogue/R18/青年志) 本地化翻译引擎。你的唯一任务是忠实、通顺、原汁原味地将输入内容翻译为目标语言（默认简体中文）。\n\n"
+    "你是一个专业且中立的成人漫画（R18/青年志）本地化翻译引擎。你的唯一任务是忠实、通顺、原汁原味地将输入内容翻译为目标语言（默认简体中文）。\n\n"
     "【核心翻译原则】\n"
     "1. 绝对忠实与无删减：材料为成年虚构角色的成人漫画对话。严禁道德说教、严禁净化、软化、规避或删减任何敏感词、亲密用语、俚语口语、调情挑逗与粗俗词汇，必须百分之百保留原文的真实意图与情绪张力。\n"
     "2. 拟声词与喘息语气：保留漫画特有的情感标点（如 ♡、～、！？、……），将呻吟声、喘息声及拟声词（如「はぁ」「あっ」「んっ」等）自然转化为符合语境的中文拟声词（如“哈啊…”、“嗯…”、“啊…”），不得作为噪音过滤或机械直译。\n"
@@ -77,16 +79,20 @@ class TranslationEngine:
         if progress_callback:
             progress_callback(20, f"正在向 {self.provider.upper()} ({self.model}) 发送翻译请求...")
 
-        # Build payload
-        items_payload = [{"id": b["id"], "original_text": b.get("original_text", "")} for b in blocks]
+        # Build payload with narrative index and original text anchor
+        items_payload = [
+            {"index": idx + 1, "id": b.get("id"), "original_text": b.get("original_text", "")}
+            for idx, b in enumerate(blocks)
+        ]
         user_message = (
             f"Target Language: {self.target_lang}\n"
             f"Source Language: {self.source_lang}\n\n"
-            "Here is the dialogue list from the comic page:\n"
+            "Here is the dialogue list from the comic page (in narrative reading order):\n"
             f"{json.dumps(items_payload, ensure_ascii=False, indent=2)}\n\n"
+            "Translate each block faithfully. Keep each translation strictly bound to its corresponding ID and original text.\n"
             "Return JSON format:\n"
             "[\n"
-            '  {"id": "...", "translated_text": "..."}\n'
+            '  {"id": "...", "original_text": "...", "translated_text": "..."}\n'
             "]"
         )
 
@@ -122,20 +128,23 @@ class TranslationEngine:
 
             parsed_list = self._parse_json_response(raw_content)
 
-            # Map back to blocks
-            trans_map = {}
-            for item in parsed_list:
-                if isinstance(item, dict) and "id" in item and "translated_text" in item:
-                    clean_text = re.sub(r'<\|im_end\|>|<\|im_start\|>|</s>|<\|endoftext\|>', '', str(item["translated_text"])).strip()
-                    trans_map[str(item["id"])] = clean_text
+            # Robust multi-tier alignment to blocks
+            tb_blocks = [
+                TranslationBlock.from_dict(b) if isinstance(b, dict) else b
+                for b in blocks
+            ]
+            aligned_tb = align_translations_to_blocks(parsed_list, tb_blocks)
 
-            for b in blocks:
-                b_id = str(b.get("id"))
-                if b_id in trans_map:
-                    b["translated_text"] = trans_map[b_id]
-                elif not b.get("translated_text"):
-                    # fallback if specific ID missing
-                    b["translated_text"] = b.get("original_text", "")
+            for orig_b, aligned_b in zip(blocks, aligned_tb):
+                clean_text = re.sub(r'<\|im_end\|>|<\|im_start\|>|</s>|<\|endoftext\|>', '', str(aligned_b.translated_text)).strip()
+                if isinstance(orig_b, dict):
+                    orig_b["translated_text"] = clean_text
+                    if aligned_b.type:
+                        orig_b["type"] = aligned_b.type
+                else:
+                    orig_b.translated_text = clean_text
+                    if aligned_b.type:
+                        orig_b.type = aligned_b.type
 
             if progress_callback:
                 progress_callback(100, f"成功完成 {len(blocks)} 个对话气泡翻译")

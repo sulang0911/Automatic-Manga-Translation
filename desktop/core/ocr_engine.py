@@ -8,11 +8,15 @@ from typing import List, Dict, Any, Optional
 
 try:
     from app.core.ocr.base import merge_adjacent_boxes
+    from app.core.ocr.reading_order import sort_reading_order
+    from app.core.models import TranslationBlock, ReadingOrderMode
 except ImportError:
     _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     if _root not in sys.path:
         sys.path.insert(0, _root)
     from app.core.ocr.base import merge_adjacent_boxes
+    from app.core.ocr.reading_order import sort_reading_order
+    from app.core.models import TranslationBlock, ReadingOrderMode
 
 def get_background_color_hex(crop: np.ndarray) -> str:
     if crop is None or crop.size == 0:
@@ -35,13 +39,14 @@ def get_background_color_hex(crop: np.ndarray) -> str:
     return f"#{int(r):02x}{int(g):02x}{int(b):02x}".upper()
 
 class OCREngine:
-    def __init__(self, engine_type: str = "paddle", use_gpu: bool = True, lang: str = "japan"):
+    def __init__(self, engine_type: str = "paddle", use_gpu: bool = True, lang: str = "japan", reading_direction: Optional[str] = None):
         self.engine_type = engine_type
         if self.engine_type == "cpu_paddle":
             self.use_gpu = False
         else:
             self.use_gpu = use_gpu
         self.lang = lang
+        self.reading_direction = reading_direction
         self._paddle_ocr = None
         self._easyocr_reader = None
 
@@ -132,7 +137,7 @@ class OCREngine:
             print(f"[*] Initializing EasyOCR (langs={langs}, gpu={self.use_gpu})...")
             self._easyocr_reader = easyocr.Reader(langs, gpu=self.use_gpu)
 
-    def detect_and_recognize(self, image: np.ndarray, progress_callback=None) -> List[Dict[str, Any]]:
+    def detect_and_recognize(self, image: np.ndarray, progress_callback=None, reading_direction: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Runs OCR on an OpenCV BGR image and returns a list of translation blocks.
         Each block: {
@@ -269,11 +274,8 @@ class OCREngine:
         # 2. Merge overlapping / closely adjacent text lines in speech bubbles
         merged_boxes = self._merge_adjacent_boxes(raw_boxes, w_img, h_img)
 
-        # 3. Sort boxes by Japanese manga reading order: Right-to-Left, Top-to-Bottom
-        merged_boxes = self._sort_manga_reading_order(merged_boxes, w_img)
-
-        # 4. Convert to TranslationBlock format
-        blocks = []
+        # 3. Convert to TranslationBlock objects for high-precision sorting & coordinate normalization
+        tb_blocks: List[TranslationBlock] = []
         for box in merged_boxes:
             xmin = max(0, min(box["xmin"], w_img - 1))
             ymin = max(0, min(box["ymin"], h_img - 1))
@@ -291,21 +293,35 @@ class OCREngine:
             if aspect > 4.0 or aspect < 0.15:
                 is_bubble = False
 
-            block = {
-                "id": str(uuid.uuid4())[:8],
-                "original_text": box["text"],
-                "translated_text": "",
-                "xmin": round((xmin / w_img) * 100.0, 2),
-                "ymin": round((ymin / h_img) * 100.0, 2),
-                "xmax": round((xmax / w_img) * 100.0, 2),
-                "ymax": round((ymax / h_img) * 100.0, 2),
-                "bg_color": bg_color,
-                "text_color": "#000000",
-                "type": "bubble" if is_bubble else "onomatopoeia",
-                "confidence": float(box.get("conf", 1.0)),
-                "line_count": int(box.get("line_count", 1))
-            }
-            blocks.append(block)
+            tb = TranslationBlock(
+                id=str(uuid.uuid4())[:8],
+                original_text=box["text"],
+                translated_text="",
+                xmin=round((xmin / w_img) * 100.0, 2),
+                ymin=round((ymin / h_img) * 100.0, 2),
+                xmax=round((xmax / w_img) * 100.0, 2),
+                ymax=round((ymax / h_img) * 100.0, 2),
+                bg_color=bg_color,
+                text_color="#000000",
+                type="bubble" if is_bubble else "onomatopoeia",
+                confidence=float(box.get("conf", 1.0)),
+                line_count=int(box.get("line_count", 1))
+            )
+            tb_blocks.append(tb)
+
+        # 4. Resolve reading order mode based on language / comic format
+        eff_direction = reading_direction or getattr(self, "reading_direction", None)
+        if eff_direction:
+            resolved_mode = eff_direction
+        elif any(w in str(self.lang).lower() for w in ["en", "eng", "english", "latin"]):
+            resolved_mode = ReadingOrderMode.WESTERN_LTR.value
+        elif (h_img / max(1, w_img)) >= 2.2:
+            resolved_mode = ReadingOrderMode.WEBTOON_TTB.value
+        else:
+            resolved_mode = ReadingOrderMode.MANGA_RTL.value
+
+        sorted_tb_blocks = sort_reading_order(tb_blocks, mode=resolved_mode)
+        blocks = [b.to_dict() for b in sorted_tb_blocks]
 
         if progress_callback:
             progress_callback(95, f"OCR 识别完成，共提取 {len(blocks)} 个对话气泡")
@@ -317,7 +333,21 @@ class OCREngine:
 
     def _sort_manga_reading_order(self, boxes: List[Dict[str, Any]], w_img: int) -> List[Dict[str, Any]]:
         """
-        Sorts boxes Right-to-Left and Top-to-Bottom.
+        Sorts boxes Right-to-Left and Top-to-Bottom using tier interval clustering.
         """
-        # Bucket by vertical rows (~10% height) then sort columns right to left
-        return sorted(boxes, key=lambda b: (int(b["ymin"] / 100) * 100, -b["xmin"]))
+        if not boxes:
+            return []
+        dummy_blocks = [
+            TranslationBlock(
+                id=str(idx),
+                original_text=b.get("text", ""),
+                xmin=float(b.get("xmin", 0)),
+                ymin=float(b.get("ymin", 0)),
+                xmax=float(b.get("xmax", 0)),
+                ymax=float(b.get("ymax", 0))
+            )
+            for idx, b in enumerate(boxes)
+        ]
+        sorted_dummy = sort_reading_order(dummy_blocks, mode=ReadingOrderMode.MANGA_RTL.value)
+        order_map = {int(b.id): rank for rank, b in enumerate(sorted_dummy)}
+        return sorted(boxes, key=lambda b: order_map.get(boxes.index(b), 0))

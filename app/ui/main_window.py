@@ -82,6 +82,8 @@ class MainWindow(QMainWindow):
         self.canvas_view.sig_split_changed.connect(self._on_split_slider_moved_from_canvas)
         self.canvas_view.sig_bubble_selected.connect(self._on_bubble_selected_from_canvas)
         self.canvas_view.sig_bubble_changed.connect(self._on_bubble_geometry_changed)
+        self.canvas_view.sig_bubble_swap_prev.connect(self._on_canvas_bubble_swap_prev)
+        self.canvas_view.sig_bubble_swap_next.connect(self._on_canvas_bubble_swap_next)
 
         # 2. Action Toolbar
         self.toolbar_widget = self._create_toolbar()
@@ -136,6 +138,7 @@ class MainWindow(QMainWindow):
         self.inspector_panel.sig_translate_page_requested.connect(lambda: self._start_pipeline_for_page(mode="translate_only"))
         self.inspector_panel.sig_erase_page_requested.connect(lambda: self._start_pipeline_for_page(mode="inpaint_only"))
         self.inspector_panel.sig_export_page_requested.connect(self._export_current_page)
+        self.inspector_panel.sig_open_export_dir_requested.connect(self._open_export_directory)
         self.splitter.addWidget(self.inspector_panel)
 
         # Set balanced initial proportions [sidebar, canvas, inspector]
@@ -172,12 +175,17 @@ class MainWindow(QMainWindow):
         # Page List
         self.page_list = PageListWidget(self.sidebar_drawer)
         self.page_list.sig_page_selected.connect(self._on_page_selected)
+        self.page_list.sig_start_batch.connect(self._start_batch)
+        self.page_list.sig_clear_requested.connect(self._on_page_list_cleared)
+        self.page_list.sig_translate_page.connect(self._on_translate_page_from_list)
+        self.page_list.sig_export_page.connect(self._on_export_page_from_list)
         drawer_layout.addWidget(self.page_list, 1)
 
         layout.addWidget(self.sidebar_drawer, 1)
 
         # Nav rail bindings
         self.nav_rail.sig_toggle_sidebar.connect(self.toggle_sidebar)
+        self.nav_rail.sig_nav_changed.connect(self._on_nav_rail_changed)
 
         # Mirror compatibility properties onto queue_panel
         container.list_widget = self.page_list.list_widget
@@ -301,11 +309,28 @@ class MainWindow(QMainWindow):
         self.settings_btn.clicked.connect(self._open_settings_dialog)
         layout.addWidget(self.settings_btn)
 
+        # Export Button
+        self.export_btn = QPushButton("导出", toolbar)
+        self.export_btn.setIcon(get_icon("download", color="#A1A1AA", size=16))
+        self.export_btn.setToolTip("导出当前已翻译页面 (PNG / JPG / WebP / PDF)")
+        self.export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.export_btn.clicked.connect(self._export_current_page)
+        layout.addWidget(self.export_btn)
+
+        # Batch Translate Button
+        self.batch_toolbar_btn = QPushButton("批量翻译", toolbar)
+        self.batch_toolbar_btn.setIcon(get_icon("play_all", color="#3B82F6", size=16))
+        self.batch_toolbar_btn.setToolTip("批量翻译页面列表中的全部漫画图片")
+        self.batch_toolbar_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.batch_toolbar_btn.clicked.connect(self._start_batch)
+        layout.addWidget(self.batch_toolbar_btn)
+
         # Primary Action Button: Run Translation
         self.run_btn = QPushButton("开始翻译", toolbar)
         self.run_btn.setProperty("class", "primaryBtn")
         self.run_btn.setObjectName("primaryBtn")
         self.run_btn.setIcon(get_icon("play", color="#FFFFFF", size=16))
+        self.run_btn.setToolTip("翻译当前选中的漫画单页")
         self.run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.run_btn.clicked.connect(self._on_run_clicked)
         layout.addWidget(self.run_btn)
@@ -410,6 +435,8 @@ class MainWindow(QMainWindow):
         initial_count = len(self.page_list.items_data)
         self.page_list.add_paths(paths)
         new_count = len(self.page_list.items_data) - initial_count
+        if len(self.page_list.items_data) > 0:
+            self.drop_zone.set_compact(True)
         if new_count > 0:
             self.toast.show_message(f"已成功载入 {new_count} 个漫画页面！", "success")
         elif paths:
@@ -435,6 +462,14 @@ class MainWindow(QMainWindow):
 
     def _on_bubble_geometry_changed(self, block_data: Dict[str, Any]):
         self._schedule_rerender()
+
+    def _on_canvas_bubble_swap_prev(self, block_id: str):
+        self.inspector_panel.select_block_by_id(block_id)
+        self.inspector_panel._on_swap_prev_clicked()
+
+    def _on_canvas_bubble_swap_next(self, block_id: str):
+        self.inspector_panel.select_block_by_id(block_id)
+        self.inspector_panel._on_swap_next_clicked()
 
     def _on_block_updated_from_inspector(self, block_data: Dict[str, Any]):
         self._schedule_rerender()
@@ -494,6 +529,45 @@ class MainWindow(QMainWindow):
         self.sidebar_drawer.setVisible(not is_visible)
         self.nav_rail.set_collapsed_icon(is_visible)
 
+    def _on_nav_rail_changed(self, key: str):
+        """Handles navigation rail section switches."""
+        if key == "pages":
+            if not self.sidebar_drawer.isVisible():
+                self.sidebar_drawer.show()
+                self.nav_rail.set_collapsed_icon(False)
+            self.page_list.setFocus()
+        elif key == "inspector":
+            is_vis = self.inspector_panel.isVisible()
+            self.inspector_panel.setVisible(not is_vis)
+            self.status_label.setText("已展开对话框检查器" if not is_vis else "已隐藏对话框检查器（全屏画布模式）")
+        elif key == "settings":
+            self._open_settings_dialog()
+
+    def _on_translate_page_from_list(self, item_data: Dict[str, Any]):
+        """Translates the specific page requested from the context menu."""
+        self._on_page_selected(item_data)
+        self._start_pipeline_for_page(mode="full")
+
+    def _on_export_page_from_list(self, item_data: Dict[str, Any]):
+        """Exports the specific page requested from the context menu."""
+        self._on_page_selected(item_data)
+        self._export_current_page()
+
+    def _open_export_directory(self):
+        """Opens the exported chapter directory in OS file manager."""
+        export_dir = os.path.join(os.getcwd(), "exported_chapter")
+        os.makedirs(export_dir, exist_ok=True)
+        import subprocess
+        subprocess.Popen(f'explorer "{os.path.normpath(export_dir)}"')
+
+    def _on_page_list_cleared(self):
+        """Resets drop zone and canvas view when all items are cleared."""
+        self.drop_zone.set_compact(False)
+        self.current_image_data = None
+        self.canvas_view.set_data(None)
+        self.inspector_panel.set_blocks([])
+        self.status_label.setText("就绪 | 页面队列已清空")
+
     def _on_source_lang_changed(self, lang: str):
         """Updates active source language in application configuration."""
         self.config.source_lang = lang
@@ -511,6 +585,8 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(build_stylesheet(tokens))
         self.theme_btn.setIcon(get_icon("sun" if theme_name == "dark" else "moon", color=tokens.text_secondary, size=16))
         self.settings_btn.setIcon(get_icon("settings", color=tokens.text_secondary, size=16))
+        self.export_btn.setIcon(get_icon("download", color=tokens.text_secondary, size=16))
+        self.batch_toolbar_btn.setIcon(get_icon("play_all", color=tokens.accent_primary, size=16))
         self.canvas_view.setBackgroundBrush(QColor(tokens.canvas_bg))
         self.canvas_view.scene.setBackgroundBrush(QColor(tokens.canvas_bg))
 
@@ -622,6 +698,14 @@ class MainWindow(QMainWindow):
 
     def _start_batch(self, queue_items: Optional[List[Dict[str, Any]]] = None):
         """Launches BatchWorker QThread for chapter queue."""
+        if self.active_batch_worker and self.active_batch_worker.isRunning():
+            self.active_batch_worker.cancel()
+            self.status_label.setText("正在取消批处理任务...")
+            self.batch_toolbar_btn.setText("批量翻译")
+            if hasattr(self.page_list, "batch_btn"):
+                self.page_list.batch_btn.setText("🚀 批量翻译本章全部页面")
+            return
+
         items = queue_items or self.page_list.items_data
         if not items:
             self.toast.show_message("处理队列为空，请先添加漫画页面！", "warning")
@@ -629,7 +713,9 @@ class MainWindow(QMainWindow):
 
         self.progress_bar.show()
         self.progress_bar.setValue(0)
-        self.run_btn.setText("取消批处理")
+        self.batch_toolbar_btn.setText("取消批处理")
+        if hasattr(self.page_list, "batch_btn"):
+            self.page_list.batch_btn.setText("⏹ 取消批处理")
 
         export_dir = os.path.join(os.getcwd(), "exported_chapter")
         os.makedirs(export_dir, exist_ok=True)
@@ -642,6 +728,7 @@ class MainWindow(QMainWindow):
         )
         self.active_batch_worker.sig_batch_progress.connect(self._on_batch_progress)
         self.active_batch_worker.sig_item_completed.connect(self._on_batch_item_completed)
+        self.active_batch_worker.sig_item_failed.connect(self._on_batch_item_failed)
         self.active_batch_worker.sig_batch_finished.connect(self._on_batch_finished)
         self.active_batch_worker.start()
 
@@ -651,12 +738,37 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"批处理 ({cur}/{total}): {filename} - {msg}")
 
     def _on_batch_item_completed(self, image_id: str, result: Dict[str, Any]):
-        self.page_list.update_item_status(image_id, "done")
+        self.page_list.update_item_status(image_id, "completed", "已完成")
+        # Update data cache in page list
+        for item in self.page_list.items_data:
+            if item.get("id") == image_id:
+                for k in ["blocks", "erased_img", "translated_img"]:
+                    if k in result:
+                        item[k] = result[k]
+                break
+
+        # If this is the currently active page on canvas, update canvas view!
+        if self.current_image_data and self.current_image_data.get("id") == image_id:
+            for k in ["blocks", "erased_img", "translated_img"]:
+                if k in result:
+                    self.current_image_data[k] = result[k]
+            self.canvas_view.set_data(
+                self.current_image_data.get("original_img"),
+                translated_cv=self.current_image_data.get("translated_img"),
+                erased_cv=self.current_image_data.get("erased_img"),
+                blocks=self.current_image_data.get("blocks", [])
+            )
+            self.inspector_panel.set_blocks(self.current_image_data.get("blocks", []))
+
+    def _on_batch_item_failed(self, image_id: str, error_msg: str):
+        short_err = error_msg.strip().split("\n")[-1][:20]
+        self.page_list.update_item_status(image_id, "failed", f"失败: {short_err}")
 
     def _on_batch_finished(self, success_count: int, fail_count: int):
         self.progress_bar.hide()
-        self.run_btn.setText("开始翻译")
-        self.run_btn.setIcon(get_icon("play", color="#FFFFFF", size=16))
+        self.batch_toolbar_btn.setText("批量翻译")
+        if hasattr(self.page_list, "batch_btn"):
+            self.page_list.batch_btn.setText("🚀 批量翻译本章全部页面")
         self.status_label.setText(f"批处理完成: {success_count} 成功, {fail_count} 失败")
         self.toast.show_message(f"批处理完成: {success_count} 成功, {fail_count} 失败", "success" if fail_count == 0 else "warning")
 

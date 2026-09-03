@@ -12,7 +12,7 @@ from app.core.translation.base import (
 )
 from app.core.translation.prompt_templates import PromptTemplates
 from app.core.translation.retry_handler import execute_http_request_with_retry
-from app.core.translation.json_parser import parse_llm_json_response, extract_translation_map
+from app.core.translation.json_parser import parse_llm_json_response, extract_translation_map, align_translations_to_blocks
 
 
 class DeepSeekProvider(BaseTranslationProvider):
@@ -80,14 +80,7 @@ class DeepSeekProvider(BaseTranslationProvider):
             progress_callback(80, "正在解析 DeepSeek 翻译结果...")
 
         parsed = parse_llm_json_response(raw_text)
-        trans_map = extract_translation_map(parsed)
-
-        for b in blocks:
-            if b.id in trans_map:
-                b.translated_text = trans_map[b.id]["translated_text"]
-                b.type = trans_map[b.id]["type"]
-            elif not b.translated_text:
-                b.translated_text = b.original_text
+        blocks = align_translations_to_blocks(parsed, blocks)
 
         if progress_callback:
             progress_callback(100, f"DeepSeek 成功完成 {len(blocks)} 个气泡翻译")

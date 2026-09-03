@@ -6,7 +6,7 @@ from typing import Optional, List, Dict, Any
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTextEdit, QComboBox, QSlider, QCheckBox,
-    QFrame, QTabWidget, QListWidget, QListWidgetItem
+    QFrame, QTabWidget, QListWidget, QListWidgetItem, QGroupBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor
@@ -23,6 +23,7 @@ class InspectorPanel(QFrame):
     sig_translate_page_requested = pyqtSignal()
     sig_erase_page_requested = pyqtSignal()
     sig_export_page_requested = pyqtSignal()
+    sig_open_export_dir_requested = pyqtSignal()
     sig_block_updated = pyqtSignal(dict)
     sig_block_deleted = pyqtSignal(str)
 
@@ -101,6 +102,35 @@ class InspectorPanel(QFrame):
         self.delete_block_btn.clicked.connect(self._on_delete_block)
         row_type.addWidget(self.delete_block_btn)
         detail_layout.addLayout(row_type)
+
+        # Translation Swap Group (Quick Fix for Bubble Misplacement)
+        swap_group = QGroupBox("🔄 翻译对调与纠偏 (Swap)", self.detail_frame)
+        swap_layout = QVBoxLayout(swap_group)
+        swap_layout.setContentsMargins(6, 6, 6, 6)
+        swap_layout.setSpacing(4)
+
+        row_swap_btns = QHBoxLayout()
+        self.swap_prev_btn = QPushButton("⬆️ 与上一气泡互换", swap_group)
+        self.swap_prev_btn.setToolTip("将当前选中气泡的译文与上一气泡互相对调")
+        self.swap_prev_btn.clicked.connect(self._on_swap_prev_clicked)
+        row_swap_btns.addWidget(self.swap_prev_btn)
+
+        self.swap_next_btn = QPushButton("⬇️ 与下一气泡互换", swap_group)
+        self.swap_next_btn.setToolTip("将当前选中气泡的译文与下一气泡互相对调")
+        self.swap_next_btn.clicked.connect(self._on_swap_next_clicked)
+        row_swap_btns.addWidget(self.swap_next_btn)
+        swap_layout.addLayout(row_swap_btns)
+
+        row_swap_target = QHBoxLayout()
+        row_swap_target.addWidget(QLabel("目标:"))
+        self.swap_target_combo = QComboBox(swap_group)
+        row_swap_target.addWidget(self.swap_target_combo, 1)
+        self.swap_target_btn = QPushButton("执行互换", swap_group)
+        self.swap_target_btn.clicked.connect(self._on_swap_target_clicked)
+        row_swap_target.addWidget(self.swap_target_btn)
+        swap_layout.addLayout(row_swap_target)
+
+        detail_layout.addWidget(swap_group)
 
         # Apply Re-render Button
         self.apply_block_btn = QPushButton("✨ 应用修改并重绘", self.detail_frame)
@@ -210,10 +240,19 @@ class InspectorPanel(QFrame):
         layout.setContentsMargins(6, 8, 6, 8)
         layout.setSpacing(10)
 
-        self.btn_re_render = QPushButton("🎨 重新排版当前页面", widget)
-        self.btn_re_render.setProperty("class", "primaryBtn")
-        self.btn_re_render.clicked.connect(self.sig_re_render_requested.emit)
-        layout.addWidget(self.btn_re_render)
+        self.btn_export = QPushButton("💾 导出当前已翻译页面", widget)
+        self.btn_export.setProperty("class", "primaryBtn")
+        self.btn_export.clicked.connect(self.sig_export_page_requested.emit)
+        layout.addWidget(self.btn_export)
+
+        self.btn_open_folder = QPushButton("📂 打开导出成果目录", widget)
+        self.btn_open_folder.clicked.connect(self.sig_open_export_dir_requested.emit)
+        layout.addWidget(self.btn_open_folder)
+
+        layout.addSpacing(6)
+        lbl_pipeline = QLabel("分步处理工具:")
+        lbl_pipeline.setStyleSheet("font-size: 11px; opacity: 0.7;")
+        layout.addWidget(lbl_pipeline)
 
         self.btn_translate = QPushButton("🤖 仅重译当前页面 (LLM)", widget)
         self.btn_translate.clicked.connect(self.sig_translate_page_requested.emit)
@@ -222,10 +261,6 @@ class InspectorPanel(QFrame):
         self.btn_erase = QPushButton("🧹 仅重新擦除背景", widget)
         self.btn_erase.clicked.connect(self.sig_erase_page_requested.emit)
         layout.addWidget(self.btn_erase)
-
-        self.btn_export = QPushButton("💾 导出当前已翻译页面", widget)
-        self.btn_export.clicked.connect(self.sig_export_page_requested.emit)
-        layout.addWidget(self.btn_export)
 
         layout.addStretch()
         return widget
@@ -288,6 +323,16 @@ class InspectorPanel(QFrame):
             self.type_combo.setCurrentIndex(idx)
             self.type_combo.blockSignals(False)
 
+        # Populate swap target combo
+        self.swap_target_combo.blockSignals(True)
+        self.swap_target_combo.clear()
+        for other in self.current_blocks:
+            other_id = other.get("id")
+            if other_id and str(other_id) != str(b_id):
+                preview = other.get("original_text", "").replace("\n", " ")[:14]
+                self.swap_target_combo.addItem(f"#{str(other_id)[:4]}: {preview}", other_id)
+        self.swap_target_combo.blockSignals(False)
+
     def _clear_detail(self):
         self.selected_block = None
         self.block_title.setText("未选中任何气泡")
@@ -320,35 +365,97 @@ class InspectorPanel(QFrame):
             self.sig_block_deleted.emit(b_id)
             self._clear_detail()
 
+    def _find_block_index_by_id(self, block_id: str) -> int:
+        for idx, b in enumerate(self.current_blocks):
+            bid = b.get("id") if isinstance(b, dict) else getattr(b, "id", None)
+            if str(bid) == str(block_id):
+                return idx
+        return -1
+
+    def _on_swap_prev_clicked(self):
+        if not self.selected_block:
+            return
+        curr_id = self.selected_block.get("id")
+        idx = self._find_block_index_by_id(curr_id)
+        if idx > 0:
+            self._swap_blocks_translation(idx, idx - 1)
+
+    def _on_swap_next_clicked(self):
+        if not self.selected_block:
+            return
+        curr_id = self.selected_block.get("id")
+        idx = self._find_block_index_by_id(curr_id)
+        if 0 <= idx < len(self.current_blocks) - 1:
+            self._swap_blocks_translation(idx, idx + 1)
+
+    def _on_swap_target_clicked(self):
+        if not self.selected_block:
+            return
+        curr_id = self.selected_block.get("id")
+        target_id = self.swap_target_combo.currentData()
+        if not target_id or target_id == curr_id:
+            return
+        idx1 = self._find_block_index_by_id(curr_id)
+        idx2 = self._find_block_index_by_id(target_id)
+        if idx1 != -1 and idx2 != -1:
+            self._swap_blocks_translation(idx1, idx2)
+
+    def _swap_blocks_translation(self, idx1: int, idx2: int):
+        b1 = self.current_blocks[idx1]
+        b2 = self.current_blocks[idx2]
+
+        t1 = b1.get("translated_text", "")
+        t2 = b2.get("translated_text", "")
+
+        b1["translated_text"] = t2
+        b2["translated_text"] = t1
+
+        selected_id = self.selected_block.get("id") if self.selected_block else None
+
+        self.set_blocks(self.current_blocks)
+        if selected_id:
+            self.select_block_by_id(selected_id)
+
+        self.sig_block_updated.emit(b1)
+        self.sig_block_updated.emit(b2)
+        self.sig_re_render_requested.emit()
+
     def _on_font_family_changed(self, font_name: str):
         clean_name = font_name.split("(")[0].split("（")[0].strip()
         if hasattr(self.config, "style"):
             self.config.style.font_family = clean_name
+        self.sig_re_render_requested.emit()
 
     def _on_font_scale_changed(self, val: int):
         scale = val / 10.0
         self.size_val_label.setText(f"{scale:.1f}x")
         if hasattr(self.config, "style"):
             self.config.style.font_size_scale = scale
+        self.sig_re_render_requested.emit()
 
     def _on_auto_fit_toggled(self, checked: bool):
         if hasattr(self.config, "style"):
             self.config.style.auto_fit_font_size = checked
+        self.sig_re_render_requested.emit()
 
     def _on_bold_toggled(self, checked: bool):
         if hasattr(self.config, "style"):
             self.config.style.font_bold = checked
+        self.sig_re_render_requested.emit()
 
     def _on_italic_toggled(self, checked: bool):
         if hasattr(self.config, "style"):
             self.config.style.font_italic = checked
+        self.sig_re_render_requested.emit()
 
     def _on_stroke_mode_changed(self, idx: int):
         modes = ["auto", "manual", "off"]
         if 0 <= idx < len(modes) and hasattr(self.config, "style"):
             self.config.style.stroke_mode = modes[idx]
+        self.sig_re_render_requested.emit()
 
     def _on_bg_mode_changed(self, idx: int):
         modes = ["original", "custom", "none"]
         if 0 <= idx < len(modes) and hasattr(self.config, "style"):
             self.config.style.bg_color_mode = modes[idx]
+        self.sig_re_render_requested.emit()
