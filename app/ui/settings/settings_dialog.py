@@ -14,7 +14,7 @@ from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal
 from PyQt6.QtGui import QColor
 
 from app.core.config import AppConfig, DEFAULT_SYSTEM_PROMPT
-from app.core.models import StyleConfig, TextColorMode, BgColorMode, StrokeMode
+from app.core.models import StyleConfig, TextColorMode, BgColorMode, StrokeMode, OnomatopoeiaMode
 from desktop.core.translation_engine import TranslationEngine
 from app.ui.settings.page_style_dialog import FONT_CHOICES
 
@@ -428,6 +428,23 @@ class SettingsDialog(QDialog):
         row_bg.addWidget(self.typo_bg_mode, 1)
         box_color_layout.addLayout(row_bg)
 
+        # Onomatopoeia strategy
+        row_onoma = QHBoxLayout()
+        row_onoma.addWidget(QLabel("语气词与拟声词 (Onomatopoeia):"))
+        self.typo_onoma_combo = QComboBox()
+        self.typo_onoma_combo.addItem("正常消除并翻译显示 (默认推荐)", OnomatopoeiaMode.NORMAL.value)
+        self.typo_onoma_combo.addItem("半透明艺术保留", OnomatopoeiaMode.TRANSPARENT.value)
+        self.typo_onoma_combo.addItem("跳过不处理 (保持原图)", OnomatopoeiaMode.IGNORE.value)
+        cur_onoma = getattr(self.config.style, "onomatopoeia_mode", OnomatopoeiaMode.NORMAL.value)
+        onoma_idx = 0
+        if cur_onoma == OnomatopoeiaMode.TRANSPARENT.value:
+            onoma_idx = 1
+        elif cur_onoma == OnomatopoeiaMode.IGNORE.value:
+            onoma_idx = 2
+        self.typo_onoma_combo.setCurrentIndex(onoma_idx)
+        row_onoma.addWidget(self.typo_onoma_combo, 1)
+        box_color_layout.addLayout(row_onoma)
+
         layout.addWidget(box_color)
         layout.addStretch()
 
@@ -542,6 +559,7 @@ class SettingsDialog(QDialog):
         self.config.style.stroke_mode = self.typo_stroke_mode.currentData()
         self.config.style.stroke_width = self.typo_stroke_w_slider.value() / 10.0
         self.config.style.bg_color_mode = self.typo_bg_mode.currentData()
+        self.config.style.onomatopoeia_mode = self.typo_onoma_combo.currentData()
 
         # Export & cache
         self.config.style.export_compressed = self.compress_cb.isChecked()

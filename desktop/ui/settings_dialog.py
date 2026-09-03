@@ -351,7 +351,14 @@ class SettingsDialog(QDialog):
         self.onoma_dil_spin.setValue(cfg.get("onomatopoeia_dilation", 6))
         self.feather_spin.setValue(cfg.get("feather_radius", 4))
 
-        # Typography
+        # Typography & Onomatopoeia
+        onoma_mode = cfg.get("onomatopoeia_mode", "normal")
+        if onoma_mode == "transparent":
+            self.onoma_mode_combo.setCurrentIndex(1)
+        elif onoma_mode == "ignore":
+            self.onoma_mode_combo.setCurrentIndex(2)
+        else:
+            self.onoma_mode_combo.setCurrentIndex(0)
         self.export_dir_input.setText(cfg.get("recent_export_dir", ""))
 
     def _run_connection_test(self):
@@ -400,6 +407,7 @@ class SettingsDialog(QDialog):
         prov_map = ["deepseek", "openai", "gemini", "custom"]
         ocr_map = ["paddle", "easyocr", "cpu_paddle"]
         inpaint_map = ["auto", "opencv_telea", "opencv_ns"]
+        onoma_map = ["normal", "transparent", "ignore"]
 
         updates = {
             "provider": prov_map[self.llm_provider_combo.currentIndex()],
@@ -413,6 +421,7 @@ class SettingsDialog(QDialog):
             "bubble_dilation": self.bubble_dil_spin.value(),
             "onomatopoeia_dilation": self.onoma_dil_spin.value(),
             "feather_radius": self.feather_spin.value(),
+            "onomatopoeia_mode": onoma_map[self.onoma_mode_combo.currentIndex()],
             "recent_export_dir": self.export_dir_input.text().strip()
         }
         self.config_manager.update(updates)

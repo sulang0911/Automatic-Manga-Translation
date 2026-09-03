@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from PyQt6.QtGui import QColor, QPixmap, QIcon
 
-from app.core.models import StyleConfig, TextColorMode, BgColorMode, StrokeMode
+from app.core.models import StyleConfig, TextColorMode, BgColorMode, StrokeMode, OnomatopoeiaMode
 from app.ui.theme.icons import get_icon
 
 
@@ -209,6 +209,16 @@ class PageStyleDialog(QDialog):
         row_bg.addWidget(self.bg_mode_combo, 1)
         box_color_layout.addLayout(row_bg)
 
+        # Onomatopoeia strategy
+        row_onoma = QHBoxLayout()
+        row_onoma.addWidget(QLabel("语气词与拟声词:"))
+        self.onoma_mode_combo = QComboBox(box_color)
+        self.onoma_mode_combo.addItem("正常消除并翻译 (默认推荐)", OnomatopoeiaMode.NORMAL.value)
+        self.onoma_mode_combo.addItem("半透明艺术保留", OnomatopoeiaMode.TRANSPARENT.value)
+        self.onoma_mode_combo.addItem("跳过不处理 (保持原图)", OnomatopoeiaMode.IGNORE.value)
+        row_onoma.addWidget(self.onoma_mode_combo, 1)
+        box_color_layout.addLayout(row_onoma)
+
         main_layout.addWidget(box_color)
 
         main_layout.addStretch()
@@ -294,6 +304,15 @@ class PageStyleDialog(QDialog):
             bg_idx = 2
         self.bg_mode_combo.setCurrentIndex(bg_idx)
 
+        # Onomatopoeia mode
+        onoma_val = getattr(cfg, "onomatopoeia_mode", OnomatopoeiaMode.NORMAL.value)
+        o_idx = 0
+        if onoma_val == OnomatopoeiaMode.TRANSPARENT.value:
+            o_idx = 1
+        elif onoma_val == OnomatopoeiaMode.IGNORE.value:
+            o_idx = 2
+        self.onoma_mode_combo.setCurrentIndex(o_idx)
+
         self._on_override_toggled(self.override_cb.isChecked())
 
     def _on_override_toggled(self, checked: bool):
@@ -307,6 +326,7 @@ class PageStyleDialog(QDialog):
         self.stroke_mode_combo.setEnabled(checked)
         self.stroke_w_slider.setEnabled(checked and self.stroke_mode_combo.currentIndex() != 2)
         self.bg_mode_combo.setEnabled(checked)
+        self.onoma_mode_combo.setEnabled(checked)
 
     def _on_scale_changed(self, val: int):
         scale = val / 10.0
@@ -355,7 +375,7 @@ class PageStyleDialog(QDialog):
                 stroke_color=getattr(self.page_style, 'stroke_color', '#FFFFFF'),
                 bg_color_mode=self.bg_mode_combo.currentData(),
                 line_spacing=getattr(self.page_style, 'line_spacing', 1.15),
-                onomatopoeia_mode=getattr(self.page_style, 'onomatopoeia_mode', 'ignore'),
+                onomatopoeia_mode=self.onoma_mode_combo.currentData() or OnomatopoeiaMode.NORMAL.value,
                 reading_direction=getattr(self.page_style, 'reading_direction', 'manga_rtl'),
             )
         self.sig_applied.emit(self.applied_style)

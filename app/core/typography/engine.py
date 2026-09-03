@@ -360,7 +360,10 @@ class TypographyEngine:
             r = int(text_color_hex[1:3], 16) if len(text_color_hex) >= 7 else 0
             g = int(text_color_hex[3:5], 16) if len(text_color_hex) >= 7 else 0
             b = int(text_color_hex[5:7], 16) if len(text_color_hex) >= 7 else 0
-            fill_rgba = (r, g, b, 255)
+            if block.type == "onomatopoeia" and cfg.onomatopoeia_mode == OnomatopoeiaMode.TRANSPARENT.value:
+                fill_rgba = (r, g, b, 175)
+            else:
+                fill_rgba = (r, g, b, 255)
 
             # Stroke resolution
             stroke_mode = block.stroke_mode_override or cfg.stroke_mode

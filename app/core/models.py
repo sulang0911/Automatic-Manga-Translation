@@ -195,7 +195,7 @@ class StyleConfig:
     stroke_width: float = 2.0
     font_bold: bool = True
     font_italic: bool = False
-    onomatopoeia_mode: str = OnomatopoeiaMode.IGNORE.value
+    onomatopoeia_mode: str = OnomatopoeiaMode.NORMAL.value
     reading_direction: str = ReadingOrderMode.MANGA_RTL.value
     export_compressed: bool = False
 
