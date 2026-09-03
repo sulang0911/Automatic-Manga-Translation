@@ -24,6 +24,25 @@ def natural_sort_key(s: str) -> list:
     return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', os.path.basename(s))]
 
 
+def is_ignored_cache_or_export(file_path: str) -> bool:
+    """Returns True if the path or file is an internal cache folder, hidden file, or intermediate export."""
+    norm = os.path.normpath(os.path.abspath(file_path))
+    parts = norm.split(os.sep)
+    for part in parts[:-1]:
+        if part.startswith(".") or part in ("translation_cache", "__pycache__", ".amt_cache"):
+            return True
+    fname = parts[-1].lower()
+    if fname.startswith("."):
+        return True
+    ignored_suffixes = (
+        ".erased.webp", ".erased.png",
+        ".rendered.webp", ".rendered.png",
+        "_erased.png", "_translated.png",
+        ".blocks.json"
+    )
+    return any(fname.endswith(sfx) for sfx in ignored_suffixes)
+
+
 class PageItemWidget(QWidget):
     """Custom item renderer for each manga page in the queue."""
     sig_remove = pyqtSignal(str)
@@ -218,15 +237,25 @@ class PageListWidget(QWidget):
             if not p:
                 continue
             if os.path.isfile(p):
+                if is_ignored_cache_or_export(p):
+                    continue
                 ext = os.path.splitext(p)[1].lower()
                 if ext in valid_extensions:
                     discovered_files.append(os.path.abspath(p))
             elif os.path.isdir(p):
-                for root, _, files in os.walk(p):
+                for root, dirs, files in os.walk(p):
+                    # Prune hidden directories and internal cache directories in-place
+                    dirs[:] = [
+                        d for d in dirs
+                        if not d.startswith(".") and d not in ("translation_cache", "__pycache__", ".amt_cache")
+                    ]
                     for f in files:
+                        full_f_path = os.path.join(root, f)
+                        if is_ignored_cache_or_export(full_f_path):
+                            continue
                         ext = os.path.splitext(f)[1].lower()
                         if ext in valid_extensions:
-                            discovered_files.append(os.path.abspath(os.path.join(root, f)))
+                            discovered_files.append(os.path.abspath(full_f_path))
 
         # Natural alphanumeric sorting
         discovered_files.sort(key=natural_sort_key)

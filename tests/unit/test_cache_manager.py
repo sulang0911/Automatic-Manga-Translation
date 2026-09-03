@@ -95,3 +95,39 @@ def test_manga_cache_lifecycle(temp_workspace):
     assert has_cleared["erased"] is False
     assert has_cleared["blocks"] is False
     assert has_cleared["rendered"] is False
+
+
+def test_cache_directory_pruning_on_folder_import(temp_workspace):
+    from app.ui.sidebar.page_list import PageListWidget, is_ignored_cache_or_export
+    from PyQt6.QtWidgets import QApplication
+    import sys
+
+    app = QApplication.instance() or QApplication(sys.argv)
+
+    # Create original image
+    raw_img = os.path.join(temp_workspace, "page_001.png")
+    with open(raw_img, "wb") as f:
+        f.write(b"dummy")
+
+    # Create cache files in .amt_cache
+    cache_dir = os.path.join(temp_workspace, ".amt_cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_erased = os.path.join(cache_dir, "page_001.erased.webp")
+    cache_rendered = os.path.join(cache_dir, "page_001.rendered.webp")
+    with open(cache_erased, "wb") as f:
+        f.write(b"dummy_erased")
+    with open(cache_rendered, "wb") as f:
+        f.write(b"dummy_rendered")
+
+    # Verify is_ignored_cache_or_export
+    assert is_ignored_cache_or_export(raw_img) is False
+    assert is_ignored_cache_or_export(cache_erased) is True
+    assert is_ignored_cache_or_export(cache_rendered) is True
+
+    # Test PageListWidget.add_paths on the folder
+    widget = PageListWidget()
+    widget.add_paths([temp_workspace])
+
+    # Must only contain the 1 raw image, NOT the cache images!
+    assert len(widget.items_data) == 1
+    assert widget.items_data[0]["path"] == os.path.abspath(raw_img)

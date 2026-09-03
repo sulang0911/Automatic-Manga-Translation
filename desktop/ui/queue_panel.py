@@ -152,14 +152,30 @@ class QueuePanel(QFrame):
     def add_paths(self, paths: list):
         valid_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
         collected = []
+        ignored_suffixes = (
+            ".erased.webp", ".erased.png",
+            ".rendered.webp", ".rendered.png",
+            "_erased.png", "_translated.png",
+            ".blocks.json"
+        )
         for p in paths:
             if os.path.isfile(p):
+                fname = os.path.basename(p).lower()
+                if any(fname.endswith(s) for s in ignored_suffixes):
+                    continue
                 ext = os.path.splitext(p)[1].lower()
                 if ext in valid_exts:
                     collected.append(p)
             elif os.path.isdir(p):
-                for root, _, files in os.walk(p):
+                for root, dirs, files in os.walk(p):
+                    dirs[:] = [
+                        d for d in dirs
+                        if not d.startswith(".") and d not in ("translation_cache", "__pycache__", ".amt_cache")
+                    ]
                     for f in sorted(files):
+                        fl = f.lower()
+                        if any(fl.endswith(s) for s in ignored_suffixes):
+                            continue
                         ext = os.path.splitext(f)[1].lower()
                         if ext in valid_exts:
                             collected.append(os.path.join(root, f))
