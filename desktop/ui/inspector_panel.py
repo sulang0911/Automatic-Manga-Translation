@@ -109,8 +109,8 @@ class InspectorPanel(QFrame):
         # Font Family
         layout.addWidget(QLabel("字体选择:"))
         self.font_combo = QComboBox(self)
-        self.font_combo.addItems(["Microsoft YaHei", "SimHei", "SimSun", "KaiTi", "Arial", "MS Gothic"])
-        self.font_combo.setCurrentText(cfg.get("font_family", "Microsoft YaHei"))
+        self.font_combo.addItems(["霞鹜文楷", "得意黑", "幼圆", "Microsoft YaHei", "SimHei", "SimSun", "KaiTi", "Arial", "MS Gothic"])
+        self.font_combo.setCurrentText(cfg.get("font_family", "霞鹜文楷"))
         self.font_combo.currentTextChanged.connect(lambda v: self._update_cfg("font_family", v))
         layout.addWidget(self.font_combo)
 

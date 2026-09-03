@@ -36,7 +36,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "feather_radius": 4,
 
     # Typography & Style Settings
-    "font_family": "Microsoft YaHei",
+    "font_family": "霞鹜文楷",
     "font_size_scale": 1.0,
     "auto_fit_font_size": True,
     "font_bold": False,

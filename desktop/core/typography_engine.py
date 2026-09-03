@@ -108,6 +108,12 @@ class TypographyEngine:
         if base_image is None or base_image.size == 0:
             return base_image
 
+        # Unwrap nested style config dictionary if present
+        if isinstance(style_config, dict) and "style" in style_config and isinstance(style_config["style"], dict):
+            merged_style = style_config.copy()
+            merged_style.update(style_config["style"])
+            style_config = merged_style
+
         h_img, w_img = base_image.shape[:2]
         # Convert BGR OpenCV image to PIL Image (RGBA)
         img_rgb = cv2.cvtColor(base_image, cv2.COLOR_BGR2RGB)
@@ -115,7 +121,7 @@ class TypographyEngine:
         overlay = Image.new("RGBA", pil_img.size, (255, 255, 255, 0))
         draw = ImageDraw.Draw(overlay)
 
-        font_family = style_config.get("font_family", "Microsoft YaHei")
+        font_family = style_config.get("font_family") or "霞鹜文楷"
         font_size_scale = style_config.get("font_size_scale", 1.0)
         auto_fit = style_config.get("auto_fit_font_size", True)
         font_bold = style_config.get("font_bold", False)

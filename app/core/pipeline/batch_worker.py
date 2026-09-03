@@ -11,7 +11,7 @@ from typing import List, Dict, Any
 
 from desktop.core.ocr_engine import OCREngine
 from desktop.core.inpaint_engine import InpaintEngine
-from desktop.core.typography_engine import TypographyEngine
+from app.core.typography.engine import TypographyEngine
 from app.core.translation import TranslationManager, ProviderConfig
 from app.core.models import TranslationBlock
 

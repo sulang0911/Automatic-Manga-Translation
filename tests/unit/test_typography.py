@@ -159,3 +159,40 @@ def test_typography_engine_render_page():
     # Some pixels inside the bounding box should now be non-white (drawn text)
     center_crop = rendered[80:150, 100:300]
     assert np.min(center_crop) < 200
+
+
+def test_typography_engine_render_translations_unpacks_nested_style_config():
+    """Verify render_translations handles full config dict with nested style and raw dict blocks."""
+    typ_engine = TypographyEngine()
+    img = np.ones((300, 300, 3), dtype=np.uint8) * 255
+    raw_blocks = [{
+        "id": "b1",
+        "original_text": "こんにちは",
+        "translated_text": "你好世界",
+        "xmin": 10.0,
+        "ymin": 10.0,
+        "xmax": 80.0,
+        "ymax": 80.0,
+        "type": "bubble"
+    }]
+    full_config = {
+        "llm": {"provider": "openai"},
+        "style": {
+            "font_family": "霞鹜文楷",
+            "font_size_scale": 1.0,
+            "auto_fit_font_size": True
+        }
+    }
+
+    called_fonts = []
+    orig_get_font = typ_engine.get_font
+    def spy_get_font(font_family, size):
+        called_fonts.append(font_family)
+        return orig_get_font(font_family, size)
+
+    typ_engine.get_font = spy_get_font
+    rendered = typ_engine.render_translations(img, raw_blocks, full_config)
+    assert rendered is not None
+    assert rendered.shape == (300, 300, 3)
+    assert "霞鹜文楷" in called_fonts
+

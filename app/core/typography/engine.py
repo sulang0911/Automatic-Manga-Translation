@@ -205,6 +205,36 @@ class TypographyEngine:
         self._font_cache[cache_key] = font
         return font
 
+    def render_translations(
+        self,
+        base_image: np.ndarray,
+        blocks: List[Any],
+        style_config: Any = None,
+        progress_callback: Optional[Callable[[int, str], None]] = None
+    ) -> np.ndarray:
+        """
+        Unified rendering entry point compatible with both dict and TranslationBlock blocks,
+        and full app config dict, nested style dict, or StyleConfig instance.
+        """
+        if base_image is None or base_image.size == 0 or not blocks:
+            return base_image.copy() if base_image is not None else np.zeros((1, 1, 3), dtype=np.uint8)
+
+        model_blocks = [
+            b if isinstance(b, TranslationBlock) else TranslationBlock.from_dict(b)
+            for b in blocks
+        ]
+
+        if isinstance(style_config, StyleConfig):
+            cfg = style_config
+        elif isinstance(style_config, dict):
+            # Extract nested "style" if passed full config dict
+            style_data = style_config.get("style", style_config) if "style" in style_config and isinstance(style_config["style"], dict) else style_config
+            cfg = StyleConfig.from_dict(style_data)
+        else:
+            cfg = StyleConfig()
+
+        return self.render_page(base_image, model_blocks, cfg, progress_callback=progress_callback)
+
     def render_page(
         self,
         erased_image: np.ndarray,

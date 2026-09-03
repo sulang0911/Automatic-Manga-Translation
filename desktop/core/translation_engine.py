@@ -54,6 +54,13 @@ class TranslationEngine:
 
         return url, headers
 
+    def _get_proxies_for_url(self, url: str):
+        # 访问本地回环地址（如本地 Ollama 127.0.0.1 / localhost）强制绕过科学上网代理
+        # 访问公网服务（如 DeepSeek / OpenAI / Gemini）则正常使用系统代理
+        if "127.0.0.1" in url or "localhost" in url or "0.0.0.0" in url:
+            return {"http": None, "https": None}
+        return None
+
     def translate_blocks(self, blocks: List[Dict[str, Any]], progress_callback=None) -> List[Dict[str, Any]]:
         if not blocks:
             return []
@@ -98,8 +105,9 @@ class TranslationEngine:
         # Clean None values
         body = {k: v for k, v in body.items() if v is not None}
 
+        proxies = self._get_proxies_for_url(url)
         try:
-            resp = requests.post(url, headers=headers, json=body, timeout=60)
+            resp = requests.post(url, headers=headers, json=body, timeout=60, proxies=proxies)
             if resp.status_code != 200:
                 raise RuntimeError(f"API Error ({resp.status_code}): {resp.text}")
 
@@ -115,7 +123,8 @@ class TranslationEngine:
             trans_map = {}
             for item in parsed_list:
                 if isinstance(item, dict) and "id" in item and "translated_text" in item:
-                    trans_map[str(item["id"])] = str(item["translated_text"]).strip()
+                    clean_text = re.sub(r'<\|im_end\|>|<\|im_start\|>|</s>|<\|endoftext\|>', '', str(item["translated_text"])).strip()
+                    trans_map[str(item["id"])] = clean_text
 
             for b in blocks:
                 b_id = str(b.get("id"))
@@ -187,8 +196,9 @@ class TranslationEngine:
             "temperature": self.temperature,
         }
 
+        proxies = self._get_proxies_for_url(url)
         try:
-            resp = requests.post(url, headers=headers, json=body, timeout=25)
+            resp = requests.post(url, headers=headers, json=body, timeout=25, proxies=proxies)
         except requests.exceptions.RequestException as req_err:
             raise RuntimeError(f"网络连接失败或超时: {req_err}")
 
@@ -207,6 +217,7 @@ class TranslationEngine:
             choices = result_json.get("choices", [])
             if choices and len(choices) > 0:
                 raw_text = choices[0].get("message", {}).get("content", "").strip()
+                raw_text = re.sub(r'<\|im_end\|>|<\|im_start\|>|</s>|<\|endoftext\|>', '', raw_text).strip()
                 if raw_text:
                     return raw_text
             raise RuntimeError(f"响应缺少 choices 内容: {result_json}")
