@@ -93,7 +93,7 @@ class PageItemWidget(QWidget):
     sig_remove = pyqtSignal(str)
     sig_edit_style = pyqtSignal(dict)
 
-    def __init__(self, item_data: Dict[str, Any], parent: Optional[QWidget] = None):
+    def __init__(self, item_data: Dict[str, Any], parent: Optional[QWidget] = None, sync_thumb: bool = False):
         super().__init__(parent)
         self.item_data = item_data
         self.item_id = item_data["id"]
@@ -121,7 +121,7 @@ class PageItemWidget(QWidget):
             "font-size: 13px;"
         )
         self.thumb_label.setText("📄")
-        self._load_thumbnail(item_data["path"])
+        self._load_thumbnail(item_data["path"], sync=sync_thumb)
         layout.addWidget(self.thumb_label)
 
         # Text column: filename and status caption
@@ -167,7 +167,7 @@ class PageItemWidget(QWidget):
             if child == self.thumb_label:
                 self.sig_edit_style.emit(self.item_data)
 
-    def _load_thumbnail(self, path: str):
+    def _load_thumbnail(self, path: str, sync: bool = False):
         if not path:
             return
 
@@ -184,7 +184,7 @@ class PageItemWidget(QWidget):
             except RuntimeError:
                 pass
 
-        AsyncThumbnailManager.instance().request_thumbnail(path, (36, 48), _on_ready)
+        AsyncThumbnailManager.instance().request_thumbnail(path, (36, 48), _on_ready, sync=sync)
 
     def update_status(self, status: str, message: str = ""):
         if not message:
@@ -413,12 +413,13 @@ class PageListWidget(QWidget):
                 self.items_data.append(item_data)
 
         # Populate GUI items with bulk updates suspended for maximum performance
+        sync_thumbs = len(new_items) <= 3
         self.list_widget.setUpdatesEnabled(False)
         try:
             for data in new_items:
                 list_item = QListWidgetItem(self.list_widget)
                 list_item.setSizeHint(QSize(200, 56))
-                widget = PageItemWidget(data, self.list_widget)
+                widget = PageItemWidget(data, self.list_widget, sync_thumb=sync_thumbs)
                 widget.sig_remove.connect(self.remove_item)
                 widget.sig_edit_style.connect(self.sig_edit_page_style.emit)
                 self.list_widget.addItem(list_item)

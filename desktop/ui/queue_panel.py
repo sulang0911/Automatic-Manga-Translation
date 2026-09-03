@@ -10,7 +10,7 @@ from app.ui.sidebar.page_list import is_ignored_cache_or_export, natural_sort_pa
 from app.ui.widgets.thumbnail_loader import AsyncThumbnailManager
 
 class QueueItemWidget(QWidget):
-    def __init__(self, item_data: dict, parent=None):
+    def __init__(self, item_data: dict, parent=None, sync_thumb: bool = False):
         super().__init__(parent)
         self.item_data = item_data
         layout = QHBoxLayout(self)
@@ -51,9 +51,9 @@ class QueueItemWidget(QWidget):
         info_layout.addLayout(status_row)
         layout.addLayout(info_layout)
 
-        self._load_thumbnail(item_data["path"])
+        self._load_thumbnail(item_data["path"], sync=sync_thumb)
 
-    def _load_thumbnail(self, path: str):
+    def _load_thumbnail(self, path: str, sync: bool = False):
         if not path:
             return
 
@@ -66,7 +66,7 @@ class QueueItemWidget(QWidget):
             except RuntimeError:
                 pass
 
-        AsyncThumbnailManager.instance().request_thumbnail(path, (48, 48), _on_ready)
+        AsyncThumbnailManager.instance().request_thumbnail(path, (48, 48), _on_ready, sync=sync)
 
     def set_status(self, status: str, text: str = ""):
         self.item_data["status"] = status
@@ -211,6 +211,7 @@ class QueuePanel(QFrame):
 
         collected.sort(key=lambda it: natural_sort_path_key(it["path"]))
 
+        sync_thumbs = len(collected) <= 3
         self.list_widget.setUpdatesEnabled(False)
         try:
             for item_info in collected:
@@ -233,7 +234,7 @@ class QueuePanel(QFrame):
                 # Create UI Item
                 list_item = QListWidgetItem(self.list_widget)
                 list_item.setSizeHint(QSize(200, 60))
-                widget = QueueItemWidget(item_data, self)
+                widget = QueueItemWidget(item_data, self, sync_thumb=sync_thumbs)
                 list_item.setData(Qt.ItemDataRole.UserRole, item_data["id"])
                 self.list_widget.addItem(list_item)
                 self.list_widget.setItemWidget(list_item, widget)

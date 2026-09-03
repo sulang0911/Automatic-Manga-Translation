@@ -100,17 +100,35 @@ class AsyncThumbnailManager:
         self,
         path: str,
         target_size: Tuple[int, int],
-        callback: Callable[[QPixmap], None]
+        callback: Callable[[QPixmap], None],
+        sync: bool = False
     ):
         """
-        Asynchronously fetches a downscaled thumbnail.
-        If cached in memory, invokes callback immediately.
+        Fetches a downscaled thumbnail.
+        If sync is True (e.g. for single-image drops), decodes immediately on caller thread.
+        Otherwise offloads image decoding to QThreadPool.
         """
         if not path:
             return
 
         if path in self._cache:
             callback(self._cache[path])
+            return
+
+        if sync:
+            if not os.path.exists(path):
+                return
+            img = QImage(path)
+            if not img.isNull():
+                scaled = img.scaled(
+                    target_size[0],
+                    target_size[1],
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+                pix = QPixmap.fromImage(scaled)
+                self._cache[path] = pix
+                callback(pix)
             return
 
         if path in self._pending_callbacks:
