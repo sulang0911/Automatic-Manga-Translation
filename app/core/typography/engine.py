@@ -299,6 +299,18 @@ class TypographyEngine:
                 # AUTO: conservative vertical only when box is clearly portrait + CJK text
                 is_vertical = box_is_tall and text_is_cjk
 
+            # Reflow fix: for horizontal CJK bubbles, strip source-language newlines.
+            # LLM translations often echo the original text's line-break structure
+            # (e.g. English dialogue broken into short phrases). Each \n-separated
+            # segment becomes its own "paragraph" in wrap_text, yielding many
+            # short lines (2-5 chars each). Fix: join all segments into one
+            # continuous string so line_breaker can reflow to fit the bubble width.
+            render_text = text
+            if not is_vertical and text_is_cjk:
+                segs = [s.strip() for s in text.split("\n") if s.strip()]
+                if len(segs) > 1:
+                    render_text = "".join(segs)
+
             # Font styling resolution
             font_family = block.font_family_override or cfg.font_family
             is_bold = bool(block.font_bold_override if block.font_bold_override is not None else cfg.font_bold)
@@ -311,7 +323,7 @@ class TypographyEngine:
                 font_size = float(block.font_size_override)
             elif cfg.auto_fit_font_size:
                 fit_res = self.auto_fit_engine.fit_text(
-                    text=text,
+                    text=render_text,
                     box_w=float(w),
                     box_h=float(h),
                     is_vertical=is_vertical,
@@ -408,7 +420,7 @@ class TypographyEngine:
             # Draw onto PIL Image / draw_target
             if is_vertical:
                 cols, tot_w, tot_h = self.vertical_layout.compute_layout(
-                    text=text,
+                    text=render_text,
                     font_size=font_size,
                     box_x=rel_x,
                     box_y=rel_y,
@@ -435,7 +447,7 @@ class TypographyEngine:
                 measurer = PilTextMeasurer(font_loader, is_bold=is_bold)
                 px, py = self.auto_fit_engine.calculate_padding(w, h)
                 avail_w = max(4.0, w - 2 * px)
-                lines = self.line_breaker.wrap_text(text, avail_w, font_size, measurer)
+                lines = self.line_breaker.wrap_text(render_text, avail_w, font_size, measurer)
                 line_h = font_size * cfg.line_spacing
                 tot_h = len(lines) * line_h
                 start_y = rel_y + (h - tot_h) / 2.0
