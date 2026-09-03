@@ -85,24 +85,26 @@ class MangaCacheManager:
     def __init__(self, custom_cache_root: Optional[str] = None):
         self.custom_cache_root = custom_cache_root
 
-    def get_cache_dir(self, image_path: str) -> str:
+    def get_cache_dir(self, image_path: str, create: bool = False) -> str:
         """
         Returns the cache directory path for a given image.
         Default: `<image_parent_dir>/.amt_cache`
+        If create is True, ensures the directory exists on disk.
         """
         if self.custom_cache_root:
             rel_dir = os.path.basename(os.path.dirname(os.path.abspath(image_path)))
             cache_dir = os.path.join(self.custom_cache_root, rel_dir, CACHE_DIR_NAME)
         else:
             cache_dir = os.path.join(os.path.dirname(os.path.abspath(image_path)), CACHE_DIR_NAME)
-        os.makedirs(cache_dir, exist_ok=True)
+        if create:
+            os.makedirs(cache_dir, exist_ok=True)
         return cache_dir
 
-    def get_cache_paths(self, image_path: str) -> Dict[str, str]:
+    def get_cache_paths(self, image_path: str, create_dir: bool = False) -> Dict[str, str]:
         """
         Returns absolute paths for all cache files associated with this image.
         """
-        cache_dir = self.get_cache_dir(image_path)
+        cache_dir = self.get_cache_dir(image_path, create=create_dir)
         base_name = os.path.splitext(os.path.basename(image_path))[0]
         return {
             "dir": cache_dir,
@@ -116,8 +118,16 @@ class MangaCacheManager:
     def has_cache(self, image_path: str) -> Dict[str, bool]:
         """
         Checks which cache files exist on disk for the given image without reading them into RAM.
+        Fast-prunes checks if .amt_cache directory does not exist.
         """
-        paths = self.get_cache_paths(image_path)
+        cache_dir = self.get_cache_dir(image_path, create=False)
+        if not os.path.isdir(cache_dir):
+            return {
+                "erased": False,
+                "blocks": False,
+                "rendered": False,
+            }
+        paths = self.get_cache_paths(image_path, create_dir=False)
         has_erased = os.path.exists(paths["erased_webp"]) or os.path.exists(paths["erased_png"])
         has_blocks = os.path.exists(paths["blocks_json"])
         has_rendered = os.path.exists(paths["rendered_webp"]) or os.path.exists(paths["rendered_png"])
@@ -158,7 +168,7 @@ class MangaCacheManager:
         Persists intermediate translation results to disk.
         Returns a dictionary of saved file paths.
         """
-        paths = self.get_cache_paths(image_path)
+        paths = self.get_cache_paths(image_path, create_dir=True)
         saved = {}
 
         # 1. Save erased background

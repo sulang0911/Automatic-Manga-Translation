@@ -229,3 +229,27 @@ def test_auto_contrast_black_and_white_backgrounds():
     assert np.min(crop_light) < 50, "Light background must render dark text (black)"
 
 
+def test_rotated_slanted_typography_rendering():
+    """Verify that blocks with an angle/angle_override render rotated text."""
+    engine = TypographyEngine()
+    cfg = StyleConfig()
+    bg = np.full((400, 400, 3), 255, dtype=np.uint8)
+
+    block_tilted = TranslationBlock(
+        id="b_tilted",
+        original_text="ナナメ",
+        translated_text="斜向排版",
+        xmin=20.0, ymin=20.0, xmax=60.0, ymax=45.0,
+        angle=30.0
+    )
+
+    rendered = engine.render_page(bg, [block_tilted], cfg)
+    assert rendered is not None
+    assert rendered.shape == (400, 400, 3)
+
+    # Text rendered in bounding area
+    crop = rendered[80:200, 80:260]
+    assert np.min(crop) < 50, "Rotated text should be drawn"
+
+
+

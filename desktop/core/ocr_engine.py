@@ -1,5 +1,6 @@
 import os
 import sys
+import math
 import torch  # CRITICAL WINDOWS DLL PROTECTION: Must import torch before paddle
 import uuid
 import numpy as np
@@ -17,6 +18,23 @@ except ImportError:
     from app.core.ocr.base import merge_adjacent_boxes
     from app.core.ocr.reading_order import sort_reading_order
     from app.core.models import TranslationBlock, ReadingOrderMode
+
+
+def calculate_polygon_angle(pts: np.ndarray) -> float:
+    """Calculates text line orientation angle in degrees in [-90, 90]."""
+    if pts is None or len(pts) < 2:
+        return 0.0
+    dx = float(pts[1][0] - pts[0][0])
+    dy = float(pts[1][1] - pts[0][1])
+    if abs(dx) < 1e-4 and abs(dy) < 1e-4:
+        return 0.0
+    deg = math.degrees(math.atan2(dy, dx))
+    while deg > 90.0:
+        deg -= 180.0
+    while deg < -90.0:
+        deg += 180.0
+    return round(deg, 1) if abs(deg) >= 3.0 else 0.0
+
 
 def get_background_color_hex(crop: np.ndarray) -> str:
     if crop is None or crop.size == 0:
@@ -217,14 +235,16 @@ class OCREngine:
                                 ymax = int(np.max(pts[:, 1]))
                                 raw_boxes.append({
                                     "xmin": xmin, "ymin": ymin, "xmax": xmax, "ymax": ymax,
-                                    "text": text, "conf": conf
+                                    "text": text, "conf": conf,
+                                    "angle": calculate_polygon_angle(pts)
                                 })
                             elif 'rec_boxes' in res_dict and i < len(res_dict['rec_boxes']):
                                 box = res_dict['rec_boxes'][i]
                                 raw_boxes.append({
                                     "xmin": int(box[0]), "ymin": int(box[1]),
                                     "xmax": int(box[2]), "ymax": int(box[3]),
-                                    "text": text, "conf": conf
+                                    "text": text, "conf": conf,
+                                    "angle": 0.0
                                 })
                     elif isinstance(results[0], list):
                         # PaddleOCR 2.x list format
@@ -242,7 +262,8 @@ class OCREngine:
                                 ymax = int(np.max(pts[:, 1]))
                                 raw_boxes.append({
                                     "xmin": xmin, "ymin": ymin, "xmax": xmax, "ymax": ymax,
-                                    "text": text.strip(), "conf": conf
+                                    "text": text.strip(), "conf": conf,
+                                    "angle": calculate_polygon_angle(pts)
                                 })
                             except Exception:
                                 continue
@@ -263,7 +284,8 @@ class OCREngine:
                         ymax = int(np.max(pts[:, 1]))
                         raw_boxes.append({
                             "xmin": xmin, "ymin": ymin, "xmax": xmax, "ymax": ymax,
-                            "text": text.strip(), "conf": float(conf)
+                            "text": text.strip(), "conf": float(conf),
+                            "angle": calculate_polygon_angle(pts)
                         })
                 except Exception as e_easy:
                     print(f"[-] EasyOCR 回退识别亦发生异常: {e_easy}")
@@ -315,7 +337,8 @@ class OCREngine:
                 text_color=detected_text_color,
                 type="bubble" if is_bubble else "onomatopoeia",
                 confidence=float(box.get("conf", 1.0)),
-                line_count=int(box.get("line_count", 1))
+                line_count=int(box.get("line_count", 1)),
+                angle=float(box.get("angle", 0.0))
             )
             tb_blocks.append(tb)
 

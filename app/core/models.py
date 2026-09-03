@@ -93,6 +93,8 @@ class TranslationBlock:
     stroke_color_override: Optional[str] = None
     stroke_width_override: Optional[float] = None
     font_bold_override: Optional[bool] = None
+    angle: float = 0.0  # Rotation angle in degrees (-180.0 to 180.0)
+    angle_override: Optional[float] = None
 
     def __post_init__(self):
         # Validate and clamp coordinates to [0.0, 100.0]

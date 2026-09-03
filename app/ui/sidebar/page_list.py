@@ -15,13 +15,16 @@ from PyQt6.QtCore import pyqtSignal, Qt, QSize
 from PyQt6.QtGui import QPixmap, QIcon, QColor, QPainter, QBrush, QDragEnterEvent, QDropEvent, QCursor
 
 from app.ui.widgets.progress_pill import StatusDot
+from app.ui.widgets.thumbnail_loader import AsyncThumbnailManager
 from app.ui.theme.icons import get_icon
 from app.core.cache.cache_manager import get_cache_manager
+
+_RE_DIGITS = re.compile(r'(\d+)')
 
 
 def natural_sort_key(s: str) -> list:
     """Natural alphanumeric sort key, sorting 'page2.png' before 'page10.png'."""
-    return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', os.path.basename(s))]
+    return [int(c) if c.isdigit() else c.lower() for c in _RE_DIGITS.split(os.path.basename(s))]
 
 
 def natural_sort_path_key(s: str) -> list:
@@ -32,7 +35,7 @@ def natural_sort_path_key(s: str) -> list:
     """
     norm = os.path.normpath(s).replace("/", os.sep).replace("\\", os.sep)
     parts = norm.split(os.sep)
-    return [[int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', part)] for part in parts]
+    return [[int(c) if c.isdigit() else c.lower() for c in _RE_DIGITS.split(part)] for part in parts]
 
 
 def is_ignored_cache_or_export(file_path: str, base_dir: Optional[str] = None) -> bool:
@@ -110,6 +113,14 @@ class PageItemWidget(QWidget):
         self.thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.thumb_label.setCursor(Qt.CursorShape.PointingHandCursor)
         self.thumb_label.setToolTip("点击修改此页文字排版与样式配置")
+        self.thumb_label.setStyleSheet(
+            "background-color: rgba(255, 255, 255, 0.04);"
+            "border-radius: 4px;"
+            "border: 1px solid rgba(255, 255, 255, 0.08);"
+            "color: #71717A;"
+            "font-size: 13px;"
+        )
+        self.thumb_label.setText("📄")
         self._load_thumbnail(item_data["path"])
         layout.addWidget(self.thumb_label)
 
@@ -157,15 +168,23 @@ class PageItemWidget(QWidget):
                 self.sig_edit_style.emit(self.item_data)
 
     def _load_thumbnail(self, path: str):
-        if os.path.exists(path):
-            pix = QPixmap(path)
-            if not pix.isNull():
-                scaled = pix.scaled(
-                    36, 48,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation
-                )
-                self.thumb_label.setPixmap(scaled)
+        if not path:
+            return
+
+        def _on_ready(pix: QPixmap):
+            try:
+                if not pix.isNull():
+                    self.thumb_label.setText("")
+                    self.thumb_label.setStyleSheet(
+                        "background-color: transparent;"
+                        "border-radius: 4px;"
+                        "border: 1px solid rgba(255, 255, 255, 0.08);"
+                    )
+                    self.thumb_label.setPixmap(pix)
+            except RuntimeError:
+                pass
+
+        AsyncThumbnailManager.instance().request_thumbnail(path, (36, 48), _on_ready)
 
     def update_status(self, status: str, message: str = ""):
         if not message:
@@ -337,7 +356,7 @@ class PageListWidget(QWidget):
                         d for d in dirs
                         if not d.startswith(".") and d.lower() not in ("translation_cache", "__pycache__", ".amt_cache")
                     ]
-                    dirs.sort(key=lambda d: [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', d)])
+                    dirs.sort(key=lambda d: [int(c) if c.isdigit() else c.lower() for c in _RE_DIGITS.split(d)])
 
                     for f in files:
                         full_f_path = os.path.normpath(os.path.join(root, f))
@@ -371,10 +390,11 @@ class PageListWidget(QWidget):
             path = entry["path"]
             if path not in existing_paths:
                 existing_paths.add(path)
-                if cache_mgr.is_fully_translated(path):
+                c_status = cache_mgr.has_cache(path)
+                if (c_status["blocks"] and (c_status["rendered"] or c_status["erased"])) and cache_mgr.is_fully_translated(path):
                     status = "completed"
                     status_text = "已完成(缓存)"
-                elif cache_mgr.has_cache(path)["erased"]:
+                elif c_status["erased"]:
                     status = "processing"
                     status_text = "已擦除(缓存)"
                 else:
@@ -392,16 +412,20 @@ class PageListWidget(QWidget):
                 new_items.append(item_data)
                 self.items_data.append(item_data)
 
-        # Populate GUI items
-        for data in new_items:
-            list_item = QListWidgetItem(self.list_widget)
-            list_item.setSizeHint(QSize(200, 56))
-            widget = PageItemWidget(data, self.list_widget)
-            widget.sig_remove.connect(self.remove_item)
-            widget.sig_edit_style.connect(self.sig_edit_page_style.emit)
-            self.list_widget.addItem(list_item)
-            self.list_widget.setItemWidget(list_item, widget)
-            self._item_widgets[data["id"]] = widget
+        # Populate GUI items with bulk updates suspended for maximum performance
+        self.list_widget.setUpdatesEnabled(False)
+        try:
+            for data in new_items:
+                list_item = QListWidgetItem(self.list_widget)
+                list_item.setSizeHint(QSize(200, 56))
+                widget = PageItemWidget(data, self.list_widget)
+                widget.sig_remove.connect(self.remove_item)
+                widget.sig_edit_style.connect(self.sig_edit_page_style.emit)
+                self.list_widget.addItem(list_item)
+                self.list_widget.setItemWidget(list_item, widget)
+                self._item_widgets[data["id"]] = widget
+        finally:
+            self.list_widget.setUpdatesEnabled(True)
 
         self._update_count()
 
@@ -425,6 +449,7 @@ class PageListWidget(QWidget):
         self.items_data.clear()
         self._item_widgets.clear()
         self.list_widget.clear()
+        AsyncThumbnailManager.instance().clear_cache()
         self._update_count()
         self.sig_clear_requested.emit()
 

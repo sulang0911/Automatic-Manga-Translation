@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from PyQt6.QtGui import QIcon, QPixmap, QDragEnterEvent, QDropEvent
 from app.ui.sidebar.page_list import is_ignored_cache_or_export, natural_sort_path_key
+from app.ui.widgets.thumbnail_loader import AsyncThumbnailManager
 
 class QueueItemWidget(QWidget):
     def __init__(self, item_data: dict, parent=None):
@@ -19,8 +20,9 @@ class QueueItemWidget(QWidget):
         # Thumbnail
         self.thumb_label = QLabel(self)
         self.thumb_label.setFixedSize(48, 48)
-        self.thumb_label.setStyleSheet("background-color: #121214; border-radius: 6px; border: 1px solid rgba(255,255,255,0.08);")
+        self.thumb_label.setStyleSheet("background-color: #121214; border-radius: 6px; border: 1px solid rgba(255,255,255,0.08); color: #8E8E93; font-size: 14px;")
         self.thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.thumb_label.setText("📄")
         layout.addWidget(self.thumb_label)
 
         # Info
@@ -52,11 +54,19 @@ class QueueItemWidget(QWidget):
         self._load_thumbnail(item_data["path"])
 
     def _load_thumbnail(self, path: str):
-        if os.path.exists(path):
-            pixmap = QPixmap(path)
-            if not pixmap.isNull():
-                scaled = pixmap.scaled(48, 48, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
-                self.thumb_label.setPixmap(scaled)
+        if not path:
+            return
+
+        def _on_ready(pix: QPixmap):
+            try:
+                if not pix.isNull():
+                    self.thumb_label.setText("")
+                    self.thumb_label.setStyleSheet("background-color: transparent; border-radius: 6px; border: 1px solid rgba(255,255,255,0.08);")
+                    self.thumb_label.setPixmap(pix)
+            except RuntimeError:
+                pass
+
+        AsyncThumbnailManager.instance().request_thumbnail(path, (48, 48), _on_ready)
 
     def set_status(self, status: str, text: str = ""):
         self.item_data["status"] = status
@@ -201,30 +211,34 @@ class QueuePanel(QFrame):
 
         collected.sort(key=lambda it: natural_sort_path_key(it["path"]))
 
-        for item_info in collected:
-            p = item_info["path"]
-            if any(it["path"] == p for it in self.items_data):
-                continue
-            item_data = {
-                "id": str(uuid.uuid4())[:8],
-                "path": p,
-                "rel_path": item_info["rel_path"],
-                "root_dir": item_info["root_dir"],
-                "index": len(self.items_data) + 1,
-                "status": "pending",
-                "blocks": None,
-                "erased_img": None,
-                "translated_img": None
-            }
-            self.items_data.append(item_data)
+        self.list_widget.setUpdatesEnabled(False)
+        try:
+            for item_info in collected:
+                p = item_info["path"]
+                if any(it["path"] == p for it in self.items_data):
+                    continue
+                item_data = {
+                    "id": str(uuid.uuid4())[:8],
+                    "path": p,
+                    "rel_path": item_info["rel_path"],
+                    "root_dir": item_info["root_dir"],
+                    "index": len(self.items_data) + 1,
+                    "status": "pending",
+                    "blocks": None,
+                    "erased_img": None,
+                    "translated_img": None
+                }
+                self.items_data.append(item_data)
 
-            # Create UI Item
-            list_item = QListWidgetItem(self.list_widget)
-            list_item.setSizeHint(QSize(200, 60))
-            widget = QueueItemWidget(item_data, self)
-            list_item.setData(Qt.ItemDataRole.UserRole, item_data["id"])
-            self.list_widget.addItem(list_item)
-            self.list_widget.setItemWidget(list_item, widget)
+                # Create UI Item
+                list_item = QListWidgetItem(self.list_widget)
+                list_item.setSizeHint(QSize(200, 60))
+                widget = QueueItemWidget(item_data, self)
+                list_item.setData(Qt.ItemDataRole.UserRole, item_data["id"])
+                self.list_widget.addItem(list_item)
+                self.list_widget.setItemWidget(list_item, widget)
+        finally:
+            self.list_widget.setUpdatesEnabled(True)
 
         self.count_badge.setText(f"{len(self.items_data)} 页")
         if self.items_data and self.list_widget.currentRow() == -1:
@@ -262,4 +276,5 @@ class QueuePanel(QFrame):
     def clear_all(self):
         self.items_data.clear()
         self.list_widget.clear()
+        AsyncThumbnailManager.instance().clear_cache()
         self.count_badge.setText("0 页")

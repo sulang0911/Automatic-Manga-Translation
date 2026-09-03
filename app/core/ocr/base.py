@@ -375,6 +375,9 @@ def merge_adjacent_boxes(
             final_text = "\n".join(row_texts)
             line_count = len(row_texts) if row_texts else 1
 
+        angles = [float(b.get("angle", 0.0)) for b in comp_boxes if "angle" in b]
+        avg_angle = float(np.median(angles)) if angles else 0.0
+
         merged.append({
             "xmin": int(round(c_xmin)),
             "ymin": int(round(c_ymin)),
@@ -382,7 +385,8 @@ def merge_adjacent_boxes(
             "ymax": int(round(c_ymax)),
             "text": final_text,
             "conf": float(np.mean(confs)) if confs else 1.0,
-            "line_count": line_count
+            "line_count": line_count,
+            "angle": avg_angle
         })
 
     return merged

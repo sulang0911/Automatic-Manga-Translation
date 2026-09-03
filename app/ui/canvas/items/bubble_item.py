@@ -75,6 +75,11 @@ class BubbleItem(QGraphicsRectItem):
         self.setRect(0, 0, w, h)
         self.setPos(xmin, ymin)
 
+        # Apply rotation around center
+        angle = float(self.block_data.get("angle_override", self.block_data.get("angle", 0.0)) or 0.0)
+        self.setTransformOriginPoint(self.rect().center())
+        self.setRotation(angle)
+
     def boundingRect(self) -> QRectF:
         """Expands bounding rect so mouse hit-testing catches handles outside the inner rect."""
         pad = HANDLE_SIZE + 6.0

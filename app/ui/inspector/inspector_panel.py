@@ -300,6 +300,44 @@ class InspectorPanel(QFrame):
         row_color.addWidget(self.block_color_btn)
         sc_layout.addLayout(row_color)
 
+        # Rotation Angle
+        row_angle = QHBoxLayout()
+        row_angle.addWidget(QLabel("文字倾斜旋转:"))
+        self.block_angle_lbl = QLabel("0.0°", self.style_controls_box)
+        self.block_angle_lbl.setStyleSheet("font-weight: 600; color: #8B5CF6;")
+        row_angle.addWidget(self.block_angle_lbl)
+        row_angle.addStretch()
+        sc_layout.addLayout(row_angle)
+
+        self.block_angle_slider = QSlider(Qt.Orientation.Horizontal, self.style_controls_box)
+        self.block_angle_slider.setRange(-90, 90)
+        self.block_angle_slider.setValue(0)
+        self.block_angle_slider.valueChanged.connect(self._on_block_angle_changed)
+        sc_layout.addWidget(self.block_angle_slider)
+
+        # Quick angle buttons
+        row_quick_angle = QHBoxLayout()
+        self.btn_angle_0 = QPushButton("0° 水平", self.style_controls_box)
+        self.btn_angle_0.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_angle_0.clicked.connect(lambda: self._set_quick_angle(0.0))
+        row_quick_angle.addWidget(self.btn_angle_0)
+
+        self.btn_angle_m15 = QPushButton("↺ -15°", self.style_controls_box)
+        self.btn_angle_m15.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_angle_m15.clicked.connect(lambda: self._set_quick_angle(-15.0))
+        row_quick_angle.addWidget(self.btn_angle_m15)
+
+        self.btn_angle_p15 = QPushButton("↻ +15°", self.style_controls_box)
+        self.btn_angle_p15.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_angle_p15.clicked.connect(lambda: self._set_quick_angle(15.0))
+        row_quick_angle.addWidget(self.btn_angle_p15)
+
+        self.btn_angle_p30 = QPushButton("↻ +30°", self.style_controls_box)
+        self.btn_angle_p30.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_angle_p30.clicked.connect(lambda: self._set_quick_angle(30.0))
+        row_quick_angle.addWidget(self.btn_angle_p30)
+        sc_layout.addLayout(row_quick_angle)
+
         layout.addWidget(self.style_controls_box)
 
         # Bottom Buttons
@@ -503,6 +541,13 @@ class InspectorPanel(QFrame):
         self._block_custom_color = tc
         self.block_color_btn.setStyleSheet(f"background-color: {tc}; color: #FFFFFF; font-size: 11px;")
 
+        # Rotation angle
+        ang = float(block.get("angle_override", block.get("angle", 0.0)) or 0.0)
+        self.block_angle_slider.blockSignals(True)
+        self.block_angle_slider.setValue(int(round(ang)))
+        self.block_angle_lbl.setText(f"{ang:+.1f}°" if ang != 0 else "0.0°")
+        self.block_angle_slider.blockSignals(False)
+
     def _on_bubble_list_clicked(self, item: QListWidgetItem):
         block = item.data(Qt.ItemDataRole.UserRole)
         if block:
@@ -630,6 +675,7 @@ class InspectorPanel(QFrame):
             self.selected_block["stroke_mode_override"] = None
             self.selected_block["stroke_width_override"] = None
             self.selected_block["text_color_override"] = None
+            self.selected_block["angle_override"] = None
         else:
             # Apply current style tab selections to block
             _, real_font = FONT_CHOICES[self.block_font_combo.currentIndex()]
@@ -638,6 +684,7 @@ class InspectorPanel(QFrame):
             self.selected_block["stroke_mode_override"] = self.block_stroke_mode_combo.currentData()
             self.selected_block["stroke_width_override"] = self.block_stroke_w_slider.value() / 10.0
             self.selected_block["text_color_override"] = self._block_custom_color
+            self.selected_block["angle_override"] = float(self.block_angle_slider.value())
 
         self.sig_block_updated.emit(self.selected_block)
         self.sig_re_render_requested.emit()
@@ -714,6 +761,27 @@ class InspectorPanel(QFrame):
             self.sig_block_updated.emit(self.selected_block)
             self.sig_re_render_requested.emit()
 
+    def _on_block_angle_changed(self, val: int):
+        self.block_angle_lbl.setText(f"{val:+.1f}°" if val != 0 else "0.0°")
+        if not self.selected_block or not self.block_style_override_cb.isChecked():
+            return
+        self.selected_block["angle_override"] = float(val)
+        self.sig_block_updated.emit(self.selected_block)
+        self.sig_re_render_requested.emit()
+
+    def _set_quick_angle(self, angle: float):
+        if not self.selected_block:
+            return
+        if not self.block_style_override_cb.isChecked():
+            self.block_style_override_cb.setChecked(True)
+        self.block_angle_slider.blockSignals(True)
+        self.block_angle_slider.setValue(int(angle))
+        self.block_angle_lbl.setText(f"{angle:+.1f}°" if angle != 0 else "0.0°")
+        self.block_angle_slider.blockSignals(False)
+        self.selected_block["angle_override"] = float(angle)
+        self.sig_block_updated.emit(self.selected_block)
+        self.sig_re_render_requested.emit()
+
     def _on_reset_block_style_clicked(self):
         if not self.selected_block:
             return
@@ -724,5 +792,11 @@ class InspectorPanel(QFrame):
         self.selected_block["stroke_mode_override"] = None
         self.selected_block["stroke_width_override"] = None
         self.selected_block["text_color_override"] = None
+        self.selected_block["angle_override"] = None
+        orig_ang = float(self.selected_block.get("angle", 0.0) or 0.0)
+        self.block_angle_slider.blockSignals(True)
+        self.block_angle_slider.setValue(int(round(orig_ang)))
+        self.block_angle_lbl.setText(f"{orig_ang:+.1f}°" if orig_ang != 0 else "0.0°")
+        self.block_angle_slider.blockSignals(False)
         self.sig_block_updated.emit(self.selected_block)
         self.sig_re_render_requested.emit()

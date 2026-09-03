@@ -379,13 +379,28 @@ class TypographyEngine:
             # Drop shadow
             shadow = StrokeRenderer.get_drop_shadow_params(font_size, enabled=cfg.text_shadow)
 
-            # Draw onto PIL Image
+            # Check rotation angle
+            effective_angle = block.angle_override if block.angle_override is not None else getattr(block, "angle", 0.0)
+            effective_angle = float(effective_angle or 0.0)
+            is_rotated = abs(effective_angle) >= 2.5
+
+            if is_rotated:
+                # Render onto local transparent canvas and rotate
+                canvas_w = max(10, int(w))
+                canvas_h = max(10, int(h))
+                draw_target = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+                rel_x, rel_y = 0.0, 0.0
+            else:
+                draw_target = pil_img
+                rel_x, rel_y = float(x), float(y)
+
+            # Draw onto PIL Image / draw_target
             if is_vertical:
                 cols, tot_w, tot_h = self.vertical_layout.compute_layout(
                     text=text,
                     font_size=font_size,
-                    box_x=float(x),
-                    box_y=float(y),
+                    box_x=rel_x,
+                    box_y=rel_y,
                     box_w=float(w),
                     box_h=float(h)
                 )
@@ -395,7 +410,7 @@ class TypographyEngine:
                         gx = glyph.x + glyph.offset_x - font_size * 0.45
                         gy = glyph.y + glyph.offset_y - font_size * 0.50
                         StrokeRenderer.render_text_pil(
-                            target_image=pil_img,
+                            target_image=draw_target,
                             text=glyph.char,
                             x=gx,
                             y=gy,
@@ -412,14 +427,14 @@ class TypographyEngine:
                 lines = self.line_breaker.wrap_text(text, avail_w, font_size, measurer)
                 line_h = font_size * cfg.line_spacing
                 tot_h = len(lines) * line_h
-                start_y = y + (h - tot_h) / 2.0
+                start_y = rel_y + (h - tot_h) / 2.0
 
                 for i, line in enumerate(lines):
                     line_w = measurer.measure_width(line, font_size)
-                    line_x = x + (w - line_w) / 2.0
+                    line_x = rel_x + (w - line_w) / 2.0
                     line_y = start_y + i * line_h
                     StrokeRenderer.render_text_pil(
-                        target_image=pil_img,
+                        target_image=draw_target,
                         text=line,
                         x=line_x,
                         y=line_y,
@@ -429,6 +444,15 @@ class TypographyEngine:
                         shadow=shadow,
                         is_bold=is_bold
                     )
+
+            if is_rotated:
+                # Rotate by -effective_angle (clockwise in image coords) and paste centered
+                rotated_layer = draw_target.rotate(-effective_angle, resample=Image.Resampling.BICUBIC, expand=True)
+                cx = x + w / 2.0
+                cy = y + h / 2.0
+                paste_x = int(round(cx - rotated_layer.width / 2.0))
+                paste_y = int(round(cy - rotated_layer.height / 2.0))
+                pil_img.paste(rotated_layer, (paste_x, paste_y), rotated_layer)
 
         # Convert back to OpenCV BGR
         res_rgb = np.array(pil_img.convert("RGB"))
