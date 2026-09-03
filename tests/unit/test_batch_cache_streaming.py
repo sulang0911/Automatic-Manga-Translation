@@ -107,3 +107,14 @@ def test_batch_worker_cache_creation_and_memory_isolation(
     assert mock_ocr.detect_and_recognize.call_count == 0
     assert mock_inpaint.inpaint.call_count == 0
     assert mock_trans_mgr.translate.call_count == 0
+
+    # 4. Verify force_retranslate=True re-translates all pages regardless of existing cache
+    mock_trans_mgr.translate.reset_mock()
+    mock_typo.render_translations.reset_mock()
+
+    worker3 = BatchWorker(queue_items, cfg, export_dir=export_dir, force_retranslate=True)
+    worker3.run()
+
+    # LLM translate and typography render must be re-executed for all 3 pages
+    assert mock_trans_mgr.translate.call_count == 3
+    assert mock_typo.render_translations.call_count == 3

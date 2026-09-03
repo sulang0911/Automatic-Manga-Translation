@@ -22,6 +22,7 @@ class BatchWorker(QThread):
         config: Dict[str, Any],
         export_dir: str = "",
         root_dir: Optional[str] = None,
+        force_retranslate: bool = False,
         parent=None
     ):
         super().__init__(parent)
@@ -29,6 +30,7 @@ class BatchWorker(QThread):
         self.config = config
         self.export_dir = export_dir
         self.root_dir = root_dir
+        self.force_retranslate = force_retranslate
         self._is_cancelled = False
 
         if not self.root_dir and self.queue_items:

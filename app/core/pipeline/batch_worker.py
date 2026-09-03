@@ -31,6 +31,7 @@ class BatchWorker(QThread):
         config: Dict[str, Any],
         export_dir: str = "",
         root_dir: Optional[str] = None,
+        force_retranslate: bool = False,
         parent=None
     ):
         super().__init__(parent)
@@ -38,6 +39,7 @@ class BatchWorker(QThread):
         self.config = config
         self.export_dir = export_dir
         self.root_dir = root_dir
+        self.force_retranslate = force_retranslate
         self._is_cancelled = False
 
         if not self.root_dir and self.queue_items:
@@ -130,8 +132,8 @@ class BatchWorker(QThread):
             filename = os.path.basename(img_path)
 
             try:
-                # 1. Check for full cache breakpoint resumption
-                if cache_mgr.is_fully_translated(img_path):
+                # 1. Check for full cache breakpoint resumption (skipped when force_retranslate is True)
+                if not self.force_retranslate and cache_mgr.is_fully_translated(img_path):
                     self.sig_batch_progress.emit(idx + 1, total, filename, 90, "已命中本地缓存，正在检查导出...")
                     cached_data = cache_mgr.load_page_cache(img_path, load_images=False)
                     export_path = self.resolve_export_path(item)
@@ -188,10 +190,18 @@ class BatchWorker(QThread):
                     cache_mgr.save_page_cache(img_path, erased_img=erased_img, blocks=blocks)
 
                 # 5. Translate Stage (Check if blocks already have translations)
-                has_translations = any(
-                    bool(getattr(b, "translated_text", "") if hasattr(b, "translated_text") else b.get("translated_text", ""))
-                    for b in blocks
-                )
+                if self.force_retranslate:
+                    for b in blocks:
+                        if isinstance(b, dict):
+                            b["translated_text"] = ""
+                        elif hasattr(b, "translated_text"):
+                            b.translated_text = ""
+                    has_translations = False
+                else:
+                    has_translations = any(
+                        bool(getattr(b, "translated_text", "") if hasattr(b, "translated_text") else b.get("translated_text", ""))
+                        for b in blocks
+                    )
                 if not has_translations:
                     self.sig_batch_progress.emit(idx + 1, total, filename, 75, "正在大模型翻译...")
                     blocks = trans_mgr.translate(blocks=blocks, mode="text", source_lang=source_lang, target_lang=target_lang)

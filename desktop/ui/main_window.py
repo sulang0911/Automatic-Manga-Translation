@@ -62,7 +62,8 @@ class MainWindow(QMainWindow):
         # Left: Queue
         self.queue_panel = QueuePanel(self)
         self.queue_panel.sig_image_selected.connect(self._on_image_selected)
-        self.queue_panel.sig_start_batch.connect(self._on_start_batch)
+        self.queue_panel.sig_start_batch.connect(lambda items: self._on_start_batch(items, force_retranslate=False))
+        self.queue_panel.sig_start_retranslate_all.connect(lambda items: self._on_start_batch(items, force_retranslate=True))
         self.splitter.addWidget(self.queue_panel)
 
         # Center: Canvas Container
@@ -360,7 +361,7 @@ class MainWindow(QMainWindow):
                 f.write(buf.tobytes())
             self.toast.show_message(f"已导出至: {os.path.basename(save_path)}", "success")
 
-    def _on_start_batch(self, items: list):
+    def _on_start_batch(self, items: list, force_retranslate: bool = False):
         if not items:
             self.toast.show_message("队列为空，请先添加漫画图片", "warning")
             return
@@ -374,6 +375,7 @@ class MainWindow(QMainWindow):
             queue_items=items,
             config=self.config_manager.data,
             export_dir=export_dir,
+            force_retranslate=force_retranslate,
             parent=self
         )
         self.active_batch_worker.sig_batch_progress.connect(self._on_batch_progress)

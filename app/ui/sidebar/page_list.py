@@ -223,6 +223,7 @@ class PageListWidget(QWidget):
     sig_page_removed = pyqtSignal(str)
     sig_clear_requested = pyqtSignal()
     sig_start_batch = pyqtSignal()
+    sig_start_retranslate_all = pyqtSignal()
     sig_translate_page = pyqtSignal(dict)
     sig_export_page = pyqtSignal(dict)
     sig_edit_page_style = pyqtSignal(dict)
@@ -282,9 +283,13 @@ class PageListWidget(QWidget):
         self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
         layout.addWidget(self.list_widget, 1)
 
-        # Batch Translate Button
-        self.batch_btn = QPushButton("🚀 批量翻译全部", self)
-        self.batch_btn.setToolTip("批量翻译页面队列中的全部漫画 (Batch Translate All)")
+        # Batch Translate Buttons
+        btn_layout = QVBoxLayout()
+        btn_layout.setContentsMargins(4, 2, 4, 4)
+        btn_layout.setSpacing(4)
+
+        self.batch_btn = QPushButton("🚀 批量翻译 (跳过已完成)", self)
+        self.batch_btn.setToolTip("批量翻译页面队列中的漫画 (自动快速跳过已经翻译过的页面)")
         self.batch_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.batch_btn.setEnabled(False)
         self.batch_btn.setStyleSheet("""
@@ -308,7 +313,36 @@ class PageListWidget(QWidget):
             }
         """)
         self.batch_btn.clicked.connect(self.sig_start_batch.emit)
-        layout.addWidget(self.batch_btn)
+        btn_layout.addWidget(self.batch_btn)
+
+        self.retranslate_all_btn = QPushButton("🔄 全部重新翻译 (强制覆盖)", self)
+        self.retranslate_all_btn.setToolTip("无论是否翻译过，强制全部重新执行大模型翻译与排版流程并覆盖导出")
+        self.retranslate_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.retranslate_all_btn.setEnabled(False)
+        self.retranslate_all_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(245, 158, 11, 0.12);
+                color: #F59E0B;
+                border: 1px solid rgba(245, 158, 11, 0.35);
+                border-radius: 6px;
+                padding: 5px 12px;
+                font-weight: 600;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #F59E0B;
+                color: #000000;
+            }
+            QPushButton:disabled {
+                opacity: 0.35;
+                color: #71717A;
+                border-color: rgba(255, 255, 255, 0.08);
+            }
+        """)
+        self.retranslate_all_btn.clicked.connect(self.sig_start_retranslate_all.emit)
+        btn_layout.addWidget(self.retranslate_all_btn)
+
+        layout.addLayout(btn_layout)
 
     def add_paths(self, paths: List[str]):
         """
@@ -482,6 +516,8 @@ class PageListWidget(QWidget):
         self.count_badge.setText(f"{count} 页")
         if hasattr(self, "batch_btn"):
             self.batch_btn.setEnabled(count > 0)
+        if hasattr(self, "retranslate_all_btn"):
+            self.retranslate_all_btn.setEnabled(count > 0)
         self.sig_count_changed.emit(count)
 
     def _on_item_double_clicked(self, item: QListWidgetItem):
@@ -502,7 +538,10 @@ class PageListWidget(QWidget):
         menu = QMenu(self)
         act_style = menu.addAction(get_icon("sparkles", color="#3B82F6", size=14), "🎨 修改此页文字设置...")
         act_translate = menu.addAction(get_icon("play", color="#3B82F6", size=14), "翻译此页面")
+        act_retranslate_this = menu.addAction(get_icon("refresh", color="#F59E0B", size=14), "🔄 重新翻译此页面 (重译当前页)")
         act_export = menu.addAction(get_icon("download", color="#10B981", size=14), "导出此页面...")
+        menu.addSeparator()
+        act_retranslate_all = menu.addAction(get_icon("play_all", color="#F59E0B", size=14), "🔄 批量全部重新翻译 (重译本章全部页面)...")
         menu.addSeparator()
         act_locate = menu.addAction(get_icon("folder_open", color="#A1A1AA", size=14), "在文件资源管理器中定位")
         menu.addSeparator()
@@ -514,6 +553,13 @@ class PageListWidget(QWidget):
             self.sig_edit_page_style.emit(data)
         elif chosen == act_translate:
             self.sig_translate_page.emit(data)
+        elif chosen == act_retranslate_this:
+            if path:
+                get_cache_manager().clear_cache(path)
+                self.update_item_status(data["id"], "queued", "等待中")
+            self.sig_translate_page.emit(data)
+        elif chosen == act_retranslate_all:
+            self.sig_start_retranslate_all.emit()
         elif chosen == act_export:
             self.sig_export_page.emit(data)
         elif chosen == act_locate:

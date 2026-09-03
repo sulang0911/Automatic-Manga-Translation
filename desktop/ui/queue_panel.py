@@ -86,6 +86,7 @@ class QueueItemWidget(QWidget):
 class QueuePanel(QFrame):
     sig_image_selected = pyqtSignal(dict)
     sig_start_batch = pyqtSignal(list)
+    sig_start_retranslate_all = pyqtSignal(list)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -133,11 +134,21 @@ class QueuePanel(QFrame):
         self.list_widget.itemClicked.connect(self._on_item_clicked)
         layout.addWidget(self.list_widget)
 
-        # Batch Run Button
+        # Batch Run Buttons
+        btn_box = QVBoxLayout()
+        btn_box.setSpacing(4)
+
         self.batch_btn = QPushButton("▶ 批量翻译全部页面", self)
         self.batch_btn.setObjectName("primaryBtn")
         self.batch_btn.clicked.connect(self._on_start_batch)
-        layout.addWidget(self.batch_btn)
+        btn_box.addWidget(self.batch_btn)
+
+        self.retranslate_all_btn = QPushButton("🔄 全部重新翻译", self)
+        self.retranslate_all_btn.setToolTip("无论是否已翻译，强制全部重新执行翻译流程")
+        self.retranslate_all_btn.clicked.connect(self._on_start_retranslate_all)
+        btn_box.addWidget(self.retranslate_all_btn)
+
+        layout.addLayout(btn_box)
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
@@ -273,6 +284,10 @@ class QueuePanel(QFrame):
     def _on_start_batch(self):
         if self.items_data:
             self.sig_start_batch.emit(self.items_data)
+
+    def _on_start_retranslate_all(self):
+        if self.items_data:
+            self.sig_start_retranslate_all.emit(self.items_data)
 
     def clear_all(self):
         self.items_data.clear()

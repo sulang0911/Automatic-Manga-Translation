@@ -181,7 +181,8 @@ class MainWindow(QMainWindow):
         # Page List
         self.page_list = PageListWidget(self.sidebar_drawer)
         self.page_list.sig_page_selected.connect(self._on_page_selected)
-        self.page_list.sig_start_batch.connect(self._start_batch)
+        self.page_list.sig_start_batch.connect(lambda: self._start_batch(force_retranslate=False))
+        self.page_list.sig_start_retranslate_all.connect(lambda: self._start_batch(force_retranslate=True))
         self.page_list.sig_clear_requested.connect(self._on_page_list_cleared)
         self.page_list.sig_translate_page.connect(self._on_translate_page_from_list)
         self.page_list.sig_export_page.connect(self._on_export_page_from_list)
@@ -302,13 +303,21 @@ class MainWindow(QMainWindow):
         self.export_btn.clicked.connect(self._export_current_page)
         layout.addWidget(self.export_btn)
 
-        # Batch Translate Button
+        # Batch Translate Button (Skip finished)
         self.batch_toolbar_btn = QPushButton("批量翻译", toolbar)
         self.batch_toolbar_btn.setIcon(get_icon("play_all", color="#3B82F6", size=16))
-        self.batch_toolbar_btn.setToolTip("批量翻译页面列表中的全部漫画图片")
+        self.batch_toolbar_btn.setToolTip("批量翻译页面列表中的全部漫画图片 (自动跳过已完成页面)")
         self.batch_toolbar_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.batch_toolbar_btn.clicked.connect(self._start_batch)
+        self.batch_toolbar_btn.clicked.connect(lambda: self._start_batch(force_retranslate=False))
         layout.addWidget(self.batch_toolbar_btn)
+
+        # Batch Retranslate All Button (Force full retranslation)
+        self.retranslate_toolbar_btn = QPushButton("全部重新翻译", toolbar)
+        self.retranslate_toolbar_btn.setIcon(get_icon("refresh", color="#F59E0B", size=16))
+        self.retranslate_toolbar_btn.setToolTip("批量全部重新翻译，无论是否翻译过，都强制执行完整大模型翻译流程")
+        self.retranslate_toolbar_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.retranslate_toolbar_btn.clicked.connect(lambda: self._start_batch(force_retranslate=True))
+        layout.addWidget(self.retranslate_toolbar_btn)
 
         # Primary Action Button: Run Translation
         self.run_btn = QPushButton("开始翻译", toolbar)
@@ -679,6 +688,8 @@ class MainWindow(QMainWindow):
         self.page_style_btn.setIcon(get_icon("sparkles", color=tokens.accent_primary, size=16))
         self.export_btn.setIcon(get_icon("download", color=tokens.text_secondary, size=16))
         self.batch_toolbar_btn.setIcon(get_icon("play_all", color=tokens.accent_primary, size=16))
+        if hasattr(self, "retranslate_toolbar_btn"):
+            self.retranslate_toolbar_btn.setIcon(get_icon("refresh", color=tokens.status_warning, size=16))
         self.canvas_view.setBackgroundBrush(QColor(tokens.canvas_bg))
         self.canvas_view.scene.setBackgroundBrush(QColor(tokens.canvas_bg))
 
@@ -969,14 +980,18 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"错误: {err_msg}")
         self.toast.show_message(err_msg, "error")
 
-    def _start_batch(self, queue_items: Optional[List[Dict[str, Any]]] = None):
+    def _start_batch(self, queue_items: Optional[List[Dict[str, Any]]] = None, force_retranslate: bool = False):
         """Launches BatchWorker QThread for chapter queue."""
         if self.active_batch_worker and self.active_batch_worker.isRunning():
             self.active_batch_worker.cancel()
             self.status_label.setText("正在取消批处理任务...")
             self.batch_toolbar_btn.setText("批量翻译")
+            if hasattr(self, "retranslate_toolbar_btn"):
+                self.retranslate_toolbar_btn.setText("全部重新翻译")
             if hasattr(self.page_list, "batch_btn"):
-                self.page_list.batch_btn.setText("🚀 批量翻译本章全部页面")
+                self.page_list.batch_btn.setText("🚀 批量翻译 (跳过已完成)")
+            if hasattr(self.page_list, "retranslate_all_btn"):
+                self.page_list.retranslate_all_btn.setText("🔄 全部重新翻译 (强制覆盖)")
             return
 
         items = queue_items or self.page_list.items_data
@@ -987,8 +1002,12 @@ class MainWindow(QMainWindow):
         self.progress_bar.show()
         self.progress_bar.setValue(0)
         self.batch_toolbar_btn.setText("取消批处理")
+        if hasattr(self, "retranslate_toolbar_btn"):
+            self.retranslate_toolbar_btn.setText("取消批处理")
         if hasattr(self.page_list, "batch_btn"):
             self.page_list.batch_btn.setText("⏹ 取消批处理")
+        if hasattr(self.page_list, "retranslate_all_btn"):
+            self.page_list.retranslate_all_btn.setText("⏹ 取消批处理")
 
         export_dir = getattr(self.config, "export_dir", "") or os.path.join(os.getcwd(), "exported_chapter")
         export_dir = os.path.abspath(export_dir)
@@ -998,6 +1017,7 @@ class MainWindow(QMainWindow):
             queue_items=items,
             config=self.config.to_dict(),
             export_dir=export_dir,
+            force_retranslate=force_retranslate,
             parent=self
         )
         self.active_batch_worker.sig_batch_progress.connect(self._on_batch_progress)
@@ -1024,8 +1044,12 @@ class MainWindow(QMainWindow):
     def _on_batch_finished(self, success_count: int, fail_count: int):
         self.progress_bar.hide()
         self.batch_toolbar_btn.setText("批量翻译")
+        if hasattr(self, "retranslate_toolbar_btn"):
+            self.retranslate_toolbar_btn.setText("全部重新翻译")
         if hasattr(self.page_list, "batch_btn"):
-            self.page_list.batch_btn.setText("🚀 批量翻译本章全部页面")
+            self.page_list.batch_btn.setText("🚀 批量翻译 (跳过已完成)")
+        if hasattr(self.page_list, "retranslate_all_btn"):
+            self.page_list.retranslate_all_btn.setText("🔄 全部重新翻译 (强制覆盖)")
         self.status_label.setText(f"批处理完成: {success_count} 成功, {fail_count} 失败")
         self.toast.show_message(f"批处理完成: {success_count} 成功, {fail_count} 失败", "success" if fail_count == 0 else "warning")
 
