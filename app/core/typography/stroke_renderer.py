@@ -49,7 +49,8 @@ class StrokeRenderer:
         text_rgb: Tuple[int, int, int],
         font_size: float,
         threshold: float = 140.0,
-        bg_rgb: Optional[Tuple[int, int, int]] = None
+        bg_rgb: Optional[Tuple[int, int, int]] = None,
+        base_stroke_w: Optional[float] = None
     ) -> StrokeStyle:
         if bg_rgb is not None:
             bg_lum = cls.calculate_bt709_luminance(*bg_rgb)
@@ -66,8 +67,11 @@ class StrokeRenderer:
             else:
                 color = (255, 255, 255, 217) # 85% white
 
-        # 6% of font size clamped to [0.5, 3.5]px
-        stroke_w = max(0.5, min(3.5, font_size * 0.06))
+        if base_stroke_w is not None and base_stroke_w > 0:
+            stroke_w = float(base_stroke_w)
+        else:
+            # 6% of font size clamped to [0.5, 3.5]px
+            stroke_w = max(0.5, min(3.5, font_size * 0.06))
         return StrokeStyle(color_rgba=color, width=stroke_w)
 
     @staticmethod

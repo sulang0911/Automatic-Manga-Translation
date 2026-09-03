@@ -340,12 +340,20 @@ class TypographyEngine:
                 cb = int(cand_hex[5:7], 16) if len(cand_hex) >= 7 else 0
                 cand_lum = 0.299 * cr + 0.587 * cg + 0.114 * cb
 
-                # If candidate text color lacks contrast with the background (e.g. black text on dark/black bubble)
-                if abs(cand_lum - bg_lum) < 70.0:
+                # Saturation and contrast analysis
+                max_c = max(cr, cg, cb)
+                min_c = min(cr, cg, cb)
+                sat = (max_c - min_c) if max_c > 0 else 0
+                lum_diff = abs(cand_lum - bg_lum)
+
+                # High-contrast intelligent quantization:
+                # 1. If luminance contrast against background is low (< 125)
+                # 2. Or if candidate text is muddy grayscale (sat < 35 and 35 < cand_lum < 220)
+                if lum_diff < 125.0 or (sat < 35 and 35 < cand_lum < 220):
                     if bg_lum < 128.0:
-                        text_color_hex = "#FFFFFF"  # White text on dark/black background (黑底白字)
+                        text_color_hex = "#FFFFFF"  # High contrast crisp white on dark
                     else:
-                        text_color_hex = "#000000"  # Black text on light/white background (白底黑字)
+                        text_color_hex = "#000000"  # High contrast crisp black on light
                 else:
                     text_color_hex = cand_hex
 
@@ -358,7 +366,8 @@ class TypographyEngine:
             stroke_mode = block.stroke_mode_override or cfg.stroke_mode
             stroke = None
             if stroke_mode == StrokeMode.AUTO.value:
-                stroke = StrokeRenderer.get_auto_contrast_stroke((r, g, b), font_size, bg_rgb=bg_rgb)
+                sw_param = block.stroke_width_override if block.stroke_width_override is not None else cfg.stroke_width
+                stroke = StrokeRenderer.get_auto_contrast_stroke((r, g, b), font_size, bg_rgb=bg_rgb, base_stroke_w=sw_param)
             elif stroke_mode == StrokeMode.MANUAL.value:
                 stroke_hex = block.stroke_color_override or cfg.stroke_color
                 sr = int(stroke_hex[1:3], 16) if len(stroke_hex) >= 7 else 255
