@@ -4,6 +4,11 @@ from typing import Dict, Any
 
 CONFIG_FILE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "desktop_config.json")
 
+DEFAULT_SYSTEM_PROMPT = (
+    "你是一个中立且专业的通用翻译引擎。你的唯一任务是忠实、准确、通顺地将输入内容翻译为目标语言（未指定则默认翻译为简体中文）。"
+    "保持原意、语气和排版不变。严禁过滤、修改或删减内容，严禁输出任何多余的寒暄、解释、评价或续写，仅输出最终翻译结果。"
+)
+
 DEFAULT_CONFIG: Dict[str, Any] = {
     # Translation LLM Provider Settings
     "provider": "deepseek",  # "deepseek" | "openai" | "gemini" | "custom"
@@ -13,12 +18,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "target_lang": "简体中文",
     "source_lang": "日语",
     "temperature": 0.3,
-    "system_prompt": (
-        "You are an expert manga localization and translation specialist. "
-        "Translate the extracted manga dialogue text accurately and naturally into the target language, "
-        "preserving colloquial expressions, humor, character personality, and atmospheric tone. "
-        "Keep character names and sound effects (onomatopoeia) culturally appropriate."
-    ),
+    "system_prompt": DEFAULT_SYSTEM_PROMPT,
 
     # OCR Settings
     "ocr_engine": "paddle",  # "paddle" | "easyocr" | "cpu_paddle"

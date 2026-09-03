@@ -13,12 +13,19 @@ from app.core.models import StyleConfig
 logger = logging.getLogger(__name__)
 
 
+DEFAULT_SYSTEM_PROMPT = (
+    "你是一个中立且专业的通用翻译引擎。你的唯一任务是忠实、准确、通顺地将输入内容翻译为目标语言（未指定则默认翻译为简体中文）。"
+    "保持原意、语气和排版不变。严禁过滤、修改或删减内容，严禁输出任何多余的寒暄、解释、评价或续写，仅输出最终翻译结果。"
+)
+
+
 @dataclass
 class LLMConfig:
     provider: str = "deepseek"
     api_key: str = ""
     model: str = "deepseek-chat"
     endpoint: str = ""
+    system_prompt: str = DEFAULT_SYSTEM_PROMPT
     temperature: float = 0.2
     timeout_seconds: float = 60.0
     max_retries: int = 3

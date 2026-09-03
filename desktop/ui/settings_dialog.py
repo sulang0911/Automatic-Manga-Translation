@@ -2,17 +2,49 @@ from PyQt6.QtWidgets import (
     QWidget, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QTextEdit, QComboBox, QSlider, QCheckBox,
     QFrame, QStackedWidget, QListWidget, QListWidgetItem,
-    QSpinBox, QFileDialog, QGroupBox
+    QSpinBox, QFileDialog, QGroupBox, QScrollArea
 )
-from PyQt6.QtCore import Qt, QSize
-from ..core.config_manager import ConfigManager
+from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal
+from ..core.config_manager import ConfigManager, DEFAULT_SYSTEM_PROMPT
+from ..core.translation_engine import TranslationEngine
+
+
+class ModelTestWorker(QThread):
+    finished_signal = pyqtSignal(bool, str)
+
+    def __init__(self, provider: str, api_key: str, model: str, custom_endpoint: str,
+                 system_prompt: str, test_text: str, parent=None):
+        super().__init__(parent)
+        self.provider = provider
+        self.api_key = api_key
+        self.model = model
+        self.custom_endpoint = custom_endpoint
+        self.system_prompt = system_prompt
+        self.test_text = test_text
+
+    def run(self):
+        try:
+            engine = TranslationEngine(
+                provider=self.provider,
+                api_key=self.api_key,
+                model=self.model,
+                custom_endpoint=self.custom_endpoint,
+                system_prompt=self.system_prompt,
+                target_lang="简体中文"
+            )
+            result = engine.test_connection(self.test_text)
+            self.finished_signal.emit(True, result)
+        except Exception as e:
+            self.finished_signal.emit(False, str(e))
+
 
 class SettingsDialog(QDialog):
     def __init__(self, config_manager: ConfigManager, parent=None):
         super().__init__(parent)
         self.config_manager = config_manager
         self.setWindowTitle("系统偏好设置")
-        self.setFixedSize(680, 520)
+        self.resize(720, 640)
+        self.setMinimumSize(680, 560)
 
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(16, 16, 16, 16)
@@ -84,9 +116,14 @@ class SettingsDialog(QDialog):
         self._load_values()
 
     def _create_llm_page(self) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("background: transparent;")
+
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setContentsMargins(8, 4, 12, 4)
         layout.setSpacing(10)
 
         title = QLabel("AI 翻译服务与端点配置")
@@ -118,14 +155,51 @@ class SettingsDialog(QDialog):
         self.model_input.setPlaceholderText("deepseek-chat / gpt-4o-mini")
         layout.addWidget(self.model_input)
 
-        # System Prompt
-        layout.addWidget(QLabel("漫画本地化系统提示词 (System Prompt):"))
+        # System Prompt Header with Reset Button
+        prompt_header = QHBoxLayout()
+        prompt_label = QLabel("模型系统提示词 (System Prompt):")
+        prompt_header.addWidget(prompt_label)
+        prompt_header.addStretch()
+
+        reset_prompt_btn = QPushButton("🔄 恢复默认提示词")
+        reset_prompt_btn.setStyleSheet("font-size: 11px; padding: 2px 8px; border-radius: 4px;")
+        reset_prompt_btn.clicked.connect(lambda: self.sys_prompt_edit.setPlainText(DEFAULT_SYSTEM_PROMPT))
+        prompt_header.addWidget(reset_prompt_btn)
+        layout.addLayout(prompt_header)
+
         self.sys_prompt_edit = QTextEdit()
-        self.sys_prompt_edit.setMaximumHeight(80)
+        self.sys_prompt_edit.setPlaceholderText("输入大模型的系统提示词...")
+        self.sys_prompt_edit.setMinimumHeight(85)
+        self.sys_prompt_edit.setMaximumHeight(130)
         layout.addWidget(self.sys_prompt_edit)
 
+        # Test Connectivity Group
+        test_group = QGroupBox("🔗 模型连通性测试")
+        test_layout = QVBoxLayout(test_group)
+        test_layout.setSpacing(8)
+
+        test_layout.addWidget(QLabel("测试文本 (向模型发送以检验连通与翻译):"))
+        test_input_row = QHBoxLayout()
+        self.test_text_input = QLineEdit("Hello! This is a translation connectivity test.")
+        self.test_text_input.setPlaceholderText("输入测试语句...")
+        test_input_row.addWidget(self.test_text_input)
+
+        self.test_conn_btn = QPushButton("🚀 测试连通性")
+        self.test_conn_btn.setFixedWidth(110)
+        self.test_conn_btn.clicked.connect(self._run_connection_test)
+        test_input_row.addWidget(self.test_conn_btn)
+        test_layout.addLayout(test_input_row)
+
+        self.test_result_label = QLabel("点击“测试连通性”验证当前配置是否可以正常调用并翻译。")
+        self.test_result_label.setWordWrap(True)
+        self.test_result_label.setStyleSheet("color: rgba(255,255,255,0.6); padding: 4px; font-size: 12px;")
+        test_layout.addWidget(self.test_result_label)
+
+        layout.addWidget(test_group)
         layout.addStretch()
-        return page
+
+        scroll.setWidget(page)
+        return scroll
 
     def _create_ocr_page(self) -> QWidget:
         page = QWidget()
@@ -257,7 +331,7 @@ class SettingsDialog(QDialog):
         self.api_key_input.setText(cfg.get("api_key", ""))
         self.endpoint_input.setText(cfg.get("custom_endpoint", ""))
         self.model_input.setText(cfg.get("model", "deepseek-chat"))
-        self.sys_prompt_edit.setPlainText(cfg.get("system_prompt", ""))
+        self.sys_prompt_edit.setPlainText(cfg.get("system_prompt") or DEFAULT_SYSTEM_PROMPT)
 
         # OCR
         ocr_eng = cfg.get("ocr_engine", "paddle")
@@ -280,6 +354,48 @@ class SettingsDialog(QDialog):
         # Typography
         self.export_dir_input.setText(cfg.get("recent_export_dir", ""))
 
+    def _run_connection_test(self):
+        prov_map = ["deepseek", "openai", "gemini", "custom"]
+        provider = prov_map[self.llm_provider_combo.currentIndex()]
+        api_key = self.api_key_input.text().strip()
+        custom_endpoint = self.endpoint_input.text().strip()
+        model = self.model_input.text().strip() or ("deepseek-chat" if provider == "deepseek" else "gpt-4o-mini")
+        system_prompt = self.sys_prompt_edit.toPlainText().strip() or DEFAULT_SYSTEM_PROMPT
+        test_text = self.test_text_input.text().strip() or "Hello! This is a translation connectivity test."
+
+        self.test_conn_btn.setEnabled(False)
+        self.test_conn_btn.setText("⏳ 正在测试...")
+        self.test_result_label.setText("正在连接大模型并发送测试文本，请稍候...")
+        self.test_result_label.setStyleSheet("color: #0A84FF; padding: 4px; font-size: 12px;")
+
+        self._test_worker = ModelTestWorker(
+            provider=provider,
+            api_key=api_key,
+            model=model,
+            custom_endpoint=custom_endpoint,
+            system_prompt=system_prompt,
+            test_text=test_text,
+            parent=self
+        )
+        self._test_worker.finished_signal.connect(self._on_test_finished)
+        self._test_worker.start()
+
+    def _on_test_finished(self, success: bool, message: str):
+        self.test_conn_btn.setEnabled(True)
+        self.test_conn_btn.setText("🚀 测试连通性")
+        if success:
+            self.test_result_label.setText(f"✅ 连通成功！模型翻译结果：\n“{message}”")
+            self.test_result_label.setStyleSheet(
+                "color: #34C759; padding: 8px; background-color: rgba(52, 199, 89, 0.12); "
+                "border: 1px solid rgba(52, 199, 89, 0.3); border-radius: 6px; font-weight: 500; font-size: 12px;"
+            )
+        else:
+            self.test_result_label.setText(f"❌ 连通失败：\n{message}")
+            self.test_result_label.setStyleSheet(
+                "color: #FF453A; padding: 8px; background-color: rgba(255, 69, 58, 0.12); "
+                "border: 1px solid rgba(255, 69, 58, 0.3); border-radius: 6px; font-size: 12px;"
+            )
+
     def _save_and_close(self):
         prov_map = ["deepseek", "openai", "gemini", "custom"]
         ocr_map = ["paddle", "easyocr", "cpu_paddle"]
@@ -290,7 +406,7 @@ class SettingsDialog(QDialog):
             "api_key": self.api_key_input.text().strip(),
             "custom_endpoint": self.endpoint_input.text().strip(),
             "model": self.model_input.text().strip() or "deepseek-chat",
-            "system_prompt": self.sys_prompt_edit.toPlainText().strip(),
+            "system_prompt": self.sys_prompt_edit.toPlainText().strip() or DEFAULT_SYSTEM_PROMPT,
             "ocr_engine": ocr_map[self.ocr_engine_combo.currentIndex()],
             "use_gpu": self.gpu_cb.isChecked(),
             "inpaint_engine": inpaint_map[self.inpaint_engine_combo.currentIndex()],

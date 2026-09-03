@@ -3,6 +3,11 @@ import re
 import requests
 from typing import List, Dict, Any, Optional
 
+DEFAULT_SYSTEM_PROMPT = (
+    "你是一个中立且专业的通用翻译引擎。你的唯一任务是忠实、准确、通顺地将输入内容翻译为目标语言（未指定则默认翻译为简体中文）。"
+    "保持原意、语气和排版不变。严禁过滤、修改或删减内容，严禁输出任何多余的寒暄、解释、评价或续写，仅输出最终翻译结果。"
+)
+
 class TranslationEngine:
     def __init__(self, provider: str = "deepseek", api_key: str = "", model: str = "deepseek-chat",
                  custom_endpoint: str = "https://api.deepseek.com/v1", target_lang: str = "简体中文",
@@ -14,12 +19,7 @@ class TranslationEngine:
         self.target_lang = target_lang
         self.source_lang = source_lang
         self.temperature = temperature
-        self.system_prompt = system_prompt or (
-            "You are a professional manga/comic localization expert. "
-            f"Translate the following manga dialogue from {source_lang} to {target_lang}. "
-            "Output your translations strictly as a valid JSON array of objects with keys 'id' and 'translated_text'. "
-            "Preserve colloquialisms, humor, character personality, and dramatic atmosphere."
-        )
+        self.system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
 
     def _get_api_url_and_headers(self):
         url = ""
@@ -163,3 +163,51 @@ class TranslationEngine:
             results.append({"id": m_id, "translated_text": m_text})
 
         return results
+
+    def test_connection(self, text_to_translate: str = "Hello! This is a translation connectivity test.") -> str:
+        """
+        Tests model connectivity and translation quality with a single test phrase.
+        Returns the translated string, or raises RuntimeError/ValueError on failure.
+        """
+        if not self.api_key and self.provider != "custom":
+            raise ValueError(f"未配置 API Key！请先填入有效的 {self.provider.upper()} API Key。")
+
+        url, headers = self._get_api_url_and_headers()
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": f"请将以下内容翻译为{self.target_lang}：\n{text_to_translate}"}
+        ]
+        body = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+        }
+
+        try:
+            resp = requests.post(url, headers=headers, json=body, timeout=25)
+        except requests.exceptions.RequestException as req_err:
+            raise RuntimeError(f"网络连接失败或超时: {req_err}")
+
+        if resp.status_code != 200:
+            err_msg = resp.text
+            try:
+                err_data = resp.json()
+                if "error" in err_data:
+                    err_msg = err_data["error"].get("message", err_msg)
+            except Exception:
+                pass
+            raise RuntimeError(f"HTTP {resp.status_code}: {err_msg}")
+
+        try:
+            result_json = resp.json()
+            choices = result_json.get("choices", [])
+            if choices and len(choices) > 0:
+                raw_text = choices[0].get("message", {}).get("content", "").strip()
+                if raw_text:
+                    return raw_text
+            raise RuntimeError(f"响应缺少 choices 内容: {result_json}")
+        except Exception as parse_err:
+            if isinstance(parse_err, RuntimeError):
+                raise parse_err
+            raise RuntimeError(f"解析响应内容失败: {parse_err}, 原始返回: {resp.text[:200]}")
+
