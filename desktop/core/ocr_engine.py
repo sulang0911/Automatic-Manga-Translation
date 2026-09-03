@@ -37,7 +37,10 @@ def get_background_color_hex(crop: np.ndarray) -> str:
 class OCREngine:
     def __init__(self, engine_type: str = "paddle", use_gpu: bool = True, lang: str = "japan"):
         self.engine_type = engine_type
-        self.use_gpu = use_gpu
+        if self.engine_type == "cpu_paddle":
+            self.use_gpu = False
+        else:
+            self.use_gpu = use_gpu
         self.lang = lang
         self._paddle_ocr = None
         self._easyocr_reader = None
@@ -45,40 +48,82 @@ class OCREngine:
     def _init_paddle(self):
         if self._paddle_ocr is None:
             import os
-            os.environ["OMP_NUM_THREADS"] = "4"
-            os.environ["MKL_NUM_THREADS"] = "4"
-            use_gpu_flag = bool(self.use_gpu)
+            os.environ["OMP_NUM_THREADS"] = "1"
+            os.environ["OPENBLAS_NUM_THREADS"] = "1"
+            os.environ["MKL_NUM_THREADS"] = "1"
+            os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+            os.environ["FLAGS_use_onednn"] = "0"
+            os.environ["FLAGS_use_mkldnn"] = "0"
+
+            has_paddle_cuda = False
             try:
                 import paddle
                 paddle.set_flags({"FLAGS_use_onednn": False})
-                paddle.set_num_threads(4)
+                paddle.set_num_threads(1)
+                has_paddle_cuda = paddle.device.is_compiled_with_cuda() and (paddle.device.cuda.device_count() > 0)
             except Exception:
                 pass
 
             from paddleocr import PaddleOCR
-            device_str = "gpu" if use_gpu_flag else "cpu"
-            print(f"[*] Initializing PaddleOCR (lang={self.lang}, device={device_str}, use_gpu={use_gpu_flag})...")
-            try:
-                # PaddleOCR configuration: device and use_gpu for cross-version compatibility
-                self._paddle_ocr = PaddleOCR(
-                    lang=self.lang,
-                    device=device_str,
-                    use_gpu=use_gpu_flag,
-                    use_textline_orientation=True
-                )
-            except Exception as e:
-                print(f"[!] Warning: PaddleOCR init with use_gpu={use_gpu_flag} failed: {e}. Retrying CPU mode...")
-                self.use_gpu = False
+            is_paddleocr_3x = hasattr(PaddleOCR, "_paddlex_pipeline_name")
+
+            if is_paddleocr_3x:
+                # PaddleOCR 3.x / PaddleX pipeline
+                can_use_gpu = bool(self.use_gpu and has_paddle_cuda)
+                if self.use_gpu and not has_paddle_cuda:
+                    print("[*] PaddlePaddle CUDA not available in current environment. Using CPU mode.")
+                    self.use_gpu = False
+
+                device_str = "gpu" if can_use_gpu else "cpu"
+                print(f"[*] Initializing PaddleOCR 3.x (lang={self.lang}, device={device_str}, model=PP-OCRv3 Mobile)...")
+
+                kwargs = {
+                    "lang": self.lang,
+                    "ocr_version": "PP-OCRv3",  # 默认使用轻量级 Mobile 模型，内存仅占 ~150MB，避免 Medium 模型耗尽系统内存导致死机
+                    "device": device_str,
+                    "cpu_threads": 2,
+                    "use_textline_orientation": True,
+                    "enable_mkldnn": False,  # 禁用 oneDNN 规避 Windows CPU PIR double attribute 转换异常
+                    "use_doc_orientation_classify": False,
+                    "use_doc_unwarping": False,
+                }
+
+                try:
+                    self._paddle_ocr = PaddleOCR(**kwargs)
+                except Exception as e:
+                    if device_str == "gpu":
+                        print(f"[!] Warning: PaddleOCR GPU init failed: {e}. Retrying CPU mode...")
+                        self.use_gpu = False
+                        kwargs["device"] = "cpu"
+                        kwargs.pop("ocr_version", None)
+                        self._paddle_ocr = PaddleOCR(**kwargs)
+                    else:
+                        raise
+            else:
+                # PaddleOCR 2.x legacy or unit test mock
+                use_gpu_flag = bool(self.use_gpu)
+                device_str = "gpu" if use_gpu_flag else "cpu"
+                print(f"[*] Initializing PaddleOCR (lang={self.lang}, device={device_str}, use_gpu={use_gpu_flag})...")
                 try:
                     self._paddle_ocr = PaddleOCR(
                         lang=self.lang,
-                        device="cpu",
-                        use_gpu=False,
+                        device=device_str,
+                        use_gpu=use_gpu_flag,
                         use_textline_orientation=True
                     )
-                except Exception as e2:
-                    print(f"[!] Warning: PaddleOCR CPU init failed: {e2}. Fallback to generic init...")
-                    self._paddle_ocr = PaddleOCR(lang=self.lang)
+                except Exception as e:
+                    print(f"[!] Warning: PaddleOCR init with use_gpu={use_gpu_flag} failed: {e}. Retrying CPU mode...")
+                    self.use_gpu = False
+                    try:
+                        self._paddle_ocr = PaddleOCR(
+                            lang=self.lang,
+                            device="cpu",
+                            use_gpu=False,
+                            use_textline_orientation=True
+                        )
+                    except Exception as e2:
+                        print(f"[!] Warning: PaddleOCR CPU init failed: {e2}. Fallback to generic init...")
+                        self._paddle_ocr = PaddleOCR(lang=self.lang)
 
     def _init_easyocr(self):
         if self._easyocr_reader is None:
@@ -144,24 +189,58 @@ class OCREngine:
                 # PaddleOCR inference
                 results = self._paddle_ocr.ocr(image)
                 if results and len(results) > 0 and results[0]:
-                    for line in results[0]:
-                        try:
-                            pts = np.array(line[0], dtype=np.int32)
-                            text_info = line[1]
-                            text = text_info[0]
-                            conf = float(text_info[1])
-                            if not text.strip() or conf < 0.25:
+                    if isinstance(results[0], dict):
+                        # PaddleOCR 3.x (PaddleX pipeline) format
+                        res_dict = results[0]
+                        rec_texts = res_dict.get('rec_texts', [])
+                        rec_scores = res_dict.get('rec_scores', [])
+                        rec_polys = res_dict.get('rec_polys', [])
+                        if (rec_polys is None or len(rec_polys) == 0) and 'dt_polys' in res_dict:
+                            rec_polys = res_dict.get('dt_polys', [])
+
+                        for i in range(len(rec_texts)):
+                            text = str(rec_texts[i]).strip()
+                            conf = float(rec_scores[i]) if i < len(rec_scores) else 1.0
+                            if not text or conf < 0.25:
                                 continue
-                            xmin = int(np.min(pts[:, 0]))
-                            ymin = int(np.min(pts[:, 1]))
-                            xmax = int(np.max(pts[:, 0]))
-                            ymax = int(np.max(pts[:, 1]))
-                            raw_boxes.append({
-                                "xmin": xmin, "ymin": ymin, "xmax": xmax, "ymax": ymax,
-                                "text": text.strip(), "conf": conf
-                            })
-                        except Exception:
-                            continue
+                            poly = rec_polys[i] if (rec_polys is not None and i < len(rec_polys)) else None
+                            if poly is not None and len(poly) >= 4:
+                                pts = np.array(poly, dtype=np.int32)
+                                xmin = int(np.min(pts[:, 0]))
+                                ymin = int(np.min(pts[:, 1]))
+                                xmax = int(np.max(pts[:, 0]))
+                                ymax = int(np.max(pts[:, 1]))
+                                raw_boxes.append({
+                                    "xmin": xmin, "ymin": ymin, "xmax": xmax, "ymax": ymax,
+                                    "text": text, "conf": conf
+                                })
+                            elif 'rec_boxes' in res_dict and i < len(res_dict['rec_boxes']):
+                                box = res_dict['rec_boxes'][i]
+                                raw_boxes.append({
+                                    "xmin": int(box[0]), "ymin": int(box[1]),
+                                    "xmax": int(box[2]), "ymax": int(box[3]),
+                                    "text": text, "conf": conf
+                                })
+                    elif isinstance(results[0], list):
+                        # PaddleOCR 2.x list format
+                        for line in results[0]:
+                            try:
+                                pts = np.array(line[0], dtype=np.int32)
+                                text_info = line[1]
+                                text = text_info[0]
+                                conf = float(text_info[1])
+                                if not text.strip() or conf < 0.25:
+                                    continue
+                                xmin = int(np.min(pts[:, 0]))
+                                ymin = int(np.min(pts[:, 1]))
+                                xmax = int(np.max(pts[:, 0]))
+                                ymax = int(np.max(pts[:, 1]))
+                                raw_boxes.append({
+                                    "xmin": xmin, "ymin": ymin, "xmax": xmax, "ymax": ymax,
+                                    "text": text.strip(), "conf": conf
+                                })
+                            except Exception:
+                                continue
             except Exception as e:
                 print(f"[-] PaddleOCR 发生异常: {e}。正在自动无缝回退至 EasyOCR 引擎...")
                 try:

@@ -11,7 +11,7 @@
     "max_retries": 3
   },
   "ocr": {
-    "engine": "paddle",
+    "engine": "easyocr",
     "lang": "japan",
     "force_cpu": false,
     "confidence_threshold": 0.25

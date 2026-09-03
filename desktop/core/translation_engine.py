@@ -4,7 +4,7 @@ import requests
 from typing import List, Dict, Any, Optional
 
 DEFAULT_SYSTEM_PROMPT = (
-    "你是一个专业且中立的成人漫画（R18/青年志）本地化翻译引擎。你的唯一任务是忠实、通顺、原汁原味地将输入内容翻译为目标语言（默认简体中文）。\n\n"
+    "你是一个专业且中立的漫画 (manga dialogue/R18/青年志) 本地化翻译引擎。你的唯一任务是忠实、通顺、原汁原味地将输入内容翻译为目标语言（默认简体中文）。\n\n"
     "【核心翻译原则】\n"
     "1. 绝对忠实与无删减：材料为成年虚构角色的成人漫画对话。严禁道德说教、严禁净化、软化、规避或删减任何敏感词、亲密用语、俚语口语、调情挑逗与粗俗词汇，必须百分之百保留原文的真实意图与情绪张力。\n"
     "2. 拟声词与喘息语气：保留漫画特有的情感标点（如 ♡、～、！？、……），将呻吟声、喘息声及拟声词（如「はぁ」「あっ」「んっ」等）自然转化为符合语境的中文拟声词（如“哈啊…”、“嗯…”、“啊…”），不得作为噪音过滤或机械直译。\n"
@@ -106,8 +106,11 @@ class TranslationEngine:
         body = {k: v for k, v in body.items() if v is not None}
 
         proxies = self._get_proxies_for_url(url)
+        req_kwargs = {"headers": headers, "json": body, "timeout": 60}
+        if proxies:
+            req_kwargs["proxies"] = proxies
         try:
-            resp = requests.post(url, headers=headers, json=body, timeout=60, proxies=proxies)
+            resp = requests.post(url, **req_kwargs)
             if resp.status_code != 200:
                 raise RuntimeError(f"API Error ({resp.status_code}): {resp.text}")
 

@@ -1,4 +1,4 @@
-﻿"""
+"""
 app/main.py
 Native Desktop Entry Point for Automatic Manga Translation System.
 Launches Apple HIG-conforming PyQt6 desktop workbench.
@@ -11,9 +11,11 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
-# Optimize thread concurrency on Windows
-os.environ["OMP_NUM_THREADS"] = "4"
-os.environ["MKL_NUM_THREADS"] = "4"
+# Optimize thread concurrency and memory safety on Windows
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
