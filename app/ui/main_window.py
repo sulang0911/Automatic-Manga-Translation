@@ -87,6 +87,9 @@ class MainWindow(QMainWindow):
         self.canvas_view.sig_bubble_commit.connect(self._on_bubble_geometry_changed)
         self.canvas_view.sig_bubble_swap_prev.connect(self._on_canvas_bubble_swap_prev)
         self.canvas_view.sig_bubble_swap_next.connect(self._on_canvas_bubble_swap_next)
+        self.canvas_view.sig_bubble_merge_prev.connect(self._on_canvas_bubble_merge_prev)
+        self.canvas_view.sig_bubble_merge_next.connect(self._on_canvas_bubble_merge_next)
+        self.canvas_view.sig_bubble_delete.connect(self._on_block_deleted)
         self.canvas_view.sig_bubble_created.connect(self._on_bubble_created)
 
         # 2. Action Toolbar
@@ -145,6 +148,7 @@ class MainWindow(QMainWindow):
         self.inspector_panel.sig_open_export_dir_requested.connect(self._open_export_directory)
         self.inspector_panel.sig_add_bubble_requested.connect(self.canvas_view.toggle_draw_tool)
         self.inspector_panel.sig_block_selected.connect(self.canvas_view.select_bubble_by_id)
+        self.inspector_panel.sig_blocks_reordered.connect(self._on_blocks_reordered)
         self.splitter.addWidget(self.inspector_panel)
 
         # Set balanced initial proportions [sidebar, canvas, inspector]
@@ -541,6 +545,25 @@ class MainWindow(QMainWindow):
     def _on_canvas_bubble_swap_next(self, block_id: str):
         self.inspector_panel.select_block_by_id(block_id)
         self.inspector_panel._on_swap_next_clicked()
+
+    def _on_canvas_bubble_merge_prev(self, block_id: str):
+        self.inspector_panel.select_block_by_id(block_id)
+        self.inspector_panel._on_merge_prev_clicked()
+
+    def _on_canvas_bubble_merge_next(self, block_id: str):
+        self.inspector_panel.select_block_by_id(block_id)
+        self.inspector_panel._on_merge_next_clicked()
+
+    def _on_blocks_reordered(self, blocks: list):
+        if not self.current_image_data:
+            return
+        self.current_image_data["blocks"] = blocks
+        self.canvas_view.blocks = blocks
+        self.canvas_view._rebuild_bubbles()
+        path = self.current_image_data.get("path")
+        if path:
+            get_cache_manager().save_page_cache(path, blocks=blocks)
+        self._re_render_current_page()
 
     def _on_block_updated_from_inspector(self, block_data: Dict[str, Any]):
         if not self.current_image_data:

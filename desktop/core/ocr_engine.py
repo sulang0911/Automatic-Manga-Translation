@@ -370,14 +370,19 @@ class OCREngine:
         """
         if not boxes:
             return []
+        w_val = max(1, int(w_img)) if w_img else 1000
+        max_y = max(float(b.get("ymax", 0)) for b in boxes)
+        h_val = max(w_val, int(max_y) + 10)
         dummy_blocks = [
-            TranslationBlock(
+            TranslationBlock.from_pixel_box(
+                float(b.get("xmin", 0)),
+                float(b.get("ymin", 0)),
+                float(b.get("xmax", 0)),
+                float(b.get("ymax", 0)),
+                w_val,
+                h_val,
                 id=str(idx),
-                original_text=b.get("text", ""),
-                xmin=float(b.get("xmin", 0)),
-                ymin=float(b.get("ymin", 0)),
-                xmax=float(b.get("xmax", 0)),
-                ymax=float(b.get("ymax", 0))
+                original_text=b.get("text", "")
             )
             for idx, b in enumerate(boxes)
         ]

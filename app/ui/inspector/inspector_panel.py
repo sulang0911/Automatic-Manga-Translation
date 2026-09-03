@@ -7,13 +7,14 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTextEdit, QComboBox, QSlider, QCheckBox,
     QFrame, QTabWidget, QListWidget, QListWidgetItem, QGroupBox,
-    QSplitter, QScrollArea, QColorDialog
+    QSplitter, QScrollArea, QColorDialog, QMenu
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QKeySequence, QShortcut
 
 from app.core.config import AppConfig
 from app.core.models import StrokeMode
+from app.core.ocr.base import _is_cjk_char
 from app.ui.settings.page_style_dialog import FONT_CHOICES
 
 
@@ -42,6 +43,7 @@ class InspectorPanel(QFrame):
     sig_block_updated = pyqtSignal(dict)
     sig_block_deleted = pyqtSignal(str)
     sig_block_selected = pyqtSignal(str)
+    sig_blocks_reordered = pyqtSignal(list)
     sig_add_bubble_requested = pyqtSignal()
 
     def __init__(self, config: Optional[AppConfig] = None, parent: Optional[QWidget] = None):
@@ -104,6 +106,8 @@ class InspectorPanel(QFrame):
         self.bubble_list = QListWidget(top_container)
         self.bubble_list.setMinimumHeight(80)
         self.bubble_list.itemClicked.connect(self._on_bubble_list_clicked)
+        self.bubble_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.bubble_list.customContextMenuRequested.connect(self._on_bubble_list_context_menu)
 
         # Delete shortcut on list
         del_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Delete), self.bubble_list)
@@ -179,6 +183,26 @@ class InspectorPanel(QFrame):
         swap_layout.addLayout(row_swap_target)
 
         detail_layout.addWidget(swap_group)
+
+        # Bubble Merge Group
+        merge_group = QGroupBox("🔗 气泡合并 (修复切分)", self.detail_frame)
+        merge_layout = QVBoxLayout(merge_group)
+        merge_layout.setContentsMargins(4, 4, 4, 4)
+        merge_layout.setSpacing(4)
+
+        row_merge_btns = QHBoxLayout()
+        self.merge_prev_btn = QPushButton("⬆️ 与上一气泡合并", merge_group)
+        self.merge_prev_btn.setToolTip("将当前气泡与上一气泡合并为一个整体（合并坐标与文字）")
+        self.merge_prev_btn.clicked.connect(self._on_merge_prev_clicked)
+        row_merge_btns.addWidget(self.merge_prev_btn)
+
+        self.merge_next_btn = QPushButton("⬇️ 与下一气泡合并", merge_group)
+        self.merge_next_btn.setToolTip("将当前气泡与下一气泡合并为一个整体（合并坐标与文字）")
+        self.merge_next_btn.clicked.connect(self._on_merge_next_clicked)
+        row_merge_btns.addWidget(self.merge_next_btn)
+        merge_layout.addLayout(row_merge_btns)
+
+        detail_layout.addWidget(merge_group)
 
         # Apply Re-render Button
         self.apply_block_btn = QPushButton("✨ 应用修改 (Ctrl+Enter)", self.detail_frame)
@@ -658,6 +682,124 @@ class InspectorPanel(QFrame):
 
         self.sig_block_updated.emit(b1)
         self.sig_block_updated.emit(b2)
+        self.sig_re_render_requested.emit()
+
+    def _on_bubble_list_context_menu(self, pos):
+        item = self.bubble_list.itemAt(pos)
+        if not item:
+            return
+        row = self.bubble_list.row(item)
+        if row < 0 or row >= len(self.current_blocks):
+            return
+        self._on_bubble_list_clicked(item)
+
+        menu = QMenu(self)
+        b = self.current_blocks[row]
+        bid = str(b.get("id", ""))[:6]
+        header = menu.addAction(f"气泡 #{bid}")
+        header.setEnabled(False)
+        menu.addSeparator()
+
+        act_merge_prev = menu.addAction("🔗 与上一气泡合并 (修复切分)")
+        act_merge_prev.setEnabled(row > 0)
+
+        act_merge_next = menu.addAction("🔗 与下一气泡合并 (修复切分)")
+        act_merge_next.setEnabled(row < len(self.current_blocks) - 1)
+
+        menu.addSeparator()
+        act_swap_prev = menu.addAction("⬆️ 与上一气泡互换翻译")
+        act_swap_prev.setEnabled(row > 0)
+
+        act_swap_next = menu.addAction("⬇️ 与下一气泡互换翻译")
+        act_swap_next.setEnabled(row < len(self.current_blocks) - 1)
+
+        menu.addSeparator()
+        act_del = menu.addAction("🗑️ 删除气泡")
+
+        action = menu.exec(self.bubble_list.mapToGlobal(pos))
+        if action == act_merge_prev:
+            self._merge_blocks(row, row - 1)
+        elif action == act_merge_next:
+            self._merge_blocks(row, row + 1)
+        elif action == act_swap_prev:
+            self._swap_blocks_translation(row, row - 1)
+        elif action == act_swap_next:
+            self._swap_blocks_translation(row, row + 1)
+        elif action == act_del:
+            self._on_delete_block()
+
+    def _on_merge_prev_clicked(self):
+        if not self.selected_block:
+            return
+        curr_id = self.selected_block.get("id")
+        idx = self._find_block_index_by_id(curr_id)
+        if idx > 0:
+            self._merge_blocks(idx, idx - 1)
+
+    def _on_merge_next_clicked(self):
+        if not self.selected_block:
+            return
+        curr_id = self.selected_block.get("id")
+        idx = self._find_block_index_by_id(curr_id)
+        if 0 <= idx < len(self.current_blocks) - 1:
+            self._merge_blocks(idx, idx + 1)
+
+    def _merge_blocks(self, idx1: int, idx2: int):
+        if not (0 <= idx1 < len(self.current_blocks)) or not (0 <= idx2 < len(self.current_blocks)) or idx1 == idx2:
+            return
+        b1 = self.current_blocks[idx1]
+        b2 = self.current_blocks[idx2]
+
+        y1 = min(b1.get("ymin", 0), b1.get("ymax", 0))
+        y2 = min(b2.get("ymin", 0), b2.get("ymax", 0))
+
+        has_cjk = any(_is_cjk_char(c) for c in str(b1.get("original_text", ""))) or any(_is_cjk_char(c) for c in str(b2.get("original_text", "")))
+        h1 = abs(b1.get("ymax", 0) - b1.get("ymin", 0))
+        w1 = abs(b1.get("xmax", 0) - b1.get("xmin", 0))
+        h2 = abs(b2.get("ymax", 0) - b2.get("ymin", 0))
+        w2 = abs(b2.get("xmax", 0) - b2.get("xmin", 0))
+        is_vert = has_cjk and (h1 >= w1 * 1.2 or h2 >= w2 * 1.2)
+
+        if is_vert:
+            first, second = (b1, b2) if max(b1.get("xmax", 0), b1.get("xmin", 0)) >= max(b2.get("xmax", 0), b2.get("xmin", 0)) else (b2, b1)
+        else:
+            first, second = (b1, b2) if y1 <= y2 else (b2, b1)
+
+        merged_xmin = min(b1.get("xmin", 0), b2.get("xmin", 0))
+        merged_ymin = min(b1.get("ymin", 0), b2.get("ymin", 0))
+        merged_xmax = max(b1.get("xmax", 0), b2.get("xmax", 0))
+        merged_ymax = max(b1.get("ymax", 0), b2.get("ymax", 0))
+
+        ot1 = str(first.get("original_text", "")).strip()
+        ot2 = str(second.get("original_text", "")).strip()
+        merged_orig = f"{ot1}\n{ot2}" if ot1 and ot2 else (ot1 or ot2)
+
+        tt1 = str(first.get("translated_text", "")).strip()
+        tt2 = str(second.get("translated_text", "")).strip()
+        if tt1 and tt2:
+            if not has_cjk and not any(_is_cjk_char(c) for c in tt1 + tt2):
+                merged_trans = f"{tt1} {tt2}"
+            else:
+                merged_trans = f"{tt1}{tt2}" if not tt1.endswith(("\n", "。", "！", "？", "~", " ")) else f"{tt1} {tt2}"
+        else:
+            merged_trans = tt1 or tt2
+
+        # Update first block
+        first["xmin"] = merged_xmin
+        first["ymin"] = merged_ymin
+        first["xmax"] = merged_xmax
+        first["ymax"] = merged_ymax
+        first["original_text"] = merged_orig
+        first["translated_text"] = merged_trans
+
+        # Delete second block
+        del_idx = idx2 if first is b1 else idx1
+        self.current_blocks.pop(del_idx)
+
+        # Notify & re-render
+        self.set_blocks(self.current_blocks)
+        self.select_block_by_id(first.get("id"))
+        self.sig_blocks_reordered.emit(self.current_blocks)
         self.sig_re_render_requested.emit()
 
     # -------------------------------------------------------------------------

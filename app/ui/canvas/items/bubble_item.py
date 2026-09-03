@@ -29,6 +29,9 @@ class BubbleItemSignals(QObject):
     geometry_commit = pyqtSignal(dict)
     swap_prev_requested = pyqtSignal(str)
     swap_next_requested = pyqtSignal(str)
+    merge_prev_requested = pyqtSignal(str)
+    merge_next_requested = pyqtSignal(str)
+    delete_requested = pyqtSignal(str)
 
 
 class BubbleItem(QGraphicsRectItem):
@@ -284,18 +287,30 @@ class BubbleItem(QGraphicsRectItem):
     def contextMenuEvent(self, event):
         from PyQt6.QtWidgets import QMenu
         menu = QMenu()
-        b_id = str(self.block_data.get("id", ""))[:4]
+        b_id = str(self.block_data.get("id", ""))[:6]
         title_act = menu.addAction(f"气泡 #{b_id}")
         title_act.setEnabled(False)
         menu.addSeparator()
+        act_merge_prev = menu.addAction("🔗 与上一气泡合并 (修复切分)")
+        act_merge_next = menu.addAction("🔗 与下一气泡合并 (修复切分)")
+        menu.addSeparator()
         act_swap_prev = menu.addAction("⬆️ 与上一气泡互换翻译")
         act_swap_next = menu.addAction("⬇️ 与下一气泡互换翻译")
+        menu.addSeparator()
+        act_delete = menu.addAction("🗑️ 删除此气泡")
+
         action = menu.exec(event.screenPos())
         full_id = str(self.block_data.get("id", ""))
-        if action == act_swap_prev:
+        if action == act_merge_prev:
+            self.signals.merge_prev_requested.emit(full_id)
+        elif action == act_merge_next:
+            self.signals.merge_next_requested.emit(full_id)
+        elif action == act_swap_prev:
             self.signals.swap_prev_requested.emit(full_id)
         elif action == act_swap_next:
             self.signals.swap_next_requested.emit(full_id)
+        elif action == act_delete:
+            self.signals.delete_requested.emit(full_id)
 
     def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: Optional[QWidget] = None):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)

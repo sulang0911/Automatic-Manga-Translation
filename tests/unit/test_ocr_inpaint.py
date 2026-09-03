@@ -583,3 +583,29 @@ def test_hardware_gpu_detection():
 
     # Cleanup call should execute without raising
     cleanup_gpu_memory()
+
+
+def test_merge_split_multiline_paragraph_bubble_user_sample():
+    """
+    Verifies that a paragraph split into two unequal chunks (e.g. 2 lines + 6 lines)
+    within the same speech bubble/narration box is properly merged into one block.
+    """
+    boxes = [
+        {
+            "xmin": 20, "ymin": 40, "xmax": 480, "ymax": 75,
+            "text": "Emergency Sexual Service Submissive Seat or ES3\nseat is a special seat implemented recently",
+            "conf": 0.95
+        },
+        {
+            "xmin": 18, "ymin": 78, "xmax": 482, "ymax": 195,
+            "text": "in a few specialized airlines to handle emergency cases of\nHAHAA. A person sitting in this special seat is required\nto perform special services to a passenger in need.\nThe cabin crew will inform the person sitting in the\nseat before the take-off of the requirement.\nIf the passenger cannot perform the task, they can ask to change the seating.",
+            "conf": 0.94
+        }
+    ]
+    merged = merge_adjacent_boxes(boxes, img_w=600, img_h=400)
+    assert len(merged) == 1
+    assert "Emergency Sexual Service" in merged[0]["text"]
+    assert "change the seating." in merged[0]["text"]
+    assert merged[0]["xmin"] <= 20
+    assert merged[0]["ymin"] == 40
+    assert merged[0]["ymax"] == 195

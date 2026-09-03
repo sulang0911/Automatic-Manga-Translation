@@ -127,10 +127,10 @@ def can_merge_pair(
 
     has_cjk = any(_is_cjk_char(c) for c in str(b1.get("text", ""))) or any(_is_cjk_char(c) for c in str(b2.get("text", "")))
 
-    # Criterion 1: Significant 2D overlap / Inclusion (>= 60% area of smaller box)
+    # Criterion 1: Significant 2D overlap / Inclusion (>= 50% area of smaller box)
     inter_area = x_overlap * y_overlap
     min_area = min_w * min_h
-    if min_area > 0 and (inter_area / min_area) >= 0.60:
+    if min_area > 0 and (inter_area / min_area) >= 0.50:
         return True
 
     # Criterion 2: Same-line fragments (horizontal text collinear fragments / words)
@@ -150,59 +150,81 @@ def can_merge_pair(
                 if y_gap <= max_char_gap:
                     return True
 
-    # Criterion 4: Horizontal multi-line text (lines stacked vertically within bubble)
-    # Western text is always horizontal lines stacked vertically.
-    # CJK horizontal text has horizontally oriented lines or wide aspect ratio.
-    is_horiz_candidate = (not has_cjk) or (h1 <= w1 * 1.35 and h2 <= w2 * 1.35) or (
-        max(w1, w2) >= max_h * 1.2 and min_h / max_h >= 0.40
+    # Criterion 4: Horizontal multi-line text (lines stacked vertically within bubble/dialogue block)
+    # Estimate single line height of each box to evaluate font size compatibility
+    lines1 = max(1, len(str(b1.get("text", "")).splitlines()))
+    lines2 = max(1, len(str(b2.get("text", "")).splitlines()))
+    line_h1 = h1 / float(lines1)
+    line_h2 = h2 / float(lines2)
+    min_line_h = min(line_h1, line_h2)
+    max_line_h = max(line_h1, line_h2)
+
+    is_horiz_candidate = (not has_cjk) or (h1 <= w1 * 1.50 and h2 <= w2 * 1.50) or (
+        max(w1, w2) >= max_line_h * 1.5
     )
-    if is_horiz_candidate and (min_h / max_h) >= 0.40:
+    if is_horiz_candidate and (min_line_h / max_line_h) >= 0.30:
         if y1_min <= y2_min:
             t_ymin, t_ymax = y1_min, y1_max
             b_ymin, b_ymax = y2_min, y2_max
+            t_line_h, b_line_h = line_h1, line_h2
         else:
             t_ymin, t_ymax = y2_min, y2_max
             b_ymin, b_ymax = y1_min, y1_max
+            t_line_h, b_line_h = line_h2, line_h1
 
         if b_ymin >= t_ymin and b_ymax >= t_ymax:
             curr_y_gap = b_ymin - t_ymax
+            est_line_h = (t_line_h + b_line_h) / 2.0
             if curr_y_gap < 0:
                 y_overlap_len = -curr_y_gap
-                y_gap_ok = y_overlap_len <= int(0.35 * min_h)
+                y_gap_ok = y_overlap_len <= max(6, int(0.50 * est_line_h))
             else:
-                max_line_gap = max(4, int(0.70 * min_h * v_scale))
+                max_line_gap = max(4, int(0.70 * min_line_h * v_scale))
                 y_gap_ok = curr_y_gap <= max_line_gap
 
             if y_gap_ok:
                 x_aligned = (
                     (x_overlap_ratio >= 0.35 and abs(mid_x1 - mid_x2) <= max_w * 0.65)
                     or (x_overlap > 0 and (x_overlap / max_w >= 0.30))
+                    or (abs(x1_min - x2_min) <= max(12, int(0.20 * max_w)) and x_overlap > 0)
+                    or (abs(x1_max - x2_max) <= max(12, int(0.20 * max_w)) and x_overlap > 0)
+                    or (abs(mid_x1 - mid_x2) <= max(12, int(0.20 * max_w)) and x_overlap > 0)
                 )
                 if x_aligned:
                     return True
 
     # Criterion 5: Vertical multi-column text (columns side-by-side in same bubble, CJK only)
     if has_cjk:
+        cols1 = max(1, len(str(b1.get("text", "")).splitlines()))
+        cols2 = max(1, len(str(b2.get("text", "")).splitlines()))
+        col_w1 = w1 / float(cols1)
+        col_w2 = w2 / float(cols2)
+        min_col_w = min(col_w1, col_w2)
+        max_col_w = max(col_w1, col_w2)
+
         is_vert_candidate = (
-            not (w1 >= h1 * 1.35 and w2 >= h2 * 1.35)
-            and (min_w / max_w) >= 0.40
-            and max(h1, h2) >= max_w * 0.8
+            not (w1 >= h1 * 1.50 and w2 >= h2 * 1.50)
+            and (min_col_w / max_col_w) >= 0.30
+            and max(h1, h2) >= max_col_w * 0.8
         )
         if is_vert_candidate:
             if x1_min >= x2_min:
                 r_xmin, r_xmax = x1_min, x1_max
                 l_xmin, l_xmax = x2_min, x2_max
+                r_col_w, l_col_w = col_w1, col_w2
             else:
                 r_xmin, r_xmax = x2_min, x2_max
                 l_xmin, l_xmax = x1_min, x1_max
+                r_col_w, l_col_w = col_w2, col_w1
 
             if r_xmin >= l_xmin and r_xmax >= l_xmax:
                 curr_x_gap = r_xmin - l_xmax
+                est_col_w = (r_col_w + l_col_w) / 2.0
                 if curr_x_gap < 0:
                     x_overlap_len = -curr_x_gap
-                    x_gap_ok = x_overlap_len <= int(0.35 * min_w)
+                    x_gap_ok = x_overlap_len <= max(6, int(0.50 * est_col_w))
                 else:
-                    max_col_gap = max(4, int(0.70 * min_w * h_scale))
+                    max_col_gap = max(4, int(0.70 * min_col_w * h_scale))
                     x_gap_ok = curr_x_gap <= max_col_gap
 
                 if x_gap_ok:
@@ -210,6 +232,8 @@ def can_merge_pair(
                         (y_overlap_ratio >= 0.35 and abs(mid_y1 - mid_y2) <= max_h * 0.65)
                         or (y_overlap > 0 and (y_overlap / max_h >= 0.30 or y_overlap / min_h >= 0.50))
                         or (y_overlap > 0 and abs(y1_min - y2_min) <= max_w * 2.0)
+                        or (abs(y1_min - y2_min) <= max(12, int(0.20 * max_h)) and y_overlap > 0)
+                        or (abs(y1_max - y2_max) <= max(12, int(0.20 * max_h)) and y_overlap > 0)
                     )
                     if y_aligned:
                         return True
