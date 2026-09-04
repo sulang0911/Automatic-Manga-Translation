@@ -106,6 +106,7 @@ class TranslationEngine:
             "model": self.model,
             "messages": messages,
             "temperature": self.temperature,
+            "max_tokens": 2048,
             "response_format": {"type": "json_object"} if "gpt-4" in self.model or "deepseek" in self.model else None
         }
         # Clean None values
@@ -206,6 +207,7 @@ class TranslationEngine:
             "model": self.model,
             "messages": messages,
             "temperature": self.temperature,
+            "max_tokens": 512,
         }
 
         proxies = self._get_proxies_for_url(url)
