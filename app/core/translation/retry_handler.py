@@ -22,22 +22,31 @@ def execute_http_request_with_retry(
     initial_delay: float = 1.0,
     backoff_factor: float = 2.0,
     provider_name: str = "generic",
-    progress_callback: Optional[Callable[[int, str], None]] = None
+    progress_callback: Optional[Callable[[int, str], None]] = None,
+    proxies: Optional[Dict[str, str]] = None
 ) -> requests.Response:
     """
     Executes HTTP request with exponential backoff and jitter.
     Distinguishes immediately fatal errors (quota exhaustion, invalid auth) from transient retries.
+
+    Args:
+        proxies: Optional proxy dict passed to requests (e.g. {"https": "http://127.0.0.1:10808"}).
+                 Pass an empty dict {} to explicitly bypass all system/env proxies.
+                 Pass None (default) to inherit system proxy environment variables.
     """
     attempt = 0
     while True:
         try:
-            resp = requests.request(
+            req_kwargs: Dict[str, Any] = dict(
                 method=method,
                 url=url,
                 headers=headers,
                 json=json_payload,
-                timeout=timeout
+                timeout=timeout,
             )
+            if proxies is not None:
+                req_kwargs["proxies"] = proxies
+            resp = requests.request(**req_kwargs)
 
             # Success
             if resp.status_code == 200:

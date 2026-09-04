@@ -150,6 +150,7 @@ class PipelineWorker(QThread):
                 temperature = float(llm_cfg.get("temperature", self.config.get("temperature", 0.3)))
                 timeout = float(llm_cfg.get("timeout_seconds", self.config.get("timeout_seconds", 60.0)))
                 max_retries = int(llm_cfg.get("max_retries", self.config.get("max_retries", 3)))
+                proxy_url = llm_cfg.get("proxy_url", self.config.get("proxy_url", ""))
 
                 mgr = TranslationManager.get_instance()
                 mgr.set_active_provider(
@@ -161,7 +162,8 @@ class PipelineWorker(QThread):
                         endpoint=endpoint,
                         temperature=temperature,
                         timeout_seconds=timeout,
-                        max_retries=max_retries
+                        max_retries=max_retries,
+                        proxy_url=proxy_url
                     )
                 )
 

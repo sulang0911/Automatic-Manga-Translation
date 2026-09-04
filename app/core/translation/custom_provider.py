@@ -77,7 +77,8 @@ class CustomOpenAIProvider(BaseTranslationProvider):
                 timeout=self.config.timeout_seconds,
                 max_retries=self.config.max_retries,
                 provider_name="Custom API",
-                progress_callback=progress_callback
+                progress_callback=progress_callback,
+                proxies=self.resolve_proxies()
             )
         except Exception as e:
             # If 400 Bad Request indicates response_format is unsupported, retry without it
@@ -90,7 +91,8 @@ class CustomOpenAIProvider(BaseTranslationProvider):
                     timeout=self.config.timeout_seconds,
                     max_retries=self.config.max_retries,
                     provider_name="Custom API",
-                    progress_callback=progress_callback
+                    progress_callback=progress_callback,
+                    proxies=self.resolve_proxies()
                 )
             else:
                 raise e
@@ -117,7 +119,9 @@ class CustomOpenAIProvider(BaseTranslationProvider):
             "max_tokens": 5
         }
         try:
-            resp = requests.post(self.endpoint, headers=headers, json=body, timeout=10.0)
+            px = self.resolve_proxies()
+            resp = requests.post(self.endpoint, headers=headers, json=body, timeout=10.0,
+                                 **({} if px is None else {"proxies": px}))
             latency = (time.perf_counter() - start_time) * 1000
             if resp.status_code == 200:
                 return DiagnosticResult(

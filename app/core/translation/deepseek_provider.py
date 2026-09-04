@@ -70,7 +70,8 @@ class DeepSeekProvider(BaseTranslationProvider):
             timeout=self.config.timeout_seconds,
             max_retries=self.config.max_retries,
             provider_name="DeepSeek",
-            progress_callback=progress_callback
+            progress_callback=progress_callback,
+            proxies=self.resolve_proxies()
         )
 
         data = resp.json()
@@ -100,7 +101,9 @@ class DeepSeekProvider(BaseTranslationProvider):
             "max_tokens": 5
         }
         try:
-            resp = requests.post(url, headers=headers, json=body, timeout=10.0)
+            px = self.resolve_proxies()
+            resp = requests.post(url, headers=headers, json=body, timeout=10.0,
+                                 **({} if px is None else {"proxies": px}))
             latency = (time.perf_counter() - start_time) * 1000
             if resp.status_code == 200:
                 return DiagnosticResult(

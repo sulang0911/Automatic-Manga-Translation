@@ -33,6 +33,7 @@ class LLMConfig:
     temperature: float = 0.2
     timeout_seconds: float = 60.0
     max_retries: int = 3
+    proxy_url: str = ""  # "" = use system env, "none"/"direct" = bypass, or "http://host:port"
 
 
 @dataclass

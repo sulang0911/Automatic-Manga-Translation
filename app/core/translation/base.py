@@ -30,6 +30,7 @@ class ProviderConfig:
     backoff_factor: float = 2.0
     custom_headers: Dict[str, str] = field(default_factory=dict)
     extra_params: Dict[str, Any] = field(default_factory=dict)
+    proxy_url: str = ""  # "" = use system env, "none"/"direct" = bypass proxy, or explicit URL e.g. "http://127.0.0.1:10808"
 
 
 @dataclass
@@ -110,6 +111,20 @@ class ModelNotFoundError(TranslationError):
 class BaseTranslationProvider(ABC):
     def __init__(self, config: ProviderConfig):
         self.config = config
+
+    def resolve_proxies(self) -> Optional[Dict[str, str]]:
+        """
+        Converts config.proxy_url to a proxies dict for requests.
+          - proxy_url == ""            → None  (inherit system HTTP_PROXY/HTTPS_PROXY env vars)
+          - proxy_url == "none"|"direct" → {}  (bypass all proxies, connect directly)
+          - proxy_url == "http://..."  → {"http": url, "https": url}
+        """
+        url = self.config.proxy_url.strip()
+        if not url:
+            return None  # use system env
+        if url.lower() in ("none", "direct", "no_proxy", "noproxy"):
+            return {}    # bypass proxy entirely
+        return {"http": url, "https": url}
 
     @abstractmethod
     def translate_text_blocks(

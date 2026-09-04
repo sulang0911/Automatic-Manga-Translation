@@ -4,6 +4,7 @@ Apple HIG Desktop Application Shell.
 Integrates Sidebar Navigation Rail, Chapter Queue, Canvas Viewport, and Action Toolbar.
 """
 import os
+import copy
 from typing import Optional, List, Dict, Any
 import numpy as np
 import cv2
@@ -12,7 +13,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QPushButton, QLabel, QSplitter, QProgressBar,
     QButtonGroup, QFrame, QSlider, QCheckBox, QToolButton, QFileDialog, QComboBox,
-    QApplication
+    QApplication, QTextEdit, QPlainTextEdit, QLineEdit
 )
 from PyQt6.QtCore import Qt, QSize, QTimer
 from PyQt6.QtGui import QIcon, QKeySequence, QShortcut, QColor, QDragEnterEvent, QDropEvent
@@ -20,6 +21,7 @@ from PyQt6.QtGui import QIcon, QKeySequence, QShortcut, QColor, QDragEnterEvent,
 from app.core.config import AppConfig
 from app.core.models import TranslationBlock, StyleConfig
 from app.core.typography.engine import TypographyEngine
+from app.core.undo_manager import UndoManager, PageSnapshot, are_blocks_equal
 from app.core.pipeline.pipeline_worker import PipelineWorker
 from app.core.pipeline.batch_worker import BatchWorker
 from app.core.pipeline.exporter import MangaExporter
@@ -62,6 +64,9 @@ class MainWindow(QMainWindow):
 
         self.config = AppConfig.load("desktop_config.json")
         self.typo_engine = TypographyEngine()
+        self.undo_manager = UndoManager(max_depth=50)
+        self._pending_drag_snapshot: Optional[PageSnapshot] = None
+        self._pending_inspector_snapshot: Optional[PageSnapshot] = None
         self.current_image_data: Optional[Dict[str, Any]] = None
         self.active_worker: Optional[PipelineWorker] = None
         self.active_batch_worker: Optional[BatchWorker] = None
@@ -89,6 +94,7 @@ class MainWindow(QMainWindow):
         self.canvas_view.sig_split_changed.connect(self._on_split_slider_moved_from_canvas)
         self.canvas_view.sig_bubble_selected.connect(self._on_bubble_selected_from_canvas)
         self.canvas_view.sig_bubble_changed.connect(self._on_bubble_moving)
+        self.canvas_view.sig_bubble_geometry_start.connect(self._on_bubble_geometry_start)
         self.canvas_view.sig_bubble_commit.connect(self._on_bubble_geometry_changed)
         self.canvas_view.sig_bubble_swap_prev.connect(self._on_canvas_bubble_swap_prev)
         self.canvas_view.sig_bubble_swap_next.connect(self._on_canvas_bubble_swap_next)
@@ -100,6 +106,8 @@ class MainWindow(QMainWindow):
         self.canvas_view.sig_clear_cache_requested.connect(self._on_canvas_clear_cache_requested)
         self.canvas_view.sig_retranslate_requested.connect(lambda: self._start_pipeline_for_page(mode="full"))
         self.canvas_view.sig_open_style_requested.connect(self._open_current_page_style_dialog)
+        self.canvas_view.sig_undo_requested.connect(self._undo)
+        self.canvas_view.sig_redo_requested.connect(self._redo)
 
         # 2. Action Toolbar
         self.toolbar_widget = self._create_toolbar()
@@ -284,6 +292,25 @@ class MainWindow(QMainWindow):
         self.source_lang_combo.currentTextChanged.connect(self._on_source_lang_changed)
         layout.addWidget(self.source_lang_combo)
 
+        layout.addSpacing(8)
+
+        # Undo & Redo Buttons
+        self.undo_btn = QPushButton("撤销", toolbar)
+        self.undo_btn.setIcon(get_icon("undo", color="#A1A1AA", size=16))
+        self.undo_btn.setToolTip("撤销上一步操作 (Ctrl+Z)")
+        self.undo_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.undo_btn.setEnabled(False)
+        self.undo_btn.clicked.connect(self._undo)
+        layout.addWidget(self.undo_btn)
+
+        self.redo_btn = QPushButton("重做", toolbar)
+        self.redo_btn.setIcon(get_icon("redo", color="#A1A1AA", size=16))
+        self.redo_btn.setToolTip("重做下一步操作 (Ctrl+Y / Ctrl+Shift+Z)")
+        self.redo_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.redo_btn.setEnabled(False)
+        self.redo_btn.clicked.connect(self._redo)
+        layout.addWidget(self.redo_btn)
+
         layout.addStretch()
 
         # Theme Switcher Button
@@ -380,6 +407,9 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+F"), self, self.canvas_view.fit_in_view)
         QShortcut(QKeySequence("Ctrl+B"), self, self.toggle_sidebar)
         QShortcut(QKeySequence("R"), self, self.canvas_view.toggle_draw_tool)
+        QShortcut(QKeySequence("Ctrl+Z"), self, self._handle_undo_shortcut)
+        QShortcut(QKeySequence("Ctrl+Y"), self, self._handle_redo_shortcut)
+        QShortcut(QKeySequence("Ctrl+Shift+Z"), self, self._handle_redo_shortcut)
 
     # -------------------------------------------------------------------------
     # Event Handlers & View Synchronization
@@ -520,9 +550,21 @@ class MainWindow(QMainWindow):
                 f"气泡 #{str(target_id)[:6]} (位置: {block_data.get('xmin', 0):.1f}%, {block_data.get('ymin', 0):.1f}%)"
             )
 
+    def _on_bubble_geometry_start(self, block_data: Dict[str, Any]):
+        """Captured when user presses mouse on bubble before dragging or resizing."""
+        if self.current_image_data:
+            self._pending_drag_snapshot = self._take_current_snapshot("调整气泡位置/大小")
+
     def _on_bubble_geometry_changed(self, block_data: Dict[str, Any]):
         """Committed when user releases mouse after dragging or resizing bubble on canvas."""
         self._on_bubble_moving(block_data)
+        if self._pending_drag_snapshot and self.current_image_data:
+            current_blocks = self.current_image_data.get("blocks", [])
+            serialized_curr = [b if isinstance(b, dict) else (b.to_dict() if hasattr(b, "to_dict") else vars(b)) for b in current_blocks]
+            if not are_blocks_equal(self._pending_drag_snapshot.blocks, serialized_curr):
+                self.undo_manager.push(self._pending_drag_snapshot)
+                self._update_undo_redo_ui()
+        self._pending_drag_snapshot = None
         self._re_render_current_page()
 
     def _on_bubble_created(self, new_block: Dict[str, Any]):
@@ -530,6 +572,8 @@ class MainWindow(QMainWindow):
         if not self.current_image_data:
             self.toast.show_message("请先载入并选择一张漫画页面！", "warning")
             return
+
+        self._push_undo_snapshot("新建气泡")
 
         blocks = self.current_image_data.get("blocks", [])
         blocks.append(new_block)
@@ -554,6 +598,8 @@ class MainWindow(QMainWindow):
         if not self.current_image_data:
             self.toast.show_message("请先载入并选择一张漫画页面！", "warning")
             return
+
+        self._push_undo_snapshot("框选识别翻译")
 
         blocks = self.current_image_data.get("blocks", [])
         blocks.append(new_block)
@@ -650,24 +696,29 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"框选识别失败: {err_msg}")
 
     def _on_canvas_bubble_swap_prev(self, block_id: str):
+        self._push_undo_snapshot("对调气泡翻译")
         self.inspector_panel.select_block_by_id(block_id)
         self.inspector_panel._on_swap_prev_clicked()
 
     def _on_canvas_bubble_swap_next(self, block_id: str):
+        self._push_undo_snapshot("对调气泡翻译")
         self.inspector_panel.select_block_by_id(block_id)
         self.inspector_panel._on_swap_next_clicked()
 
     def _on_canvas_bubble_merge_prev(self, block_id: str):
+        self._push_undo_snapshot("合并气泡")
         self.inspector_panel.select_block_by_id(block_id)
         self.inspector_panel._on_merge_prev_clicked()
 
     def _on_canvas_bubble_merge_next(self, block_id: str):
+        self._push_undo_snapshot("合并气泡")
         self.inspector_panel.select_block_by_id(block_id)
         self.inspector_panel._on_merge_next_clicked()
 
     def _on_blocks_reordered(self, blocks: list):
         if not self.current_image_data:
             return
+        self._push_undo_snapshot("重排气泡顺序")
         self.current_image_data["blocks"] = blocks
         self.canvas_view.blocks = blocks
         self.canvas_view._rebuild_bubbles()
@@ -679,6 +730,8 @@ class MainWindow(QMainWindow):
     def _on_block_updated_from_inspector(self, block_data: Dict[str, Any]):
         if not self.current_image_data:
             return
+        if self._pending_inspector_snapshot is None:
+            self._pending_inspector_snapshot = self._take_current_snapshot("修改气泡内容/样式")
         target_id = str(block_data.get("id"))
         blocks = self.current_image_data.get("blocks", [])
         for idx, b in enumerate(blocks):
@@ -695,6 +748,7 @@ class MainWindow(QMainWindow):
 
     def _on_block_deleted(self, block_id: str):
         if self.current_image_data and "blocks" in self.current_image_data:
+            self._push_undo_snapshot("删除气泡")
             blocks = self.current_image_data["blocks"]
             self.current_image_data["blocks"] = [
                 b for b in blocks
@@ -716,6 +770,14 @@ class MainWindow(QMainWindow):
         blocks = self.current_image_data.get("blocks", [])
         if not blocks:
             return
+
+        if self._pending_inspector_snapshot and self.current_image_data:
+            current_blocks = self.current_image_data.get("blocks", [])
+            serialized_curr = [b if isinstance(b, dict) else (b.to_dict() if hasattr(b, "to_dict") else vars(b)) for b in current_blocks]
+            if not are_blocks_equal(self._pending_inspector_snapshot.blocks, serialized_curr):
+                self.undo_manager.push(self._pending_inspector_snapshot)
+                self._update_undo_redo_ui()
+            self._pending_inspector_snapshot = None
 
         base_img = self.current_image_data.get("erased_img")
         if base_img is None:
@@ -815,6 +877,8 @@ class MainWindow(QMainWindow):
             self.toast.show_message(f"已清除【{filename}】缓存", "success")
             return
 
+        self._push_undo_snapshot("清除页面缓存")
+
         # Reset in-memory data
         self.current_image_data["blocks"] = []
         self.current_image_data["erased_img"] = None
@@ -848,6 +912,7 @@ class MainWindow(QMainWindow):
         """Called when user clicks 'Clear Page Cache' from the canvas right-click menu."""
         if not self.current_image_data:
             return
+        self._push_undo_snapshot("清除页面缓存")
         path = self.current_image_data.get("path", "")
         page_id = self.current_image_data.get("id", "")
         if path:
@@ -905,6 +970,10 @@ class MainWindow(QMainWindow):
         self.batch_toolbar_btn.setIcon(get_icon("play_all", color=tokens.accent_primary, size=16))
         if hasattr(self, "retranslate_toolbar_btn"):
             self.retranslate_toolbar_btn.setIcon(get_icon("refresh", color=tokens.status_warning, size=16))
+        if hasattr(self, "undo_btn"):
+            self.undo_btn.setIcon(get_icon("undo", color=tokens.text_secondary, size=16))
+        if hasattr(self, "redo_btn"):
+            self.redo_btn.setIcon(get_icon("redo", color=tokens.text_secondary, size=16))
         self.canvas_view.setBackgroundBrush(QColor(tokens.canvas_bg))
         self.canvas_view.scene.setBackgroundBrush(QColor(tokens.canvas_bg))
 
@@ -1175,6 +1244,8 @@ class MainWindow(QMainWindow):
         self.progress_bar.hide()
         self.status_label.setText("就绪 | 翻译处理完成")
 
+        self._push_undo_snapshot("整页翻译")
+
         if self.current_image_data is not None:
             self.current_image_data.update(result)
             self.canvas_view.set_data(
@@ -1303,4 +1374,150 @@ class MainWindow(QMainWindow):
             self.toast.show_message(f"成功导出页面至: {os.path.basename(file_path)}", "success")
         else:
             self.toast.show_message("页面导出失败，请检查写入权限。", "error")
+
+    # -------------------------------------------------------------------------
+    # Undo / Redo Architecture (Ctrl+Z / Ctrl+Y)
+    # -------------------------------------------------------------------------
+    def _take_current_snapshot(self, description: str = "操作") -> Optional[PageSnapshot]:
+        if not self.current_image_data:
+            return None
+        path = self.current_image_data.get("path", "")
+        blocks = self.current_image_data.get("blocks", [])
+        erased_img = self.current_image_data.get("erased_img")
+        style = self.current_image_data.get("style")
+        return PageSnapshot.create(
+            page_path=path,
+            blocks=blocks,
+            erased_img=erased_img,
+            style=style,
+            description=description
+        )
+
+    def _push_undo_snapshot(self, description: str = "操作"):
+        snap = self._take_current_snapshot(description)
+        if snap:
+            self.undo_manager.push(snap)
+            self._update_undo_redo_ui()
+
+    def _handle_undo_shortcut(self):
+        """Intelligent undo: delegates to focused text input if it has local edits, otherwise undoes page operation."""
+        focus_w = QApplication.focusWidget()
+        if isinstance(focus_w, (QTextEdit, QPlainTextEdit, QLineEdit)):
+            doc = getattr(focus_w, "document", lambda: None)()
+            if doc and hasattr(doc, "isUndoAvailable") and doc.isUndoAvailable():
+                focus_w.undo()
+                return
+            elif hasattr(focus_w, "isUndoAvailable") and focus_w.isUndoAvailable():
+                focus_w.undo()
+                return
+        self._undo()
+
+    def _handle_redo_shortcut(self):
+        """Intelligent redo: delegates to focused text input if it has local edits, otherwise redoes page operation."""
+        focus_w = QApplication.focusWidget()
+        if isinstance(focus_w, (QTextEdit, QPlainTextEdit, QLineEdit)):
+            doc = getattr(focus_w, "document", lambda: None)()
+            if doc and hasattr(doc, "isRedoAvailable") and doc.isRedoAvailable():
+                focus_w.redo()
+                return
+            elif hasattr(focus_w, "isRedoAvailable") and focus_w.isRedoAvailable():
+                focus_w.redo()
+                return
+        self._redo()
+
+    def _undo(self):
+        """Reverts the last page operation."""
+        if not self.undo_manager.can_undo():
+            self.toast.show_message("已是最初状态，无法继续撤销", "info")
+            return
+
+        current_snap = self._take_current_snapshot("当前状态")
+        if not current_snap:
+            return
+
+        target_snap = self.undo_manager.undo(current_snap)
+        if not target_snap:
+            return
+
+        self._restore_snapshot(target_snap)
+        self._update_undo_redo_ui()
+        self.toast.show_message(f"↩️ 已撤销: {target_snap.description}", "info")
+        self.status_label.setText(f"就绪 | 已撤销: {target_snap.description}")
+
+    def _redo(self):
+        """Reapplies the previously undone page operation."""
+        if not self.undo_manager.can_redo():
+            self.toast.show_message("已是最新状态，无法继续重做", "info")
+            return
+
+        current_snap = self._take_current_snapshot("当前状态")
+        if not current_snap:
+            return
+
+        target_snap = self.undo_manager.redo(current_snap)
+        if not target_snap:
+            return
+
+        self._restore_snapshot(target_snap)
+        self._update_undo_redo_ui()
+        self.toast.show_message(f"↪️ 已重做: {target_snap.description}", "info")
+        self.status_label.setText(f"就绪 | 已重做: {target_snap.description}")
+
+    def _restore_snapshot(self, snapshot: PageSnapshot):
+        """Restores application canvas and inspector state from a PageSnapshot."""
+        # 1. Switch to the target page if different from currently displayed page
+        if snapshot.page_path:
+            if not self.current_image_data or self.current_image_data.get("path") != snapshot.page_path:
+                for item in self.page_list.items_data:
+                    if item.get("path") == snapshot.page_path:
+                        self._on_page_selected(item)
+                        break
+
+        if not self.current_image_data:
+            return
+
+        # 2. Restore blocks, erased background, and style
+        restored_blocks = [copy.deepcopy(b) for b in snapshot.blocks]
+        self.current_image_data["blocks"] = restored_blocks
+        if snapshot.erased_img is not None:
+            self.current_image_data["erased_img"] = snapshot.erased_img
+            self.canvas_view.erased_cv = snapshot.erased_img
+        if snapshot.style is not None:
+            self.current_image_data["style"] = snapshot.style
+
+        # 3. Synchronize canvas viewport
+        self.canvas_view.set_data(
+            original_cv=self.canvas_view.original_cv,
+            translated_cv=self.canvas_view.translated_cv,
+            erased_cv=self.current_image_data.get("erased_img"),
+            blocks=restored_blocks
+        )
+
+        # 4. Synchronize inspector panel
+        self.inspector_panel.set_blocks(restored_blocks)
+
+        # 5. Persist to disk cache
+        if snapshot.page_path:
+            get_cache_manager().save_page_cache(
+                snapshot.page_path,
+                blocks=restored_blocks,
+                erased_img=self.current_image_data.get("erased_img")
+            )
+
+        # 6. Re-render typography onto canvas
+        self._re_render_current_page()
+
+    def _update_undo_redo_ui(self):
+        """Synchronizes toolbar buttons state and tooltips with undo/redo stack availability."""
+        can_u = self.undo_manager.can_undo()
+        can_r = self.undo_manager.can_redo()
+        if hasattr(self, "undo_btn"):
+            self.undo_btn.setEnabled(can_u)
+            desc_u = self.undo_manager.get_undo_description()
+            self.undo_btn.setToolTip(f"撤销: {desc_u} (Ctrl+Z)" if desc_u else "撤销 (Ctrl+Z)")
+        if hasattr(self, "redo_btn"):
+            self.redo_btn.setEnabled(can_r)
+            desc_r = self.undo_manager.get_redo_description()
+            self.redo_btn.setToolTip(f"重做: {desc_r} (Ctrl+Y / Ctrl+Shift+Z)" if desc_r else "重做 (Ctrl+Y)")
+
 

@@ -166,11 +166,14 @@ class MangaCanvasView(QGraphicsView):
     sig_bubble_delete = pyqtSignal(str)
     sig_bubble_created = pyqtSignal(dict)
     sig_bubble_ocr_requested = pyqtSignal(dict)
+    sig_bubble_geometry_start = pyqtSignal(dict)
     sig_bubble_commit = pyqtSignal(dict)
     sig_tool_mode_changed = pyqtSignal(str)
     sig_clear_cache_requested = pyqtSignal()
     sig_retranslate_requested = pyqtSignal()
     sig_open_style_requested = pyqtSignal()
+    sig_undo_requested = pyqtSignal()
+    sig_redo_requested = pyqtSignal()
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -326,6 +329,7 @@ class MangaCanvasView(QGraphicsView):
             item = BubbleItem(b_dict, img_w, img_h)
             item.signals.clicked.connect(self.sig_bubble_selected.emit)
             item.signals.changed.connect(self.sig_bubble_changed.emit)
+            item.signals.geometry_start.connect(self.sig_bubble_geometry_start.emit)
             item.signals.geometry_commit.connect(self.sig_bubble_commit.emit)
             item.signals.swap_prev_requested.connect(self.sig_bubble_swap_prev.emit)
             item.signals.swap_next_requested.connect(self.sig_bubble_swap_next.emit)
@@ -604,6 +608,9 @@ class MangaCanvasView(QGraphicsView):
             return
 
         menu = QMenu(self)
+        act_undo = menu.addAction(get_icon("undo", color="#A1A1AA", size=14), "↩️ 撤销 (Ctrl+Z)")
+        act_redo = menu.addAction(get_icon("redo", color="#A1A1AA", size=14), "↪️ 重做 (Ctrl+Y)")
+        menu.addSeparator()
         act_ocr = menu.addAction(get_icon("search", color="#3B82F6", size=14), "🔍 框选识别并翻译 (O)")
         act_draw = menu.addAction(get_icon("plus", color="#3B82F6", size=14), "➕ 框选新建空白气泡 (R)")
         menu.addSeparator()
@@ -613,7 +620,11 @@ class MangaCanvasView(QGraphicsView):
         act_style = menu.addAction(get_icon("sparkles", color="#8B5CF6", size=14), "🎨 修改此页文字排版与样式...")
 
         chosen = menu.exec(event.globalPos())
-        if chosen == act_ocr:
+        if chosen == act_undo:
+            self.sig_undo_requested.emit()
+        elif chosen == act_redo:
+            self.sig_redo_requested.emit()
+        elif chosen == act_ocr:
             self.toggle_ocr_draw_tool()
         elif chosen == act_draw:
             self.toggle_draw_tool()
