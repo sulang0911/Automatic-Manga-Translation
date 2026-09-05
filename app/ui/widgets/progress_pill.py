@@ -36,12 +36,12 @@ class ProgressPill(QWidget):
     """
     COLORS = {
         "idle": "#71717A",
-        "ready": "#10B981",
-        "processing": "#3B82F6",
-        "warning": "#F59E0B",
-        "completed": "#10B981",
-        "failed": "#EF4444",
-        "error": "#EF4444",
+        "ready": "#22C55E",
+        "processing": "#007ACC",
+        "warning": "#EAB308",
+        "completed": "#22C55E",
+        "failed": "#F43F5E",
+        "error": "#F43F5E",
     }
 
     def __init__(self, parent: Optional[QWidget] = None):
@@ -49,26 +49,26 @@ class ProgressPill(QWidget):
         self.setObjectName("progressPill")
         self.setStyleSheet("""
             #progressPill {
-                background-color: rgba(255, 255, 255, 0.04);
-                border: 1px solid rgba(255, 255, 255, 0.08);
-                border-radius: 12px;
-                padding: 2px 8px;
+                background-color: rgba(255, 255, 255, 0.03);
+                border: 1px solid #2D2D32;
+                border-radius: 4px;
+                padding: 2px 6px;
             }
         """)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 3, 8, 3)
+        layout.setContentsMargins(6, 2, 6, 2)
         layout.setSpacing(6)
 
-        self._dot = StatusDot(color=self.COLORS["ready"], size=8, parent=self)
+        self._dot = StatusDot(color=self.COLORS["ready"], size=7, parent=self)
         layout.addWidget(self._dot)
 
         self._label = QLabel("就绪", self)
-        self._label.setStyleSheet("font-size: 12px; font-weight: 500;")
+        self._label.setStyleSheet("font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 500; color: #ECECEF;")
         layout.addWidget(self._label)
 
         self._progress_bar = QProgressBar(self)
-        self._progress_bar.setFixedSize(60, 6)
+        self._progress_bar.setFixedSize(60, 5)
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setTextVisible(False)
         self._progress_bar.hide()

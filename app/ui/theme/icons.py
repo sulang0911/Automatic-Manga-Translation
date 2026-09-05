@@ -114,6 +114,45 @@ SVG_TEMPLATES: Dict[str, str] = {
         <path d="M21 7v6h-6" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
         <path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
     """,
+    "plus": """
+        <line x1="12" y1="5" x2="12" y2="19" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+        <line x1="5" y1="12" x2="19" y2="12" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+    """,
+    "arrow_up": """
+        <line x1="12" y1="19" x2="12" y2="5" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        <polyline points="5 12 12 5 19 12" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    """,
+    "arrow_down": """
+        <line x1="12" y1="5" x2="12" y2="19" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        <polyline points="19 12 12 19 5 12" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    """,
+    "swap": """
+        <polyline points="17 8 21 12 17 16" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <line x1="3" y1="12" x2="21" y2="12" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+        <polyline points="7 16 3 12 7 8" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    """,
+    "link": """
+        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    """,
+    "crop": """
+        <path d="M6 2v14a2 2 0 0 0 2 2h14" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M18 22V8a2 2 0 0 0-2-2H2" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    """,
+    "text": """
+        <polyline points="4 7 4 4 20 4 20 7" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <line x1="12" y1="4" x2="12" y2="20" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+        <line x1="9" y1="20" x2="15" y2="20" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+    """,
+    "menu": """
+        <line x1="3" y1="12" x2="21" y2="12" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+        <line x1="3" y1="6" x2="21" y2="6" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+        <line x1="3" y1="18" x2="21" y2="18" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+    """,
+    "close": """
+        <line x1="18" y1="6" x2="6" y2="18" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+        <line x1="6" y1="6" x2="18" y2="18" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+    """,
 }
 
 

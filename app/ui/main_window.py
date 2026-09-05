@@ -171,6 +171,7 @@ class MainWindow(QMainWindow):
 
         # Set balanced initial proportions [sidebar, canvas, inspector]
         self.splitter.setSizes([260, 840, 280])
+        self._saved_sidebar_width = 260
         main_layout.addWidget(self.splitter, 1)
 
         # 4. Status Bar
@@ -211,6 +212,7 @@ class MainWindow(QMainWindow):
         self.page_list.sig_export_all.connect(self._export_all_pages)
         self.page_list.sig_edit_page_style.connect(self._open_page_style_dialog)
         self.page_list.sig_cache_cleared.connect(self._on_page_cache_cleared)
+        self.page_list.sig_count_changed.connect(lambda count: self.drop_zone.set_compact(count > 0))
         drawer_layout.addWidget(self.page_list, 1)
 
         layout.addWidget(self.sidebar_drawer, 1)
@@ -231,16 +233,42 @@ class MainWindow(QMainWindow):
         return container
 
     def _create_toolbar(self) -> QWidget:
-        """Constructs the top action toolbar conforming to Apple HIG."""
+        """Constructs the top action command bar conforming to Apple HIG & Pro Dev layout."""
         toolbar = QFrame(self)
         toolbar.setProperty("class", "toolbar")
-        toolbar.setFixedHeight(46)
+        toolbar.setFixedHeight(42)
 
         layout = QHBoxLayout(toolbar)
-        layout.setContentsMargins(12, 4, 12, 4)
-        layout.setSpacing(8)
+        layout.setContentsMargins(10, 3, 10, 3)
+        layout.setSpacing(6)
 
-        # View Mode Segmented Control
+        # 1. Left Cluster: Sidebar Toggle & Breadcrumb
+        self.sidebar_toggle_btn = QToolButton(toolbar)
+        self.sidebar_toggle_btn.setProperty("class", "icon-action-btn")
+        self.sidebar_toggle_btn.setIcon(get_icon("menu", color="#A1A1AA", size=15))
+        self.sidebar_toggle_btn.setToolTip("切换侧边栏展开/折叠 (Ctrl+B)")
+        self.sidebar_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.sidebar_toggle_btn.clicked.connect(lambda: self.toggle_sidebar())
+        layout.addWidget(self.sidebar_toggle_btn)
+
+        self.breadcrumb_label = QLabel("📂 工作区", toolbar)
+        self.breadcrumb_label.setStyleSheet(
+            "font-family: 'JetBrains Mono', 'SF Mono', monospace;"
+            "font-size: 11px; font-weight: 600; color: #ECECEF; padding: 3px 8px;"
+            "background: rgba(255, 255, 255, 0.05); border-radius: 4px; border: 1px solid rgba(255, 255, 255, 0.08);"
+        )
+        self.breadcrumb_label.setMaximumWidth(200)
+        layout.addWidget(self.breadcrumb_label)
+
+        layout.addSpacing(6)
+
+        # 2. Center Cluster: Segmented View Modes Control
+        mode_container = QFrame(toolbar)
+        mode_container.setObjectName("segmentedControl")
+        mode_layout = QHBoxLayout(mode_container)
+        mode_layout.setContentsMargins(2, 2, 2, 2)
+        mode_layout.setSpacing(2)
+
         self.btn_group = QButtonGroup(self)
         self.btn_group.setExclusive(True)
 
@@ -254,10 +282,10 @@ class MainWindow(QMainWindow):
 
         self._mode_buttons: Dict[str, QToolButton] = {}
         for idx, (mode_key, label, icon_name) in enumerate(mode_specs):
-            btn = QToolButton(toolbar)
+            btn = QToolButton(mode_container)
             btn.setProperty("class", "segment-btn")
             btn.setText(label)
-            btn.setIcon(get_icon(icon_name, color="#A1A1AA", active_color="#FFFFFF", size=16))
+            btn.setIcon(get_icon(icon_name, color="#A1A1AA", active_color="#FFFFFF", size=13))
             btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
             btn.setCheckable(True)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -267,128 +295,129 @@ class MainWindow(QMainWindow):
 
             self.btn_group.addButton(btn, idx)
             self._mode_buttons[mode_key] = btn
-            layout.addWidget(btn)
+            mode_layout.addWidget(btn)
 
         self.btn_group.idClicked.connect(self._on_segment_button_clicked)
-
-        layout.addSpacing(16)
+        layout.addWidget(mode_container)
 
         # Bubble overlay toggle checkbox
-        self.bubble_cb = QCheckBox("显示对话框", toolbar)
+        self.bubble_cb = QCheckBox("气泡框", toolbar)
         self.bubble_cb.setChecked(True)
+        self.bubble_cb.setToolTip("显示/隐藏画布上的气泡框覆盖层")
         self.bubble_cb.toggled.connect(self._on_bubble_cb_toggled)
         layout.addWidget(self.bubble_cb)
 
-        layout.addSpacing(16)
+        layout.addStretch()
 
-        # Source Language Selector (Default: 自动识别)
+        # 3. Right Cluster: Language, History, Style, Export, Settings, Theme, Primary Action
         lang_lbl = QLabel("源语言:", toolbar)
-        lang_lbl.setStyleSheet("font-size: 11px; font-weight: 500;")
+        lang_lbl.setStyleSheet("font-size: 11px; font-weight: 500; color: #71717A;")
         layout.addWidget(lang_lbl)
 
         self.source_lang_combo = QComboBox(toolbar)
-        self.source_lang_combo.setFixedWidth(100)
+        self.source_lang_combo.setFixedWidth(84)
         self.source_lang_combo.addItems(["自动识别", "日语", "韩语", "英语", "繁体中文", "简体中文"])
         self.source_lang_combo.setCurrentText(getattr(self.config, "source_lang", "自动识别"))
         self.source_lang_combo.currentTextChanged.connect(self._on_source_lang_changed)
         layout.addWidget(self.source_lang_combo)
 
-        layout.addSpacing(8)
+        layout.addSpacing(2)
 
-        # Undo & Redo Buttons
-        self.undo_btn = QPushButton("撤销", toolbar)
-        self.undo_btn.setIcon(get_icon("undo", color="#A1A1AA", size=16))
-        self.undo_btn.setToolTip("撤销上一步操作 (Ctrl+Z)")
+        # Undo & Redo (Icon-only tool buttons conforming to Pro IDE standards)
+        self.undo_btn = QToolButton(toolbar)
+        self.undo_btn.setProperty("class", "icon-action-btn")
+        self.undo_btn.setIcon(get_icon("undo", color="#A1A1AA", size=14))
+        self.undo_btn.setToolTip("撤销 (Ctrl+Z)")
         self.undo_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.undo_btn.setEnabled(False)
         self.undo_btn.clicked.connect(self._undo)
         layout.addWidget(self.undo_btn)
 
-        self.redo_btn = QPushButton("重做", toolbar)
-        self.redo_btn.setIcon(get_icon("redo", color="#A1A1AA", size=16))
-        self.redo_btn.setToolTip("重做下一步操作 (Ctrl+Y / Ctrl+Shift+Z)")
+        self.redo_btn = QToolButton(toolbar)
+        self.redo_btn.setProperty("class", "icon-action-btn")
+        self.redo_btn.setIcon(get_icon("redo", color="#A1A1AA", size=14))
+        self.redo_btn.setToolTip("重做 (Ctrl+Y / Ctrl+Shift+Z)")
         self.redo_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.redo_btn.setEnabled(False)
         self.redo_btn.clicked.connect(self._redo)
         layout.addWidget(self.redo_btn)
 
-        layout.addStretch()
+        layout.addSpacing(4)
 
-        # Theme Switcher Button
-        self.theme_btn = QToolButton(toolbar)
-        self.theme_btn.setIcon(get_icon("sun" if self._current_theme == "dark" else "moon", color="#A1A1AA", size=16))
-        self.theme_btn.setToolTip("切换明暗主题")
-        self.theme_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.theme_btn.clicked.connect(self.toggle_theme)
-        layout.addWidget(self.theme_btn)
-
-        # Settings Button
-        self.settings_btn = QPushButton("设置", toolbar)
-        self.settings_btn.setIcon(get_icon("settings", color="#A1A1AA", size=16))
-        self.settings_btn.setToolTip("全局系统偏好与默认文字设置")
-        self.settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.settings_btn.clicked.connect(self._open_settings_dialog)
-        layout.addWidget(self.settings_btn)
-
-        # Single Page Style Button
-        self.page_style_btn = QPushButton("单页文字", toolbar)
-        self.page_style_btn.setIcon(get_icon("sparkles", color="#3B82F6", size=16))
-        self.page_style_btn.setToolTip("修改当前单页文字排版与样式 (单独配置，仅对当前页生效)")
+        # Single Page Typography Style Modal Button
+        self.page_style_btn = QPushButton("排版样式", toolbar)
+        self.page_style_btn.setIcon(get_icon("sparkles", color="#0A84FF", size=13))
+        self.page_style_btn.setToolTip("当前单页字体与文字排版独立配置")
         self.page_style_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.page_style_btn.clicked.connect(self._open_current_page_style_dialog)
         layout.addWidget(self.page_style_btn)
 
-        # Export Button (Supports Single Page & Batch Chapter Export)
+        # Export Button (Dropdown with Single Page & Batch Export)
         self.export_btn = QPushButton("导出", toolbar)
-        self.export_btn.setIcon(get_icon("download", color="#A1A1AA", size=16))
-        self.export_btn.setToolTip("导出已翻译漫画 (点击选择导出单页或批量导出全本)")
+        self.export_btn.setIcon(get_icon("download", color="#A1A1AA", size=13))
+        self.export_btn.setToolTip("导出已翻译漫画 (点击展开单页或全本导出)")
         self.export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
         export_menu = QMenu(self)
-        act_export_curr = export_menu.addAction(get_icon("download", color="#3B82F6", size=14), "导出当前页面 (PNG / JPG / WebP / PDF)...")
+        act_export_curr = export_menu.addAction(get_icon("download", color="#0A84FF", size=14), "导出当前页面 (PNG / JPG / WebP / PDF)...")
         act_export_curr.triggered.connect(self._export_current_page)
-        act_export_all = export_menu.addAction(get_icon("folder_open", color="#10B981", size=14), "📦 批量导出全本已翻译页面...")
+        act_export_all = export_menu.addAction(get_icon("folder_open", color="#22C55E", size=14), "批量导出全本已翻译页面...")
         act_export_all.triggered.connect(self._export_all_pages)
         self.export_btn.setMenu(export_menu)
         layout.addWidget(self.export_btn)
 
-        # Batch Translate Button (Skip finished)
-        self.batch_toolbar_btn = QPushButton("批量翻译", toolbar)
-        self.batch_toolbar_btn.setIcon(get_icon("play_all", color="#3B82F6", size=16))
-        self.batch_toolbar_btn.setToolTip("批量翻译页面列表中的全部漫画图片 (自动跳过已完成页面)")
-        self.batch_toolbar_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.batch_toolbar_btn.clicked.connect(lambda: self._start_batch(force_retranslate=False))
-        layout.addWidget(self.batch_toolbar_btn)
+        layout.addSpacing(2)
 
-        # Batch Retranslate All Button (Force full retranslation)
-        self.retranslate_toolbar_btn = QPushButton("全部重新翻译", toolbar)
-        self.retranslate_toolbar_btn.setIcon(get_icon("refresh", color="#F59E0B", size=16))
-        self.retranslate_toolbar_btn.setToolTip("批量全部重新翻译，无论是否翻译过，都强制执行完整大模型翻译流程")
-        self.retranslate_toolbar_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.retranslate_toolbar_btn.clicked.connect(lambda: self._start_batch(force_retranslate=True))
-        layout.addWidget(self.retranslate_toolbar_btn)
+        # Theme Switcher
+        self.theme_btn = QToolButton(toolbar)
+        self.theme_btn.setProperty("class", "icon-action-btn")
+        self.theme_btn.setIcon(get_icon("sun" if self._current_theme == "dark" else "moon", color="#A1A1AA", size=14))
+        self.theme_btn.setToolTip("切换明暗模式")
+        self.theme_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.theme_btn.clicked.connect(self.toggle_theme)
+        layout.addWidget(self.theme_btn)
 
-        # Primary Action Button: Run Translation
-        self.run_btn = QPushButton("开始翻译", toolbar)
+        # Global Settings
+        self.settings_btn = QToolButton(toolbar)
+        self.settings_btn.setProperty("class", "icon-action-btn")
+        self.settings_btn.setIcon(get_icon("settings", color="#A1A1AA", size=14))
+        self.settings_btn.setToolTip("全局系统偏好与默认排版设置")
+        self.settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.settings_btn.clicked.connect(self._open_settings_dialog)
+        layout.addWidget(self.settings_btn)
+
+        layout.addSpacing(4)
+
+        # Primary Action Button: Translate Active Page
+        self.run_btn = QPushButton("翻译单页", toolbar)
         self.run_btn.setProperty("class", "primaryBtn")
         self.run_btn.setObjectName("primaryBtn")
-        self.run_btn.setIcon(get_icon("play", color="#FFFFFF", size=16))
-        self.run_btn.setToolTip("翻译当前选中的漫画单页")
+        self.run_btn.setMinimumWidth(88)
+        self.run_btn.setIcon(get_icon("play", color="#FFFFFF", size=13))
+        self.run_btn.setToolTip("翻译当前选中的漫画单页 (快捷键: Enter)")
         self.run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.run_btn.clicked.connect(self._on_run_clicked)
         layout.addWidget(self.run_btn)
 
+        # Keep compatibility instances
+        self.batch_toolbar_btn = QPushButton("批量", self)
+        self.batch_toolbar_btn.hide()
+        self.batch_toolbar_btn.clicked.connect(lambda: self._start_batch(force_retranslate=False))
+        self.retranslate_toolbar_btn = QPushButton("全部重翻", self)
+        self.retranslate_toolbar_btn.hide()
+        self.retranslate_toolbar_btn.clicked.connect(lambda: self._start_batch(force_retranslate=True))
+
         return toolbar
 
     def _create_status_bar(self) -> QWidget:
-        """Constructs the bottom status bar widget."""
+        """Constructs the bottom IDE status bar widget."""
         status_bar = QFrame(self)
         status_bar.setObjectName("statusBar")
-        status_bar.setFixedHeight(28)
+        status_bar.setFixedHeight(26)
 
         layout = QHBoxLayout(status_bar)
-        layout.setContentsMargins(12, 2, 12, 2)
-        layout.setSpacing(12)
+        layout.setContentsMargins(10, 1, 10, 1)
+        layout.setSpacing(10)
 
         self.status_label = QLabel("就绪", status_bar)
         self.status_label.setObjectName("statusLabel")
@@ -397,12 +426,28 @@ class MainWindow(QMainWindow):
         layout.addStretch()
 
         self.progress_bar = QProgressBar(status_bar)
-        self.progress_bar.setFixedSize(140, 8)
+        self.progress_bar.setFixedSize(120, 6)
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.progress_bar.setTextVisible(False)
         self.progress_bar.hide()
         layout.addWidget(self.progress_bar)
+
+        self.status_page_label = QLabel("PAGE: --", status_bar)
+        self.status_page_label.setStyleSheet("font-family: 'JetBrains Mono', 'Cascadia Code', monospace; font-size: 11px; color: #A1A1AA;")
+        layout.addWidget(self.status_page_label)
+
+        self.status_bubble_label = QLabel("0 BUBBLES", status_bar)
+        self.status_bubble_label.setStyleSheet("font-family: 'JetBrains Mono', 'Cascadia Code', monospace; font-size: 11px; color: #A1A1AA;")
+        layout.addWidget(self.status_bubble_label)
+
+        self.status_zoom_label = QLabel("100%", status_bar)
+        self.status_zoom_label.setStyleSheet("font-family: 'JetBrains Mono', 'Cascadia Code', monospace; font-size: 11px; color: #A1A1AA;")
+        layout.addWidget(self.status_zoom_label)
+
+        encoding_label = QLabel("UTF-8", status_bar)
+        encoding_label.setStyleSheet("font-family: 'JetBrains Mono', 'Cascadia Code', monospace; font-size: 11px; color: #71717A;")
+        layout.addWidget(encoding_label)
 
         return status_bar
 
@@ -528,6 +573,31 @@ class MainWindow(QMainWindow):
                 self.canvas_view.set_data(cv_img, translated_cv=translated, erased_cv=erased, blocks=blocks)
                 self.canvas_view.fit_in_view()
                 self.inspector_panel.set_blocks(blocks)
+
+                # Update breadcrumb and status chips
+                fname = os.path.basename(path)
+                if hasattr(self, "breadcrumb_label"):
+                    metrics = self.breadcrumb_label.fontMetrics()
+                    elided = metrics.elidedText(f"📂 {fname}", Qt.TextElideMode.ElideMiddle, 190)
+                    self.breadcrumb_label.setText(elided)
+                    self.breadcrumb_label.setToolTip(path)
+                if hasattr(self, "status_page_label"):
+                    self.status_page_label.setText(f"PAGE: {fname}")
+                if hasattr(self, "status_bubble_label"):
+                    self.status_bubble_label.setText(f"{len(blocks)} BUBBLES")
+
+    def _on_zoom_changed(self, zoom: float):
+        """Updates zoom percentage chip on status bar and status label."""
+        zoom_text = f"{int(round(zoom * 100))}%"
+        if hasattr(self, "status_zoom_label"):
+            self.status_zoom_label.setText(zoom_text)
+        if hasattr(self, "status_label"):
+            curr = self.status_label.text()
+            if "(" in curr:
+                base = curr.split("(")[0].strip()
+            else:
+                base = curr
+            self.status_label.setText(f"{base} ({zoom_text})")
 
     def _on_bubble_selected_from_canvas(self, block_data: Dict[str, Any]):
         b_id = block_data.get("id")
@@ -898,19 +968,58 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.status_label.setText(f"重排版失败: {e}")
 
-    def toggle_sidebar(self):
-        """Collapses or expands the sidebar drawer."""
+    def toggle_sidebar(self, *args, force_state: Optional[bool] = None, **kwargs):
+        """Collapses or expands the sidebar drawer and dynamically redistributes splitter width."""
         is_visible = self.sidebar_drawer.isVisible()
-        self.sidebar_drawer.setVisible(not is_visible)
-        self.nav_rail.set_collapsed_icon(is_visible)
+        new_state = (not is_visible) if force_state is None else force_state
+        if new_state == is_visible:
+            return
+
+        sizes = self.splitter.sizes()
+        nav_w = self.nav_rail.width() if hasattr(self, "nav_rail") and self.nav_rail.isVisible() else 46
+        if nav_w <= 0:
+            nav_w = 46
+
+        if not new_state:
+            # Collapsing: save current sidebar width and shrink queue_panel to nav_rail width
+            current_total_w = sizes[0] if sizes else 260
+            if current_total_w > nav_w + 50:
+                self._saved_sidebar_width = current_total_w
+            else:
+                self._saved_sidebar_width = getattr(self, "_saved_sidebar_width", 260)
+
+            self.sidebar_drawer.setVisible(False)
+            self.queue_panel.setFixedWidth(nav_w)
+            reclaimed = max(0, current_total_w - nav_w)
+            canvas_w = sizes[1] if len(sizes) > 1 else 800
+            insp_w = sizes[2] if len(sizes) > 2 else 280
+            self.splitter.setSizes([nav_w, canvas_w + reclaimed, insp_w])
+            self.nav_rail.set_collapsed_icon(True)
+            self.status_label.setText("已折叠页面列表（沉浸画布模式）")
+        else:
+            # Expanding: restore full drawer
+            target_w = getattr(self, "_saved_sidebar_width", 260)
+            target_w = max(target_w, nav_w + 180)
+            self.queue_panel.setMinimumWidth(0)
+            self.queue_panel.setMaximumWidth(16777215)
+            self.sidebar_drawer.setVisible(True)
+            current_w = sizes[0] if sizes else nav_w
+            canvas_w = sizes[1] if len(sizes) > 1 else 800
+            insp_w = sizes[2] if len(sizes) > 2 else 280
+            diff = max(0, target_w - current_w)
+            self.splitter.setSizes([target_w, max(100, canvas_w - diff), insp_w])
+            self.nav_rail.set_collapsed_icon(False)
+            self.status_label.setText("已展开页面列表")
 
     def _on_nav_rail_changed(self, key: str):
         """Handles navigation rail section switches."""
         if key == "pages":
             if not self.sidebar_drawer.isVisible():
-                self.sidebar_drawer.show()
-                self.nav_rail.set_collapsed_icon(False)
-            self.page_list.setFocus()
+                self.toggle_sidebar(force_state=True)
+            else:
+                self.toggle_sidebar(force_state=False)
+            if self.sidebar_drawer.isVisible():
+                self.page_list.setFocus()
         elif key == "inspector":
             is_vis = self.inspector_panel.isVisible()
             self.inspector_panel.setVisible(not is_vis)
@@ -1095,9 +1204,12 @@ class MainWindow(QMainWindow):
     def _re_render_all_pages(self):
         """
         Applies updated global typography settings with zero GUI freezing:
-        1. Immediately re-renders the currently viewed canvas page (< 30ms).
-        2. Invalidates stale pre-rendered bitmaps for background queue pages (< 5ms).
-        3. Background pages will be lazily rendered on-demand when selected or exported.
+        1. When a page is currently active on canvas (self.current_image_data is not None):
+           - Immediately re-renders the active page (< 30ms).
+           - Background pages are deferred: in-memory and disk rendered caches are invalidated (< 5ms)
+             and will be lazily rendered on-demand when selected or exported.
+        2. When no page is active on canvas (e.g. batch headless mode):
+           - Re-renders all pages in the chapter queue that have blocks.
         """
         items = self.page_list.items_data
         if not items:
@@ -1106,34 +1218,77 @@ class MainWindow(QMainWindow):
 
         cache_mgr = get_cache_manager()
 
-        # 1. Immediately re-render current canvas page if active
-        if self.current_image_data and self.current_image_data.get("blocks"):
-            if not self.current_image_data.get("style"):
-                self.current_image_data["style"] = self.config.style
-            self._re_render_current_page()
+        if self.current_image_data is not None:
+            # Interactive deferred mode:
+            # 1. Immediately re-render current canvas page
+            if self.current_image_data.get("blocks"):
+                if not self.current_image_data.get("style"):
+                    self.current_image_data["style"] = self.config.style
+                self._re_render_current_page()
 
-        # 2. Invalidate stale rendered caches for background pages (extremely fast, < 5ms)
+            # 2. Invalidate stale rendered caches for background pages (extremely fast, < 5ms)
+            current_path = self.current_image_data.get("path")
+            for item in items:
+                path = item.get("path")
+                if not path or path == current_path:
+                    continue
+
+                if not item.get("style"):
+                    item["translated_img"] = None
+                    paths = cache_mgr.get_cache_paths(path, create_dir=False)
+                    for r_key in ("rendered_webp", "rendered_png"):
+                        p = paths.get(r_key)
+                        if p and os.path.exists(p):
+                            try:
+                                os.remove(p)
+                            except OSError:
+                                pass
+
+            self.toast.show_message("全局文字设置已生效！当前页面已即时刷新，其余页面将在查看或导出时按需渲染。", "success")
+            self.status_label.setText("全局文字设置已生效（按需排版模式，零等待）")
+            return
+
+        # Headless / full batch re-render mode (no active canvas item)
+        re_rendered_count = 0
         for item in items:
             path = item.get("path")
-            if not path:
+            if not path or not os.path.exists(path):
                 continue
 
-            # Clear in-memory baked image so next selection re-renders with new style
-            item["translated_img"] = None
+            blocks = item.get("blocks")
+            if not blocks:
+                cached = cache_mgr.load_page_cache(path, load_images=False)
+                blocks = cached.get("blocks")
+            if not blocks:
+                continue
 
-            # If page doesn't have a page-level custom style override, invalidate old rendered disk cache
-            if not item.get("style"):
-                paths = cache_mgr.get_cache_paths(path, create_dir=False)
-                for r_key in ("rendered_webp", "rendered_png"):
-                    p = paths.get(r_key)
-                    if p and os.path.exists(p):
-                        try:
-                            os.remove(p)
-                        except OSError:
-                            pass
+            erased_img = item.get("erased_img")
+            if erased_img is None:
+                cached_full = cache_mgr.load_page_cache(path, load_images=True)
+                erased_img = cached_full.get("erased_img")
+            if erased_img is None:
+                erased_img = safe_cv2_imread(path)
+            if erased_img is None:
+                continue
 
-        self.toast.show_message("全局文字设置已生效！当前页面已即时刷新，其余页面将在查看或导出时按需渲染。", "success")
-        self.status_label.setText("全局文字设置已生效（按需排版模式，零等待）")
+            model_blocks = [
+                b if isinstance(b, TranslationBlock) else TranslationBlock.from_dict(b)
+                for b in blocks
+            ]
+            effective_style = item.get("style") or self.config.style
+            try:
+                rendered = self.typo_engine.render_page(erased_img, model_blocks, effective_style)
+                item["translated_img"] = rendered
+                cache_mgr.save_page_cache(path, erased_img=erased_img, blocks=model_blocks, rendered_img=rendered)
+                re_rendered_count += 1
+            except Exception as e:
+                print(f"[-] Re-render page error for {path}: {e}")
+
+        if re_rendered_count > 0:
+            self.toast.show_message(f"全局文字设置已生效，已重新渲染全部 {re_rendered_count} 个页面！", "success")
+            self.status_label.setText(f"排版重绘完成: 全部 {re_rendered_count} 个页面已重新渲染并保存")
+        else:
+            self.toast.show_message("全局设置已保存（尚未识别翻译的页面将在翻译时自动套用新排版）", "info")
 
     def _re_render_single_page(self, item_data: Dict[str, Any], page_style: Optional[StyleConfig]):
         """

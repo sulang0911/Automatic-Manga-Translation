@@ -63,28 +63,32 @@ class CanvasZoomHud(QFrame):
         self.setObjectName("canvasZoomHud")
         self.setStyleSheet("""
             #canvasZoomHud {
-                background-color: rgba(24, 24, 27, 0.88);
-                border: 1px solid rgba(255, 255, 255, 0.15);
-                border-radius: 14px;
+                background-color: rgba(24, 24, 28, 0.90);
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 6px;
             }
             QToolButton {
-                color: #D4D4D8;
+                color: #ECECEF;
                 background: transparent;
-                border: none;
-                padding: 4px 6px;
+                border: 1px solid transparent;
+                padding: 3px 6px;
                 font-size: 11px;
+                font-weight: 500;
                 border-radius: 4px;
             }
             QToolButton:hover {
-                background: rgba(255, 255, 255, 0.15);
+                background: rgba(255, 255, 255, 0.08);
+                border-color: rgba(255, 255, 255, 0.06);
                 color: #FFFFFF;
             }
             QToolButton:checked {
-                background: #2563EB;
+                background: #0A84FF;
+                border-color: #0071E3;
                 color: #FFFFFF;
             }
             QLabel {
-                color: #E4E4E7;
+                color: #ECECEF;
+                font-family: "JetBrains Mono", "SF Mono", monospace;
                 font-size: 11px;
                 font-weight: 600;
                 padding: 0 4px;
@@ -92,12 +96,14 @@ class CanvasZoomHud(QFrame):
         """)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 3, 8, 3)
+        layout.setContentsMargins(6, 3, 6, 3)
         layout.setSpacing(4)
 
         # Draw tool button
         self.btn_draw = QToolButton(self)
-        self.btn_draw.setText("➕ 框选 (R)")
+        self.btn_draw.setIcon(get_icon("crop", color="#A1A1AA", active_color="#FFFFFF", size=13))
+        self.btn_draw.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.btn_draw.setText("框选 (R)")
         self.btn_draw.setCheckable(True)
         self.btn_draw.setToolTip("手动在画布上拖拽框选新建空文字框 (快捷键: R)")
         self.btn_draw.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -106,7 +112,9 @@ class CanvasZoomHud(QFrame):
 
         # OCR & Translate tool button
         self.btn_ocr_draw = QToolButton(self)
-        self.btn_ocr_draw.setText("🔍 框选识别 (O)")
+        self.btn_ocr_draw.setIcon(get_icon("sparkles", color="#0A84FF", active_color="#FFFFFF", size=13))
+        self.btn_ocr_draw.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.btn_ocr_draw.setText("框选识别 (O)")
         self.btn_ocr_draw.setCheckable(True)
         self.btn_ocr_draw.setToolTip("手动框选文字区域，立即执行 OCR 识别与大模型翻译 (快捷键: O)")
         self.btn_ocr_draw.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -116,13 +124,14 @@ class CanvasZoomHud(QFrame):
         # Separator line
         sep = QFrame(self)
         sep.setFrameShape(QFrame.Shape.VLine)
-        sep.setStyleSheet("color: rgba(255, 255, 255, 0.2);")
+        sep.setStyleSheet("color: rgba(255, 255, 255, 0.15);")
         layout.addWidget(sep)
 
         # Zoom controls
         self.btn_zoom_out = QToolButton(self)
-        self.btn_zoom_out.setText("−")
-        self.btn_zoom_out.setToolTip("缩小")
+        self.btn_zoom_out.setIcon(get_icon("zoom_out", color="#A1A1AA", size=12))
+        self.btn_zoom_out.setToolTip("缩小 (Ctrl+-)")
+        self.btn_zoom_out.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_zoom_out.clicked.connect(self.sig_zoom_out.emit)
         layout.addWidget(self.btn_zoom_out)
 
@@ -130,20 +139,27 @@ class CanvasZoomHud(QFrame):
         layout.addWidget(self.zoom_lbl)
 
         self.btn_zoom_in = QToolButton(self)
-        self.btn_zoom_in.setText("+")
-        self.btn_zoom_in.setToolTip("放大")
+        self.btn_zoom_in.setIcon(get_icon("zoom_in", color="#A1A1AA", size=12))
+        self.btn_zoom_in.setToolTip("放大 (Ctrl+=)")
+        self.btn_zoom_in.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_zoom_in.clicked.connect(self.sig_zoom_in.emit)
         layout.addWidget(self.btn_zoom_in)
 
         self.btn_fit = QToolButton(self)
+        self.btn_fit.setIcon(get_icon("fit_window", color="#A1A1AA", size=12))
+        self.btn_fit.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.btn_fit.setText("适应")
-        self.btn_fit.setToolTip("适应窗口")
+        self.btn_fit.setToolTip("适应窗口大小 (Ctrl+F)")
+        self.btn_fit.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_fit.clicked.connect(self.sig_zoom_fit.emit)
         layout.addWidget(self.btn_fit)
 
         self.btn_reset = QToolButton(self)
+        self.btn_reset.setIcon(get_icon("actual_size", color="#A1A1AA", size=12))
+        self.btn_reset.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.btn_reset.setText("1:1")
-        self.btn_reset.setToolTip("恢复实际大小 100%")
+        self.btn_reset.setToolTip("恢复实际大小 100% (Ctrl+0)")
+        self.btn_reset.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_reset.clicked.connect(self.sig_zoom_reset.emit)
         layout.addWidget(self.btn_reset)
 

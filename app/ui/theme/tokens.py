@@ -39,54 +39,58 @@ class ThemeTokens:
 
 DARK_TOKENS = ThemeTokens(
     name="dark",
-    bg_base="#18181B",
-    bg_sidebar="#121214",
-    bg_surface="#202024",
-    bg_surface_hover="#27272D",
-    bg_surface_active="#323238",
-    border_subtle="rgba(255, 255, 255, 0.10)",
-    border_focus="#3B82F6",
-    text_primary="#F4F4F5",
-    text_secondary="#D4D4D8",     # High contrast (contrast ~10:1 on #18181B)
-    text_muted="#A1A1AA",         # WCAG AA compliant (contrast > 5.5:1 on #18181B)
-    accent_primary="#3B82F6",
-    accent_hover="#2563EB",
-    accent_subtle="rgba(59, 130, 246, 0.18)",
-    status_success="#10B981",
-    status_warning="#F59E0B",
-    status_error="#EF4444",
-    canvas_bg="#141416",
-    radius_sm=6,
-    radius_md=10,
-    radius_lg=12,
-    radius_pill=9999,
+    bg_base="#18181B",            # Deep matte neutral workspace base
+    bg_sidebar="#121214",         # Activity Rail & Explorer deep dark strip
+    bg_surface="#202024",         # Panels, Cards, Inspector Tool Windows
+    bg_surface_hover="#28282D",   # Smooth hover state
+    bg_surface_active="#323238",  # Active / Pressed state
+    border_subtle="#2A2A2E",      # Crisp 1px hairline panel border
+    border_focus="#3B82F6",       # Electric Blue focus
+    text_primary="#ECECEF",       # High readability crisp foreground
+    text_secondary="#A1A1AA",     # Neutral secondary text (contrast > 6:1)
+    text_muted="#71717A",         # Subtitle & placeholder text
+    accent_primary="#3B82F6",     # Apple System Electric Blue
+    accent_hover="#2563EB",       # Slightly darker Apple blue hover
+    accent_subtle="rgba(59, 130, 246, 0.14)",
+    status_success="#22C55E",     # Emerald green
+    status_warning="#F59E0B",     # Warm amber
+    status_error="#EF4444",       # Rose / Red
+    canvas_bg="#101012",          # Deep matte editor canvas
+    radius_sm=4,                  # Precise pro tool button & input radius
+    radius_md=6,                  # Tool window / card radius
+    radius_lg=12,                 # Dialog radius
+    radius_pill=9999,             # Badges & floating pills
     border_width=1,
+    font_family='-apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif',
+    font_mono='"JetBrains Mono", "SF Mono", "Cascadia Code", "Fira Code", monospace',
 )
 
 LIGHT_TOKENS = ThemeTokens(
     name="light",
-    bg_base="#F8F9FA",
-    bg_sidebar="#F0F1F3",
-    bg_surface="#FFFFFF",
-    bg_surface_hover="#F4F4F6",
-    bg_surface_active="#EAECEF",
-    border_subtle="rgba(0, 0, 0, 0.10)",
-    border_focus="#2563EB",
-    text_primary="#0F172A",       # Slate-900 (contrast > 14:1 on white)
-    text_secondary="#334155",     # Slate-700 (contrast > 8.5:1 on white)
-    text_muted="#64748B",         # Slate-500 (contrast > 4.6:1 on white, passes WCAG AA)
-    accent_primary="#2563EB",     # Blue-600 (contrast > 5.0:1 on white)
-    accent_hover="#1D4ED8",
-    accent_subtle="rgba(37, 99, 235, 0.12)",
-    status_success="#059669",
+    bg_base="#F8F9FA",            # Studio Light base
+    bg_sidebar="#EBEBED",         # Activity Rail & Explorer light strip
+    bg_surface="#FFFFFF",         # Pure white cards & inspector
+    bg_surface_hover="#F2F2F7",   # Subtle hover
+    bg_surface_active="#E5E5EA",  # Active / Pressed state
+    border_subtle="#D1D1D6",      # Crisp 1px hairline border
+    border_focus="#2563EB",       # Blue focus
+    text_primary="#1D1D1F",       # macOS primary dark text
+    text_secondary="#6E6E73",     # macOS secondary text
+    text_muted="#86868B",         # Muted tertiary text
+    accent_primary="#2563EB",     # System Blue
+    accent_hover="#1D4ED8",       # Darker blue
+    accent_subtle="rgba(37, 99, 235, 0.10)",
+    status_success="#10B981",
     status_warning="#D97706",
-    status_error="#DC2626",
-    canvas_bg="#E2E8F0",
-    radius_sm=6,
-    radius_md=10,
-    radius_lg=12,
+    status_error="#EF4444",
+    canvas_bg="#E5E5EA",
+    radius_sm=4,
+    radius_md=6,
+    radius_lg=10,
     radius_pill=9999,
     border_width=1,
+    font_family='-apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif',
+    font_mono='"JetBrains Mono", "SF Mono", "Cascadia Code", "Fira Code", monospace',
 )
 
 THEMES: Dict[str, ThemeTokens] = {
@@ -102,15 +106,15 @@ def get_tokens(theme_name: str = "dark") -> ThemeTokens:
 
 def build_stylesheet(tokens: ThemeTokens) -> str:
     """
-    Generates a complete QSS stylesheet conforming to Apple HIG design principles.
-    Uses precise 1px borders, subtle surface contrast, and elegant rounded cards.
-    Fully unifies all sub-panels, controls, drop zones, toolbars, and status bars.
+    Generates a complete QSS stylesheet conforming to Professional IDE design principles
+    (VS Code, JetBrains, Linear). Features crisp 1px hairline borders, compact geometry (3-4px radius),
+    high-density panels, developer monospace tags, and sharp state feedback.
     """
     return f"""
     /* Global Application Reset & Typography */
     QWidget {{
         font-family: {tokens.font_family};
-        font-size: 13px;
+        font-size: 12px;
         color: {tokens.text_primary};
         background-color: transparent;
         selection-background-color: {tokens.accent_primary};
@@ -122,11 +126,12 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
         background-color: {tokens.bg_base};
     }}
 
-    /* Card Containers & Panels */
-    QFrame[class="card"], QWidget[class="card"] {{
+    /* Card Containers & Tool Windows */
+    QFrame[class="card"], QWidget[class="card"],
+    QFrame#cardFrame, QFrame#sidebarCard, QFrame#inspectorCard {{
         background-color: {tokens.bg_surface};
         border: {tokens.border_width}px solid {tokens.border_subtle};
-        border-radius: {tokens.radius_lg}px;
+        border-radius: {tokens.radius_md}px;
     }}
 
     QFrame[class="sidebar"] {{
@@ -134,36 +139,40 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
         border-right: {tokens.border_width}px solid {tokens.border_subtle};
     }}
 
-    /* Vertical Navigation Rail */
+    /* Vertical Navigation Activity Rail (VS Code / Fleet Activity Bar) */
     #navRail {{
         background-color: {tokens.bg_sidebar};
         border-right: {tokens.border_width}px solid {tokens.border_subtle};
+        min-width: 46px;
+        max-width: 46px;
     }}
 
     #navRail QToolButton {{
         background: transparent;
         border: none;
-        border-radius: {tokens.radius_sm}px;
-        padding: 8px;
-        margin: 4px 0px;
+        border-left: 2px solid transparent;
+        border-radius: 0px;
+        padding: 9px 6px;
+        margin: 2px 0px;
         color: {tokens.text_secondary};
     }}
 
     #navRail QToolButton:hover {{
-        background-color: {tokens.bg_surface_active};
+        background-color: {tokens.bg_surface_hover};
         color: {tokens.text_primary};
     }}
 
     #navRail QToolButton:checked {{
-        background-color: {tokens.accent_subtle};
+        background-color: {tokens.bg_surface};
+        border-left: 2px solid {tokens.accent_primary};
         color: {tokens.accent_primary};
     }}
 
-    /* Action Toolbar & Controls */
+    /* Action Command Bar & Toolbar */
     QFrame[class="toolbar"] {{
         background-color: {tokens.bg_surface};
         border-bottom: {tokens.border_width}px solid {tokens.border_subtle};
-        padding: 4px 12px;
+        padding: 2px 8px;
     }}
 
     /* Slider Bar for Split Comparison */
@@ -172,34 +181,35 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
         border-top: {tokens.border_width}px solid {tokens.border_subtle};
     }}
 
-    /* Bottom Status Bar */
+    /* Bottom IDE Status Bar */
     #statusBar {{
-        background-color: {tokens.bg_sidebar};
+        background-color: {tokens.bg_base};
         border-top: {tokens.border_width}px solid {tokens.border_subtle};
-        padding: 0px 12px;
+        padding: 0px 8px;
     }}
 
-    #statusLabel {{
+    #statusLabel, .ide-status-text {{
+        font-family: {tokens.font_mono};
         font-size: 11px;
         color: {tokens.text_secondary};
     }}
 
-    /* Segmented Viewport Controls */
+    /* Segmented Viewport Controls (IDE Editor Tab Style) */
     #segmentedControl {{
-        background-color: {tokens.bg_surface_active};
+        background-color: {tokens.bg_base};
         border: {tokens.border_width}px solid {tokens.border_subtle};
         border-radius: {tokens.radius_sm}px;
-        padding: 2px;
+        padding: 1px;
     }}
 
     QToolButton[class="segment-btn"] {{
         background-color: transparent;
         color: {tokens.text_secondary};
         border: none;
-        border-radius: 4px;
-        padding: 4px 10px;
+        border-radius: {tokens.radius_sm}px;
+        padding: 3px 8px;
         font-weight: 500;
-        font-size: 12px;
+        font-size: 11px;
     }}
 
     QToolButton[class="segment-btn"]:hover {{
@@ -219,7 +229,8 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
         color: {tokens.text_primary};
         border: {tokens.border_width}px solid {tokens.border_subtle};
         border-radius: {tokens.radius_sm}px;
-        padding: 6px 14px;
+        padding: 4px 10px;
+        font-size: 12px;
         font-weight: 500;
     }}
 
@@ -230,35 +241,66 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
 
     QPushButton:pressed {{
         background-color: {tokens.accent_subtle};
+        border-color: {tokens.border_focus};
     }}
 
     QPushButton:disabled {{
         color: {tokens.text_muted};
-        background-color: {tokens.bg_surface};
+        background-color: {tokens.bg_base};
         border-color: transparent;
     }}
 
     QPushButton[class="primaryBtn"], QPushButton#primaryBtn {{
         background-color: {tokens.accent_primary};
         color: #FFFFFF;
-        border: none;
+        border: 1px solid {tokens.accent_hover};
         font-weight: 600;
     }}
 
     QPushButton[class="primaryBtn"]:hover, QPushButton#primaryBtn:hover {{
         background-color: {tokens.accent_hover};
+        border-color: {tokens.accent_hover};
     }}
 
     QPushButton[class="primaryBtn"]:pressed, QPushButton#primaryBtn:pressed {{
         background-color: {tokens.accent_hover};
     }}
 
+    /* Compact Pro Tool & Icon-Only Buttons */
+    QToolButton[class="icon-action-btn"], QPushButton[class="icon-action-btn"],
+    .icon-btn {{
+        background-color: transparent;
+        color: {tokens.text_secondary};
+        border: 1px solid transparent;
+        border-radius: {tokens.radius_sm}px;
+        padding: 4px;
+        min-width: 26px;
+        min-height: 26px;
+    }}
+
+    QToolButton[class="icon-action-btn"]:hover, QPushButton[class="icon-action-btn"]:hover,
+    .icon-btn:hover {{
+        background-color: {tokens.bg_surface_hover};
+        border-color: {tokens.border_subtle};
+        color: {tokens.text_primary};
+    }}
+
+    QToolButton[class="icon-action-btn"]:pressed, QPushButton[class="icon-action-btn"]:pressed,
+    .icon-btn:pressed {{
+        background-color: {tokens.bg_surface_active};
+    }}
+
     /* Drop Zone */
     #dropZone {{
-        border: 2px dashed {tokens.border_focus};
+        border: 1px dashed {tokens.border_subtle};
         border-radius: {tokens.radius_md}px;
+        background-color: rgba(255, 255, 255, 0.02);
+        padding: 12px;
+    }}
+
+    #dropZone:hover {{
+        border-color: {tokens.border_focus};
         background-color: {tokens.accent_subtle};
-        padding: 16px;
     }}
 
     #dropZoneTitle {{
@@ -272,36 +314,40 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
         color: {tokens.text_muted};
     }}
 
-    /* Count Badge */
-    #countBadge {{
+    /* Count & Monospace Status Badges */
+    #countBadge, .ide-badge {{
+        font-family: {tokens.font_mono};
         background-color: {tokens.accent_subtle};
         color: {tokens.accent_primary};
-        border-radius: {tokens.radius_pill}px;
-        padding: 1px 8px;
-        font-size: 11px;
+        border: 1px solid {tokens.border_subtle};
+        border-radius: {tokens.radius_sm}px;
+        padding: 1px 6px;
+        font-size: 10px;
         font-weight: 600;
     }}
 
     /* Detail Frame in Inspector */
     #detailFrame {{
-        background-color: {tokens.bg_surface_hover};
+        background-color: {tokens.bg_base};
         border: {tokens.border_width}px solid {tokens.border_subtle};
         border-radius: {tokens.radius_sm}px;
         padding: 6px;
     }}
 
     #blockTitle {{
+        font-family: {tokens.font_mono};
         font-weight: 600;
-        font-size: 12px;
+        font-size: 11px;
         color: {tokens.accent_primary};
     }}
 
     #sizeValLabel {{
+        font-family: {tokens.font_mono};
         color: {tokens.accent_primary};
         font-weight: bold;
     }}
 
-    /* Scrollbars */
+    /* Scrollbars (VS Code Flat Hairline Scrollbar) */
     QScrollBar:vertical {{
         border: none;
         background: transparent;
@@ -310,13 +356,13 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
     }}
 
     QScrollBar::handle:vertical {{
-        background: {tokens.border_subtle};
-        min-height: 24px;
-        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.14);
+        min-height: 20px;
+        border-radius: 2px;
     }}
 
     QScrollBar::handle:vertical:hover {{
-        background: {tokens.text_muted};
+        background: rgba(255, 255, 255, 0.28);
     }}
 
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
@@ -331,20 +377,20 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
     }}
 
     QScrollBar::handle:horizontal {{
-        background: {tokens.border_subtle};
-        min-width: 24px;
-        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.14);
+        min-width: 20px;
+        border-radius: 2px;
     }}
 
     QScrollBar::handle:horizontal:hover {{
-        background: {tokens.text_muted};
+        background: rgba(255, 255, 255, 0.28);
     }}
 
     QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
         width: 0px;
     }}
 
-    /* QListWidget and Table Items */
+    /* QListWidget and Explorer Items */
     QListWidget {{
         background-color: transparent;
         border: none;
@@ -352,10 +398,11 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
     }}
 
     QListWidget::item {{
-        padding: 8px 10px;
-        border-radius: {tokens.radius_md}px;
-        margin: 2px 4px;
+        padding: 6px 8px;
+        border-radius: {tokens.radius_sm}px;
+        margin: 1px 2px;
         color: {tokens.text_primary};
+        border: 1px solid transparent;
     }}
 
     QListWidget::item:hover {{
@@ -364,39 +411,41 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
 
     QListWidget::item:selected {{
         background-color: {tokens.accent_subtle};
-        color: {tokens.accent_primary};
-        font-weight: 600;
+        color: {tokens.text_primary};
+        font-weight: 500;
         border: 1px solid {tokens.border_focus};
     }}
 
-    /* Text Inputs */
+    /* Code Editor Inputs & Text Areas */
     QLineEdit, QTextEdit, QPlainTextEdit {{
-        background-color: {tokens.bg_surface_hover};
+        background-color: {tokens.bg_base};
         color: {tokens.text_primary};
         border: {tokens.border_width}px solid {tokens.border_subtle};
         border-radius: {tokens.radius_sm}px;
-        padding: 6px 10px;
+        padding: 5px 8px;
+        font-family: {tokens.font_mono};
+        font-size: 12px;
     }}
 
     QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {{
         border-color: {tokens.border_focus};
-        background-color: {tokens.bg_surface};
+        background-color: #101012;
     }}
 
-    /* QMenu - Context Menus and Cascading Submenus (一级与二级右键菜单) */
+    /* QMenu - Context Menus and Cascading Submenus */
     QMenu {{
         background-color: {tokens.bg_surface};
         color: {tokens.text_primary};
-        border: 1px solid {tokens.border_focus};
+        border: 1px solid {tokens.border_subtle};
         border-radius: {tokens.radius_sm}px;
-        padding: 4px;
+        padding: 3px;
     }}
 
     QMenu::item {{
         background-color: transparent;
         color: {tokens.text_primary};
-        padding: 6px 26px 6px 12px;
-        border-radius: 4px;
+        padding: 5px 22px 5px 10px;
+        border-radius: {tokens.radius_sm}px;
         font-size: 12px;
         min-width: 140px;
     }}
@@ -414,21 +463,22 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
     QMenu::separator {{
         height: 1px;
         background-color: {tokens.border_subtle};
-        margin: 4px 6px;
+        margin: 3px 4px;
     }}
 
     QMenu::right-arrow {{
-        margin-right: 8px;
+        margin-right: 6px;
     }}
 
-    /* Dropdown Combo Boxes (二级下拉列表) */
+    /* Dropdown Combo Boxes */
     QComboBox {{
-        background-color: {tokens.bg_surface_hover};
+        background-color: {tokens.bg_base};
         color: {tokens.text_primary};
         border: {tokens.border_width}px solid {tokens.border_subtle};
         border-radius: {tokens.radius_sm}px;
-        padding: 5px 10px;
-        min-height: 22px;
+        padding: 3px 8px;
+        min-height: 20px;
+        font-size: 11px;
     }}
 
     QComboBox:focus, QComboBox:hover {{
@@ -438,21 +488,19 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
     QComboBox::drop-down {{
         subcontrol-origin: padding;
         subcontrol-position: top right;
-        width: 24px;
+        width: 20px;
         border-left-width: 0px;
-        border-top-right-radius: {tokens.radius_sm}px;
-        border-bottom-right-radius: {tokens.radius_sm}px;
     }}
 
-    /* QComboBox Popup Container & Item View (100% Solid Opaque Surface) */
+    /* QComboBox Popup Container */
     QComboBoxPrivateContainer,
     QComboBox QAbstractItemView,
     QComboBox QListView {{
         background-color: {tokens.bg_surface};
         color: {tokens.text_primary};
-        border: 1px solid {tokens.border_focus};
+        border: 1px solid {tokens.border_subtle};
         border-radius: {tokens.radius_sm}px;
-        padding: 4px;
+        padding: 2px;
         selection-background-color: {tokens.accent_primary};
         selection-color: #FFFFFF;
         outline: none;
@@ -462,9 +510,9 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
     QComboBox QListView::item {{
         background-color: transparent;
         color: {tokens.text_primary};
-        min-height: 26px;
-        padding: 4px 10px;
-        border-radius: 4px;
+        min-height: 24px;
+        padding: 3px 8px;
+        border-radius: 2px;
     }}
 
     QComboBox QAbstractItemView::item:hover,
@@ -479,98 +527,104 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
         color: #FFFFFF;
     }}
 
-    /* Tabs */
+    /* IDE Flat Tool Tabs */
     QTabWidget::pane {{
         border: {tokens.border_width}px solid {tokens.border_subtle};
-        border-radius: {tokens.radius_sm}px;
+        border-radius: 0px;
         background-color: {tokens.bg_surface};
     }}
 
     QTabBar::tab {{
-        background-color: {tokens.bg_surface_hover};
+        background-color: {tokens.bg_base};
         color: {tokens.text_secondary};
-        border-top-left-radius: {tokens.radius_sm}px;
-        border-top-right-radius: {tokens.radius_sm}px;
-        padding: 6px 12px;
-        margin-right: 2px;
-        font-size: 12px;
+        border: 1px solid transparent;
+        border-bottom: 2px solid transparent;
+        padding: 5px 12px;
+        margin-right: 1px;
+        font-size: 11px;
         font-weight: 500;
     }}
 
     QTabBar::tab:selected {{
         background-color: {tokens.bg_surface};
-        color: {tokens.accent_primary};
+        color: {tokens.text_primary};
         font-weight: 600;
-        border: {tokens.border_width}px solid {tokens.border_subtle};
-        border-bottom-color: transparent;
+        border-bottom: 2px solid {tokens.accent_primary};
     }}
 
-    /* Group Box */
+    QTabBar::tab:hover:!selected {{
+        background-color: {tokens.bg_surface_hover};
+        color: {tokens.text_primary};
+    }}
+
+    /* Group Box (IDE Tool Window Foldout Section) */
     QGroupBox {{
         border: {tokens.border_width}px solid {tokens.border_subtle};
-        border-radius: {tokens.radius_md}px;
-        margin-top: 14px;
-        padding-top: 10px;
-        color: {tokens.text_primary};
+        border-radius: {tokens.radius_sm}px;
+        margin-top: 12px;
+        padding-top: 8px;
+        color: {tokens.text_secondary};
+        font-size: 11px;
         font-weight: 600;
     }}
 
     QGroupBox::title {{
         subcontrol-origin: margin;
-        left: 10px;
+        left: 8px;
         padding: 0 4px;
         color: {tokens.text_primary};
     }}
 
     /* Sliders */
     QSlider::groove:horizontal {{
-        height: 4px;
+        height: 3px;
         background: {tokens.border_subtle};
-        border-radius: 2px;
+        border-radius: 1px;
     }}
 
     QSlider::sub-page:horizontal {{
         background: {tokens.accent_primary};
-        border-radius: 2px;
+        border-radius: 1px;
     }}
 
     QSlider::handle:horizontal {{
         background: #FFFFFF;
         border: 2px solid {tokens.accent_primary};
-        width: 16px;
-        margin-top: -6px;
-        margin-bottom: -6px;
-        border-radius: 8px;
+        width: 12px;
+        margin-top: -5px;
+        margin-bottom: -5px;
+        border-radius: 6px;
     }}
 
     /* Progress Bar */
     QProgressBar {{
-        background-color: {tokens.bg_surface_hover};
+        background-color: {tokens.bg_base};
         border: {tokens.border_width}px solid {tokens.border_subtle};
-        border-radius: {tokens.radius_pill}px;
-        height: 8px;
+        border-radius: 2px;
+        height: 6px;
         text-align: center;
-        font-size: 10px;
+        font-size: 9px;
         color: {tokens.text_primary};
     }}
 
     QProgressBar::chunk {{
         background-color: {tokens.accent_primary};
-        border-radius: {tokens.radius_pill}px;
+        border-radius: 1px;
     }}
 
     /* CheckBox */
     QCheckBox {{
         spacing: 6px;
+        font-size: 11px;
         color: {tokens.text_primary};
     }}
 
     QCheckBox::indicator {{
-        width: 16px;
-        height: 16px;
-        border-radius: 4px;
+        width: 14px;
+        height: 14px;
+        border-radius: 2px;
         border: {tokens.border_width}px solid {tokens.border_subtle};
-        background-color: {tokens.bg_surface_hover};
+        background-color: {tokens.bg_base};
     }}
 
     QCheckBox::indicator:checked {{
@@ -584,13 +638,18 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
         color: {tokens.text_primary};
         border: {tokens.border_width}px solid {tokens.border_subtle};
         border-radius: {tokens.radius_sm}px;
-        padding: 5px 8px;
+        padding: 4px 6px;
         font-size: 11px;
+        font-family: {tokens.font_family};
     }}
 
-    /* Splitter */
+    /* Splitter (1px crisp IDE pane separator) */
     QSplitter::handle {{
         background-color: {tokens.border_subtle};
+    }}
+
+    QSplitter::handle:hover {{
+        background-color: {tokens.border_focus};
     }}
 
     QSplitter::handle:horizontal {{
@@ -599,5 +658,12 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
 
     QSplitter::handle:vertical {{
         height: 1px;
+    }}
+
+    /* Floating Canvas Zoom HUD */
+    #canvasZoomHud {{
+        background-color: rgba(24, 24, 27, 0.92);
+        border: 1px solid {tokens.border_subtle};
+        border-radius: {tokens.radius_md}px;
     }}
     """

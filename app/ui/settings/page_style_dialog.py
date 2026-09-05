@@ -71,37 +71,37 @@ class PageStyleDialog(QDialog):
         header.setObjectName("pageStyleHeader")
         header.setStyleSheet("""
             #pageStyleHeader {
-                background-color: rgba(255, 255, 255, 0.04);
-                border: 1px solid rgba(255, 255, 255, 0.08);
-                border-radius: 8px;
-                padding: 8px 12px;
+                background-color: #1E1E22;
+                border: 1px solid #2D2D32;
+                border-radius: 4px;
+                padding: 6px 10px;
             }
         """)
         h_layout = QHBoxLayout(header)
-        h_layout.setContentsMargins(8, 6, 8, 6)
-        h_layout.setSpacing(12)
+        h_layout.setContentsMargins(6, 4, 6, 4)
+        h_layout.setSpacing(10)
 
         # Thumbnail
         self.thumb_lbl = QLabel(header)
-        self.thumb_lbl.setFixedSize(40, 52)
-        self.thumb_lbl.setStyleSheet("background: rgba(0,0,0,0.2); border-radius: 4px;")
+        self.thumb_lbl.setFixedSize(36, 48)
+        self.thumb_lbl.setStyleSheet("background: #141416; border-radius: 2px; border: 1px solid #2D2D32;")
         self.thumb_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         path = self.item_data.get("path", "")
         if path and os.path.exists(path):
             pix = QPixmap(path)
             if not pix.isNull():
-                self.thumb_lbl.setPixmap(pix.scaled(40, 52, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+                self.thumb_lbl.setPixmap(pix.scaled(36, 48, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
         h_layout.addWidget(self.thumb_lbl)
 
         info_col = QVBoxLayout()
         info_col.setSpacing(2)
         name_lbl = QLabel(os.path.basename(path), header)
-        name_lbl.setStyleSheet("font-weight: 600; font-size: 13px; color: #FFFFFF;")
+        name_lbl.setStyleSheet("font-family: 'JetBrains Mono', 'Cascadia Code', monospace; font-weight: 600; font-size: 12px; color: #ECECEF;")
         info_col.addWidget(name_lbl)
 
         tip_lbl = QLabel("为本张漫画单页定制独立文字排版，点击【应用】仅对此页生效，不影响其他页面。", header)
         tip_lbl.setWordWrap(True)
-        tip_lbl.setStyleSheet("font-size: 11px; opacity: 0.7;")
+        tip_lbl.setStyleSheet("font-size: 11px; color: #71717A;")
         info_col.addWidget(tip_lbl)
         h_layout.addLayout(info_col, 1)
 
@@ -110,7 +110,7 @@ class PageStyleDialog(QDialog):
         # Enable Independent Override Checkbox
         self.override_cb = QCheckBox("启用本页独立排版 (覆盖全局设置)", self)
         self.override_cb.setChecked(self.has_custom_override)
-        self.override_cb.setStyleSheet("font-weight: 600; font-size: 12px; color: #3B82F6;")
+        self.override_cb.setStyleSheet("font-weight: 600; font-size: 12px; color: #007ACC;")
         self.override_cb.toggled.connect(self._on_override_toggled)
         main_layout.addWidget(self.override_cb)
 

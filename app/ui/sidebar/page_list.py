@@ -248,27 +248,27 @@ class PageListWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
 
-        # Header Bar
+        # Header Bar (IDE Explorer Header)
         header = QWidget(self)
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(8, 6, 8, 4)
+        header_layout.setContentsMargins(6, 4, 6, 4)
         header_layout.setSpacing(6)
 
-        title = QLabel("章节页面", header)
-        title.setStyleSheet("font-weight: 600; font-size: 13px;")
+        title = QLabel("EXPLORER / 章节页面", header)
+        title.setStyleSheet("font-weight: 700; font-size: 11px; color: #A1A1AA; letter-spacing: 0.5px;")
         header_layout.addWidget(title)
 
-        self.count_badge = QLabel("0 页", header)
+        self.count_badge = QLabel("0", header)
         self.count_badge.setObjectName("countBadge")
         header_layout.addWidget(self.count_badge)
         header_layout.addStretch()
 
         # Add Files / Folder Button
         self.add_btn = QToolButton(header)
-        self.add_btn.setIcon(get_icon("folder_open", color="#3B82F6", size=14))
+        self.add_btn.setIcon(get_icon("folder_open", color="#007ACC", size=14))
         self.add_btn.setToolTip("添加图片文件或漫画文件夹")
         self.add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.add_btn.setStyleSheet("border: none; background: transparent;")
+        self.add_btn.setStyleSheet("border: none; background: transparent; padding: 2px;")
         self.add_btn.clicked.connect(self._on_add_clicked)
         header_layout.addWidget(self.add_btn)
 
@@ -276,7 +276,7 @@ class PageListWidget(QWidget):
         self.clear_btn.setIcon(get_icon("trash", color="#A1A1AA", size=14))
         self.clear_btn.setToolTip("清空页面列表")
         self.clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.clear_btn.setStyleSheet("border: none; background: transparent;")
+        self.clear_btn.setStyleSheet("border: none; background: transparent; padding: 2px;")
         self.clear_btn.clicked.connect(self.clear_all)
         header_layout.addWidget(self.clear_btn)
 
@@ -292,50 +292,54 @@ class PageListWidget(QWidget):
         self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
         layout.addWidget(self.list_widget, 1)
 
-        # Batch Translate Buttons
+        # Batch Translate Buttons (Pro Developer / Design Action Strip)
         btn_layout = QVBoxLayout()
-        btn_layout.setContentsMargins(4, 2, 4, 4)
-        btn_layout.setSpacing(4)
+        btn_layout.setContentsMargins(2, 4, 2, 4)
+        btn_layout.setSpacing(5)
 
-        self.batch_btn = QPushButton("🚀 批量翻译 (跳过已完成)", self)
+        self.batch_btn = QPushButton("批量翻译全部 (跳过已完成)", self)
+        self.batch_btn.setIcon(get_icon("play_all", color="#FFFFFF", size=13))
         self.batch_btn.setToolTip("批量翻译页面队列中的漫画 (自动快速跳过已经翻译过的页面)")
         self.batch_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.batch_btn.setEnabled(False)
         self.batch_btn.setStyleSheet("""
             QPushButton {
-                background-color: rgba(59, 130, 246, 0.15);
-                color: #3B82F6;
-                border: 1px solid rgba(59, 130, 246, 0.35);
-                border-radius: 6px;
+                background-color: #0A84FF;
+                color: #FFFFFF;
+                border: 1px solid #0071E3;
+                border-radius: 4px;
                 padding: 6px 12px;
                 font-weight: 600;
-                font-size: 12px;
+                font-size: 11px;
             }
             QPushButton:hover {
-                background-color: #3B82F6;
-                color: #FFFFFF;
+                background-color: #0071E3;
+            }
+            QPushButton:pressed {
+                background-color: #0058B6;
             }
             QPushButton:disabled {
-                opacity: 0.35;
+                background-color: rgba(255, 255, 255, 0.04);
                 color: #71717A;
-                border-color: rgba(255, 255, 255, 0.08);
+                border-color: rgba(255, 255, 255, 0.06);
             }
         """)
         self.batch_btn.clicked.connect(self.sig_start_batch.emit)
         btn_layout.addWidget(self.batch_btn)
 
-        self.retranslate_all_btn = QPushButton("🔄 全部重新翻译 (强制覆盖)", self)
+        self.retranslate_all_btn = QPushButton("全部强制重新翻译 (清除缓存)", self)
+        self.retranslate_all_btn.setIcon(get_icon("refresh", color="#F59E0B", size=12))
         self.retranslate_all_btn.setToolTip("无论是否翻译过，强制全部重新执行大模型翻译与排版流程并覆盖导出")
         self.retranslate_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.retranslate_all_btn.setEnabled(False)
         self.retranslate_all_btn.setStyleSheet("""
             QPushButton {
-                background-color: rgba(245, 158, 11, 0.12);
+                background-color: rgba(245, 158, 11, 0.10);
                 color: #F59E0B;
-                border: 1px solid rgba(245, 158, 11, 0.35);
-                border-radius: 6px;
-                padding: 5px 12px;
-                font-weight: 600;
+                border: 1px solid rgba(245, 158, 11, 0.28);
+                border-radius: 4px;
+                padding: 5px 10px;
+                font-weight: 500;
                 font-size: 11px;
             }
             QPushButton:hover {
@@ -345,7 +349,7 @@ class PageListWidget(QWidget):
             QPushButton:disabled {
                 opacity: 0.35;
                 color: #71717A;
-                border-color: rgba(255, 255, 255, 0.08);
+                border-color: rgba(255, 255, 255, 0.06);
             }
         """)
         self.retranslate_all_btn.clicked.connect(self.sig_start_retranslate_all.emit)

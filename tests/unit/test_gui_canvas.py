@@ -437,3 +437,39 @@ def test_folder_and_file_import_flow(qapp, tmp_path):
     assert win.page_list.add_btn is not None
     win.close()
 
+
+def test_sidebar_collapse_and_splitter_expansion(qapp):
+    win = MainWindow()
+    win.resize(1200, 800)
+    win.show()
+
+    initial_sizes = win.splitter.sizes()
+    assert win.sidebar_drawer.isVisible()
+    assert win.queue_panel.width() > 100
+
+    # Collapse
+    win.toggle_sidebar()
+    collapsed_sizes = win.splitter.sizes()
+    assert not win.sidebar_drawer.isVisible()
+    assert win.queue_panel.width() <= 50
+    assert collapsed_sizes[1] > initial_sizes[1]  # Canvas expanded to take reclaimed space
+
+    # Expand
+    win.toggle_sidebar()
+    assert win.sidebar_drawer.isVisible()
+    assert win.queue_panel.width() > 100
+
+    # Nav rail pages toggle
+    win._on_nav_rail_changed("pages")
+    assert not win.sidebar_drawer.isVisible()
+    win._on_nav_rail_changed("pages")
+    assert win.sidebar_drawer.isVisible()
+
+    # Toolbar hamburger button clicks (collapse and expand back)
+    win.sidebar_toggle_btn.click()
+    assert not win.sidebar_drawer.isVisible()
+    win.sidebar_toggle_btn.click()
+    assert win.sidebar_drawer.isVisible()
+
+    win.close()
+

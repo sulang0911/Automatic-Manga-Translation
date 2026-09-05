@@ -34,7 +34,7 @@ class DropZoneWidget(QFrame):
 
         # Icon
         self.icon_label = QLabel(self)
-        self.icon_label.setPixmap(get_icon("folder_open", color="#3B82F6", size=28).pixmap(28, 28))
+        self.icon_label.setPixmap(get_icon("folder_open", color="#007ACC", size=24).pixmap(24, 24))
         self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.icon_label)
 
@@ -75,27 +75,27 @@ class DropZoneWidget(QFrame):
             self.btn_import_folder.hide()
             self.title_label.setText("拖入或点击添加更多页面")
             self.title_label.setStyleSheet("font-size: 11px; font-weight: 500;")
-            self.icon_label.setPixmap(get_icon("folder_open", color="#3B82F6", size=18).pixmap(18, 18))
-            self.layout().setContentsMargins(8, 6, 8, 6)
-            self.layout().setSpacing(4)
+            self.icon_label.setPixmap(get_icon("folder_open", color="#007ACC", size=16).pixmap(16, 16))
+            self.layout().setContentsMargins(6, 4, 6, 4)
+            self.layout().setSpacing(3)
         else:
             self.sub_label.show()
             self.btn_import_files.show()
             self.btn_import_folder.show()
             self.title_label.setText("拖入图片或漫画文件夹")
             self.title_label.setStyleSheet("")
-            self.icon_label.setPixmap(get_icon("folder_open", color="#3B82F6", size=28).pixmap(28, 28))
-            self.layout().setContentsMargins(12, 16, 12, 16)
+            self.icon_label.setPixmap(get_icon("folder_open", color="#007ACC", size=24).pixmap(24, 24))
+            self.layout().setContentsMargins(10, 12, 10, 12)
             self.layout().setSpacing(6)
-            self.btn_import_files.setFixedHeight(28)
-            self.btn_import_folder.setFixedHeight(28)
+            self.btn_import_files.setFixedHeight(26)
+            self.btn_import_folder.setFixedHeight(26)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             # Show a choice menu when clicking blank area
             menu = QMenu(self)
-            action_files = menu.addAction(get_icon("eye", color="#3B82F6", size=16), "选择漫画图片文件...")
-            action_folder = menu.addAction(get_icon("folder_open", color="#3B82F6", size=16), "选择漫画文件夹 (自动扫描所有页面)...")
+            action_files = menu.addAction(get_icon("eye", color="#007ACC", size=14), "选择漫画图片文件...")
+            action_folder = menu.addAction(get_icon("folder_open", color="#007ACC", size=14), "选择漫画文件夹 (自动扫描所有页面)...")
             
             chosen = menu.exec(self.mapToGlobal(event.pos()))
             if chosen == action_files:

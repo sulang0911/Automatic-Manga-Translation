@@ -158,9 +158,11 @@ def test_main_window_re_render_all_and_single_page(qapp, tmp_path):
     # Page 2 should not be re-rendered yet
     assert win.page_list.items_data[1].get("translated_img") is None
 
-    # Test re-render all pages
+    # Test re-render all pages (deferred typography architecture)
     win._re_render_all_pages()
     assert win.page_list.items_data[0].get("translated_img") is not None
+    # Background page renders on-demand when selected or exported
+    win._on_page_selected(win.page_list.items_data[1])
     assert win.page_list.items_data[1].get("translated_img") is not None
 
     win.close()

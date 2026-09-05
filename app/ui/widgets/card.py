@@ -19,8 +19,8 @@ class CardWidget(QFrame):
         self.setObjectName("cardWidget")
 
         self._layout = QVBoxLayout(self)
-        self._layout.setContentsMargins(12, 12, 12, 12)
-        self._layout.setSpacing(8)
+        self._layout.setContentsMargins(8, 8, 8, 8)
+        self._layout.setSpacing(6)
 
         self._header_layout: Optional[QHBoxLayout] = None
         self._title_label: Optional[QLabel] = None
@@ -33,7 +33,7 @@ class CardWidget(QFrame):
         header_widget = QWidget(self)
         self._header_layout = QHBoxLayout(header_widget)
         self._header_layout.setContentsMargins(0, 0, 0, 4)
-        self._header_layout.setSpacing(6)
+        self._header_layout.setSpacing(4)
 
         title_col = QVBoxLayout()
         title_col.setContentsMargins(0, 0, 0, 0)
@@ -41,12 +41,12 @@ class CardWidget(QFrame):
 
         if title:
             self._title_label = QLabel(title, header_widget)
-            self._title_label.setStyleSheet("font-weight: 600; font-size: 13px;")
+            self._title_label.setStyleSheet("font-weight: 600; font-size: 12px; color: #ECECEF;")
             title_col.addWidget(self._title_label)
 
         if subtitle:
             self._subtitle_label = QLabel(subtitle, header_widget)
-            self._subtitle_label.setStyleSheet("font-size: 11px; opacity: 0.7;")
+            self._subtitle_label.setStyleSheet("font-size: 11px; color: #71717A;")
             title_col.addWidget(self._subtitle_label)
 
         self._header_layout.addLayout(title_col)
