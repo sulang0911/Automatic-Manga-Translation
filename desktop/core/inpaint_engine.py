@@ -33,15 +33,33 @@ def dilate_mask(mask: np.ndarray, dilation_pixels: int = 4) -> np.ndarray:
     return cv2.dilate(mask, kernel, iterations=1)
 
 def blend_inpainted_image(original_img: np.ndarray, inpainted_img: np.ndarray, mask: np.ndarray, feather_radius: int = 4) -> np.ndarray:
+    if original_img is None:
+        return None
+    if inpainted_img is None or mask is None or np.sum(mask) == 0:
+        return original_img.copy() if original_img is not None else None
     if feather_radius <= 0:
         result = original_img.copy()
         result[mask > 0] = inpainted_img[mask > 0]
         return result
     ksize = feather_radius * 2 + 1
     alpha = cv2.GaussianBlur(mask.astype(np.float32) / 255.0, (ksize, ksize), 0)
-    alpha = np.expand_dims(alpha, axis=2)
-    blended = inpainted_img.astype(np.float32) * alpha + original_img.astype(np.float32) * (1.0 - alpha)
-    return np.clip(blended, 0, 255).astype(np.uint8)
+    # Ensure core mask regions retain full inpainting opacity so thin text strokes don't bleed original text
+    alpha = np.maximum(alpha, (mask.astype(np.float32) / 255.0))
+    alpha_3d = np.expand_dims(alpha, axis=2)
+    blended = inpainted_img.astype(np.float32) * alpha_3d + original_img.astype(np.float32) * (1.0 - alpha_3d)
+    blended = np.clip(blended, 0, 255).astype(np.uint8)
+
+    # Inverted dark background protection:
+    # Ensure Gaussian alpha feathering does NOT bleed original white text edge pixels into dark/black regions
+    # (preventing gray halos/smudges in dark boxes)
+    orig_gray = cv2.cvtColor(original_img, cv2.COLOR_BGR2GRAY)
+    inpaint_gray = cv2.cvtColor(inpainted_img, cv2.COLOR_BGR2GRAY)
+    dark_inpaint = inpaint_gray < 60
+    bright_orig = orig_gray > (inpaint_gray + 20)
+    bleed_mask = (alpha > 0.05) & dark_inpaint & bright_orig
+    blended[bleed_mask] = inpainted_img[bleed_mask]
+
+    return blended
 
 class InpaintEngine:
     def __init__(self, mode: str = "auto"):
@@ -167,10 +185,51 @@ class InpaintEngine:
 
             qr_mask_crop = qr_mask[py_min:py_max, px_min:px_max]
 
+            block_bg = block.get("bg_color_override") or block.get("bg_color") if isinstance(block, dict) else (getattr(block, "bg_color_override", None) or getattr(block, "bg_color", None))
+            bg_hex_lum = None
+            hex_bgr = None
+            if block_bg and isinstance(block_bg, str):
+                s_clean = block_bg.strip()
+                if s_clean.startswith("#") and len(s_clean) >= 7:
+                    try:
+                        hr = int(s_clean[1:3], 16)
+                        hg = int(s_clean[3:5], 16)
+                        hb = int(s_clean[5:7], 16)
+                        hex_bgr = [hb, hg, hr]
+                        bg_hex_lum = 0.299 * hr + 0.587 * hg + 0.114 * hb
+                    except ValueError:
+                        pass
+
+            crop_bg_lum = 0.299 * bg_color[2] + 0.587 * bg_color[1] + 0.114 * bg_color[0]
+
+            is_dark_bg = False
+            if block_bg and isinstance(block_bg, str) and block_bg.strip().lower() == "#000000":
+                is_dark_bg = True
+            elif bg_hex_lum is not None and bg_hex_lum < 50.0:
+                is_dark_bg = True
+            elif crop_bg_lum < 50.0:
+                is_dark_bg = True
+
+            if is_dark_bg:
+                if block_bg and isinstance(block_bg, str) and block_bg.strip().lower() == "#000000":
+                    target_bg_color = [0, 0, 0]
+                elif bg_hex_lum is not None and bg_hex_lum < 50.0 and (crop_bg_lum >= 50.0 or crop_bg_lum > bg_hex_lum + 30):
+                    target_bg_color = hex_bgr
+                elif crop_bg_lum < 50.0:
+                    target_bg_color = bg_color
+                else:
+                    target_bg_color = hex_bgr if hex_bgr is not None else bg_color
+
+                text_mask = get_text_mask(crop, target_bg_color)
+                text_mask = cv2.bitwise_and(text_mask, poly_mask)
+
             block_type = block.get("type", "bubble") if isinstance(block, dict) else getattr(block, "type", "bubble")
-            if block_type == "bubble" and is_uniform:
+            if is_dark_bg or (block_type == "bubble" and is_uniform):
+                fill_color = target_bg_color if is_dark_bg else bg_color
                 dilated = dilate_mask(text_mask, adaptive_dil)
-                crop[(dilated == 255) & (qr_mask_crop == 0)] = bg_color
+                if np.sum(text_mask) == 0:
+                    dilated = dilate_mask(poly_mask, adaptive_dil)
+                crop[(dilated == 255) & (qr_mask_crop == 0)] = fill_color
                 erased_img[py_min:py_max, px_min:px_max] = crop
             else:
                 dilated = dilate_mask(text_mask, adaptive_dil)

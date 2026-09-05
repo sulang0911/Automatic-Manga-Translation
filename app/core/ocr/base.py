@@ -201,7 +201,8 @@ def estimate_line_height(box: Dict[str, Any], has_cjk: bool) -> float:
 def compute_bubble_labels(image: Optional[np.ndarray]) -> Optional[np.ndarray]:
     """
     Computes connected-component labels for continuous light speech bubble closures.
-    Uses adaptive binary thresholding, morphological ellipse closing, and cv2.connectedComponentsWithStats.
+    Uses adaptive binary thresholding, morphological ellipse closing with (7, 7) kernel,
+    and watershed partitioning to prevent bridging adjacent bubbles across thin dark outlines.
     Excludes large page backgrounds and margins spanning across the outer borders of the page.
     Returns an integer label matrix of shape (H, W), or None if image is None or invalid.
     """
@@ -212,8 +213,9 @@ def compute_bubble_labels(image: Optional[np.ndarray]) -> Optional[np.ndarray]:
         # In manga, dialogue bubbles typically have white/light interior (>= 215)
         # surrounded by dark outlines.
         _, binary = cv2.threshold(gray, 215, 255, cv2.THRESH_BINARY)
-        # Morphological closing with ellipse kernel bridges text strokes inside the bubble
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+        # Morphological closing with (7, 7) ellipse kernel bridges text strokes inside the bubble
+        # while preserving thin dark boundary outlines between adjacent speech bubbles.
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
         closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
         num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(closed)
         if num_labels <= 1:
@@ -257,6 +259,107 @@ def compute_bubble_labels(image: Optional[np.ndarray]) -> Optional[np.ndarray]:
         return None
 
 
+def has_dark_boundary_barrier(
+    image: Optional[np.ndarray],
+    b1: Dict[str, Any],
+    b2: Dict[str, Any],
+    luminance_threshold: float = 90.0,
+) -> bool:
+    """
+    Direct ray-casting dark boundary barrier detection between bounding boxes/centroids.
+    Returns True if a dark border (e.g. pixel luminance < 90) exists along the line segment
+    or inter-box gap connecting the two boxes, indicating an outline barrier separating them.
+    """
+    if image is None or not hasattr(image, "shape") or image.size == 0:
+        return False
+    try:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+        h_img, w_img = gray.shape[:2]
+
+        x1_min = max(0, min(int(round(min(b1["xmin"], b1["xmax"]))), w_img - 1))
+        x1_max = max(x1_min + 1, min(int(round(max(b1["xmin"], b1["xmax"]))), w_img))
+        y1_min = max(0, min(int(round(min(b1["ymin"], b1["ymax"]))), h_img - 1))
+        y1_max = max(y1_min + 1, min(int(round(max(b1["ymin"], b1["ymax"]))), h_img))
+
+        x2_min = max(0, min(int(round(min(b2["xmin"], b2["xmax"]))), w_img - 1))
+        x2_max = max(x2_min + 1, min(int(round(max(b2["xmin"], b2["xmax"]))), w_img))
+        y2_min = max(0, min(int(round(min(b2["ymin"], b2["ymax"]))), h_img - 1))
+        y2_max = max(y2_min + 1, min(int(round(max(b2["ymin"], b2["ymax"]))), h_img))
+
+        # Check if both boxes are dark/inverted containers (e.g. black boxes)
+        c1 = b1.get("bg_color")
+        c2 = b2.get("bg_color")
+        is_dark1 = (c1 in ("#000000", "#111111", "#222222"))
+        is_dark2 = (c2 in ("#000000", "#111111", "#222222"))
+        if is_dark1 and is_dark2:
+            return False
+
+        # Ray-casting between centroids
+        cx1 = (x1_min + x1_max) / 2.0
+        cy1 = (y1_min + y1_max) / 2.0
+        cx2 = (x2_min + x2_max) / 2.0
+        cy2 = (y2_min + y2_max) / 2.0
+
+        dist = math.hypot(cx2 - cx1, cy2 - cy1)
+        if dist > 2.0:
+            num_samples = max(10, int(dist))
+            xs = np.linspace(cx1, cx2, num_samples)
+            ys = np.linspace(cy1, cy2, num_samples)
+            for x, y in zip(xs, ys):
+                in_b1 = (x1_min <= x <= x1_max) and (y1_min <= y <= y1_max)
+                in_b2 = (x2_min <= x <= x2_max) and (y2_min <= y <= y2_max)
+                if not in_b1 and not in_b2:
+                    ix = int(round(x))
+                    iy = int(round(y))
+                    if 0 <= iy < h_img and 0 <= ix < w_img:
+                        if float(gray[iy, ix]) < luminance_threshold:
+                            return True
+
+        # Gap strip check for vertically stacked boxes
+        if y2_min > y1_max:
+            y_start = y1_max
+            y_end = y2_min
+            x_start = min(x1_min, x2_min)
+            x_end = max(x1_max, x2_max)
+            if y_end > y_start and x_end > x_start:
+                strip = gray[y_start:y_end, x_start:x_end]
+                if strip.size > 0 and float(strip.min()) < luminance_threshold:
+                    return True
+        elif y1_min > y2_max:
+            y_start = y2_max
+            y_end = y1_min
+            x_start = min(x1_min, x2_min)
+            x_end = max(x1_max, x2_max)
+            if y_end > y_start and x_end > x_start:
+                strip = gray[y_start:y_end, x_start:x_end]
+                if strip.size > 0 and float(strip.min()) < luminance_threshold:
+                    return True
+
+        # Gap strip check for horizontally adjacent boxes
+        if x2_min > x1_max:
+            x_start = x1_max
+            x_end = x2_min
+            y_start = min(y1_min, y2_min)
+            y_end = max(y1_max, y2_max)
+            if x_end > x_start and y_end > y_start:
+                strip = gray[y_start:y_end, x_start:x_end]
+                if strip.size > 0 and float(strip.min()) < luminance_threshold:
+                    return True
+        elif x1_min > x2_max:
+            x_start = x2_max
+            x_end = x1_min
+            y_start = min(y1_min, y2_min)
+            y_end = max(y1_max, y2_max)
+            if x_end > x_start and y_end > y_start:
+                strip = gray[y_start:y_end, x_start:x_end]
+                if strip.size > 0 and float(strip.min()) < luminance_threshold:
+                    return True
+
+        return False
+    except Exception:
+        return False
+
+
 
 def can_merge_pair(
     b1: Dict[str, Any],
@@ -275,7 +378,9 @@ def can_merge_pair(
     Prevents merging adjacent independent speech bubbles or cross-QR bridges while correctly
     aggregating multi-line text and same-line / same-column fragments with adaptive spacing.
     """
-    # Angle compatibility guard: if both b1 and b2 have an angle specified, reject if |a1 - a2| > 10.0 degrees
+    # Angle compatibility guard & vector collinearity fallback
+    is_collinear_slanted = False
+    slanted_ang = None
     if "angle" in b1 and "angle" in b2 and b1["angle"] is not None and b2["angle"] is not None:
         try:
             a1 = float(b1["angle"])
@@ -283,11 +388,42 @@ def can_merge_pair(
             ang_diff = abs(a1 - a2)
             if ang_diff > 90.0:
                 ang_diff = abs(ang_diff - 180.0)
-            if ang_diff > 10.0:
-                return False
-            # Off-bubble slanted text guard: reject if one is clearly slanted and the other is horizontal dialogue
-            if min(abs(a1), abs(a2)) < 3.0 and max(abs(a1), abs(a2)) >= 8.0 and ang_diff >= 8.0:
-                return False
+
+            # Check vector collinearity fallback for short slanted words
+            # (e.g. "his", "~maidl") where low aspect ratio caused angle dropout to ~0°
+            t1 = str(b1.get("text", "")).strip()
+            t2 = str(b2.get("text", "")).strip()
+            w1_box = abs(b1["xmax"] - b1["xmin"])
+            w2_box = abs(b2["xmax"] - b2["xmin"])
+            h1_box = max(1.0, abs(b1["ymax"] - b1["ymin"]))
+            h2_box = max(1.0, abs(b2["ymax"] - b2["ymin"]))
+            is_short1 = (len(t1) <= 6 or w1_box <= 60 or (w1_box / h1_box <= 1.8 and w1_box <= 80))
+            is_short2 = (len(t2) <= 6 or w2_box <= 60 or (w2_box / h2_box <= 1.8 and w2_box <= 80))
+
+            if (is_short1 and abs(a1) < 5.0 and abs(a2) >= 8.0) or (is_short2 and abs(a2) < 5.0 and abs(a1) >= 8.0):
+                target_ang = a2 if (is_short1 and abs(a1) < 5.0) else a1
+                cx1_c = (b1["xmin"] + b1["xmax"]) / 2.0
+                cy1_c = (b1["ymin"] + b1["ymax"]) / 2.0
+                cx2_c = (b2["xmin"] + b2["xmax"]) / 2.0
+                cy2_c = (b2["ymin"] + b2["ymax"]) / 2.0
+                v_dx = cx2_c - cx1_c
+                v_dy = cy2_c - cy1_c
+                if v_dx < 0:
+                    v_dx, v_dy = -v_dx, -v_dy
+                vec_ang = math.degrees(math.atan2(v_dy, v_dx))
+                v_diff = abs(vec_ang - target_ang)
+                if v_diff > 90.0:
+                    v_diff = abs(v_diff - 180.0)
+                if v_diff <= 8.0:
+                    is_collinear_slanted = True
+                    slanted_ang = target_ang
+
+            if not is_collinear_slanted:
+                if ang_diff > 10.0:
+                    return False
+                # Off-bubble slanted text guard: reject if one is clearly slanted and the other is horizontal dialogue
+                if min(abs(a1), abs(a2)) < 3.0 and max(abs(a1), abs(a2)) >= 8.0 and ang_diff >= 8.0:
+                    return False
         except (ValueError, TypeError):
             pass
 
@@ -328,7 +464,8 @@ def can_merge_pair(
             rgb2 = _parse_color(c2)
             if rgb1 and rgb2:
                 dist = math.sqrt(sum((x - y) ** 2 for x, y in zip(rgb1, rgb2)))
-                if dist > 60.0:
+                max_color_dist = 150.0 if is_collinear_slanted else 60.0
+                if dist > max_color_dist:
                     return False
         except Exception:
             pass
@@ -401,6 +538,11 @@ def can_merge_pair(
             inter_h = max(0, min(c_ymax_px, qy2 + pad) - max(c_ymin_px, qy1 - pad))
             if inter_w > 0 and inter_h > 0:
                 return False
+
+    # Dark Boundary Barrier Guard: direct ray-casting to reject cross-border merges
+    if image is not None:
+        if has_dark_boundary_barrier(image, b1, b2, luminance_threshold=90.0):
+            return False
 
     # Connected component / Bubble Closure Awareness
     if bubble_labels is None and image is not None:
@@ -475,6 +617,90 @@ def can_merge_pair(
     if min_area > 0 and (inter_area / min_area) >= 0.50:
         return True
 
+    # Rotated coordinate frame (u, v) evaluation for slanted text
+    eff_slant_ang = slanted_ang if is_collinear_slanted else (
+        float(b1.get("angle", 0.0) or 0.0) if abs(float(b1.get("angle", 0.0) or 0.0)) >= 8.0
+        else float(b2.get("angle", 0.0) or 0.0)
+    )
+    if abs(eff_slant_ang) >= 8.0:
+        rad_s = math.radians(eff_slant_ang)
+        cos_s, sin_s = math.cos(rad_s), math.sin(rad_s)
+        u_axis = np.array([cos_s, sin_s], dtype=np.float32)
+        v_axis = np.array([-sin_s, cos_s], dtype=np.float32)
+
+        def _get_box_pts(b_dict):
+            if b_dict.get("polygon") and len(b_dict["polygon"]) >= 4:
+                return np.asarray(b_dict["polygon"], dtype=np.float32)
+            bx1_l = min(b_dict["xmin"], b_dict["xmax"])
+            by1_l = min(b_dict["ymin"], b_dict["ymax"])
+            bx2_l = max(b_dict["xmin"], b_dict["xmax"])
+            by2_l = max(b_dict["ymin"], b_dict["ymax"])
+            return np.array([[bx1_l, by1_l], [bx2_l, by1_l], [bx2_l, by2_l], [bx1_l, by2_l]], dtype=np.float32)
+
+        pts1_s = _get_box_pts(b1)
+        pts2_s = _get_box_pts(b2)
+
+        u1_proj = pts1_s @ u_axis
+        v1_proj = pts1_s @ v_axis
+        u2_proj = pts2_s @ u_axis
+        v2_proj = pts2_s @ v_axis
+
+        u1_min, u1_max = float(u1_proj.min()), float(u1_proj.max())
+        v1_min, v1_max = float(v1_proj.min()), float(v1_proj.max())
+        u2_min, u2_max = float(u2_proj.min()), float(u2_proj.max())
+        v2_min, v2_max = float(v2_proj.min()), float(v2_proj.max())
+
+        w1_rot = max(1.0, u1_max - u1_min)
+        h1_rot = max(1.0, v1_max - v1_min)
+        w2_rot = max(1.0, u2_max - u2_min)
+        h2_rot = max(1.0, v2_max - v2_min)
+
+        min_w_rot, max_w_rot = min(w1_rot, w2_rot), max(w1_rot, w2_rot)
+        min_h_rot, max_h_rot = min(h1_rot, h2_rot), max(h1_rot, h2_rot)
+
+        u_ov = max(0.0, min(u1_max, u2_max) - max(u1_min, u2_min))
+        v_ov = max(0.0, min(v1_max, v2_max) - max(v1_min, v2_min))
+
+        u_g = max(0.0, max(u1_min, u2_min) - min(u1_max, u2_max))
+        v_g = max(0.0, max(v1_min, v2_min) - min(v1_max, v2_max))
+
+        u_mid1 = (u1_min + u1_max) / 2.0
+        u_mid2 = (u2_min + u2_max) / 2.0
+        v_mid1 = (v1_min + v1_max) / 2.0
+        v_mid2 = (v2_min + v2_max) / 2.0
+
+        # Sub-case A: Same-line slanted words / fragments
+        is_same_slanted_line = (v_ov >= 0.40 * min_h_rot or abs(v_mid1 - v_mid2) <= max_h_rot * 0.45)
+        if is_same_slanted_line:
+            max_word_gap_rot = max(10, int((1.30 if (same_bubble or is_collinear_slanted) else 0.85) * max_h_rot * h_scale))
+            if u_g <= max_word_gap_rot:
+                return True
+
+        # Sub-case B: Multi-line slanted text (stacked lines in slanted paragraph)
+        if v1_min <= v2_min:
+            t_vmin, t_vmax = v1_min, v1_max
+            b_vmin, b_vmax = v2_min, v2_max
+        else:
+            t_vmin, t_vmax = v2_min, v2_max
+            b_vmin, b_vmax = v1_min, v1_max
+
+        curr_vg = b_vmin - t_vmax
+        if curr_vg < 0:
+            vg_ok = (-curr_vg) <= max(6, int(0.60 * min_h_rot))
+        else:
+            vg_mult = 2.2 if (same_bubble or adaptive_spacing) else 0.80
+            vg_ok = curr_vg <= max(6, int(vg_mult * min_h_rot * v_scale))
+
+        if vg_ok:
+            u_aligned = (
+                (u_ov / max_w_rot >= 0.25)
+                or (abs(u_mid1 - u_mid2) <= max_w_rot * 0.45)
+                or (abs(u1_min - u2_min) <= max(14, int(0.25 * max_w_rot)))
+                or (same_bubble and (u_ov > 0 or abs(u_mid1 - u_mid2) <= max_w_rot * 0.55))
+            )
+            if u_aligned:
+                return True
+
     # Criterion 2: Same-line fragments (horizontal text collinear fragments / words)
     is_not_vert_columns = not (has_cjk and h1 >= w1 * 1.20 and h2 >= w2 * 1.20)
     if is_not_vert_columns:
@@ -517,7 +743,10 @@ def can_merge_pair(
     is_incompatible_multiline = False
     if (is_multiline_block1 or is_multiline_block2) and not same_bubble:
         if is_multiline_block1 and is_multiline_block2 and (min_w / max_w >= 0.75) and abs(x1_min - x2_min) <= max(16, int(0.15 * max_w)):
-            is_incompatible_multiline = False
+            if y_gap > max(20, int(1.2 * min_line_h)):
+                is_incompatible_multiline = True
+            else:
+                is_incompatible_multiline = False
         else:
             is_incompatible_multiline = True
 

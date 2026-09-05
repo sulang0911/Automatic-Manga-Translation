@@ -19,6 +19,30 @@ except ImportError:
     from app.core.ocr.reading_order import sort_reading_order
     from app.core.models import TranslationBlock, ReadingOrderMode
 
+try:
+    from app.core.pipeline import clean_ocr_syntax, clean_translation_syntax, normalize_domain_slang, prioritize_english_routing
+except Exception:
+    import re
+    def clean_ocr_syntax(t: str) -> str:
+        if not t: return ""
+        t = re.sub(r'(\b\w+)\s*[:;]\s*([a-zA-Z]+)\b', r'\1 \2', t.strip())
+        t = re.sub(r'[:;]\s*$', '', t)
+        t = t.replace('》', '!').replace('《', '').replace('「', '"').replace('」', '"')
+        return re.sub(r'\s{2,}', ' ', t).strip()
+    def clean_translation_syntax(t: str, o: str = "") -> str:
+        if not t: return ""
+        t = re.sub(r'[：:]\s*[\u4e00-\u9fa5a-zA-Z]{1,4}\s*$', '', t.strip())
+        return re.sub(r'[：:;；\-_]\s*$', '', t).strip()
+    def normalize_domain_slang(t: str) -> str:
+        if not t: return ""
+        t = re.sub(r'\bGF\b', 'girlfriend', t)
+        t = re.sub(r"\bBF['’]s\b", "boyfriend's", t)
+        t = re.sub(r'\bBF\b', 'boyfriend', t)
+        return re.sub(r'\b(no[-_ ]?fap)\b', 'no-fap', t, flags=re.IGNORECASE)
+    def prioritize_english_routing(lang=None, image=None, text=None) -> bool:
+        return bool(lang and any(w in str(lang).lower() for w in ["en", "eng", "english"]))
+
+
 
 def compute_box_iou(b1: Dict[str, Any], b2: Dict[str, Any]) -> Tuple[float, float]:
     """
@@ -216,6 +240,114 @@ def mask_crop_with_lines(crop: np.ndarray, box: Dict[str, Any], bx1: int, by1: i
         return crop
 
 
+def sort_easyocr_fragments_2d(results: List[Any]) -> Tuple[str, float]:
+    """
+    Sorts 2D OCR text line fragments in natural reading order:
+    Groups fragments into horizontal rows (lines), sorts each row left-to-right,
+    and sorts lines top-to-bottom.
+    Prevents scrambled lines such as "2 and1 masturlation later days".
+    """
+    if not results:
+        return "", 0.0
+
+    valid_items = []
+    for r in results:
+        if len(r) < 2:
+            continue
+        bbox, text = r[0], str(r[1]).strip()
+        conf = float(r[2]) if len(r) > 2 else 1.0
+        if not text:
+            continue
+        pts = np.asarray(bbox, dtype=np.float32)
+        xmin = float(np.min(pts[:, 0]))
+        ymin = float(np.min(pts[:, 1]))
+        xmax = float(np.max(pts[:, 0]))
+        ymax = float(np.max(pts[:, 1]))
+        h = max(1.0, ymax - ymin)
+        yc = (ymin + ymax) / 2.0
+        valid_items.append({
+            "text": text,
+            "conf": conf,
+            "xmin": xmin, "ymin": ymin, "xmax": xmax, "ymax": ymax,
+            "yc": yc, "h": h
+        })
+
+    if not valid_items:
+        return "", 0.0
+    if len(valid_items) == 1:
+        return valid_items[0]["text"], valid_items[0]["conf"]
+
+    # Initial sort by vertical position
+    valid_items.sort(key=lambda item: item["ymin"])
+
+    # Cluster into horizontal text lines (rows)
+    rows: List[List[Dict[str, Any]]] = []
+    row_bounds: List[Tuple[float, float, float]] = []  # (ymin, ymax, h)
+
+    for item in valid_items:
+        matched_row_idx = -1
+        for idx, (r_ymin, r_ymax, r_h) in enumerate(row_bounds):
+            overlap = max(0.0, min(r_ymax, item["ymax"]) - max(r_ymin, item["ymin"]))
+            min_h = min(r_h, item["h"])
+            r_yc = (r_ymin + r_ymax) / 2.0
+            if (overlap / max(1.0, min_h) >= 0.35) or (abs(item["yc"] - r_yc) <= 0.45 * min_h):
+                matched_row_idx = idx
+                break
+
+        if matched_row_idx >= 0:
+            rows[matched_row_idx].append(item)
+            r_ymin, r_ymax, r_h = row_bounds[matched_row_idx]
+            new_ymin = min(r_ymin, item["ymin"])
+            new_ymax = max(r_ymax, item["ymax"])
+            row_bounds[matched_row_idx] = (new_ymin, new_ymax, new_ymax - new_ymin)
+        else:
+            rows.append([item])
+            row_bounds.append((item["ymin"], item["ymax"], item["h"]))
+
+    # Sort each row left-to-right by xmin
+    for r in rows:
+        r.sort(key=lambda item: item["xmin"])
+
+    # Sort rows top-to-bottom by row_ymin
+    row_order = sorted(range(len(rows)), key=lambda idx: row_bounds[idx][0])
+
+    ordered_lines = []
+    all_confs = []
+    for idx in row_order:
+        line_text = " ".join(it["text"] for it in rows[idx] if it["text"])
+        if line_text:
+            ordered_lines.append(line_text)
+            all_confs.extend(it["conf"] for it in rows[idx])
+
+    joined = " ".join(ordered_lines)
+    avg_conf = float(np.mean(all_confs)) if all_confs else 0.0
+    return joined, avg_conf
+
+
+def rotate_crop_upright(crop: np.ndarray, angle: float) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    """
+    Affine rotates crop upright by -angle so slanted text lines become horizontal.
+    Expands bounding box to prevent clipping characters.
+    """
+    if abs(angle) < 2.5 or crop is None or crop.size == 0:
+        return crop, None
+    h, w = crop.shape[:2]
+    center = (w / 2.0, h / 2.0)
+    rot_mat = cv2.getRotationMatrix2D(center, -angle, 1.0)
+    cos_val = abs(rot_mat[0, 0])
+    sin_val = abs(rot_mat[0, 1])
+    new_w = max(w, int(np.ceil((h * sin_val) + (w * cos_val))))
+    new_h = max(h, int(np.ceil((h * cos_val) + (w * sin_val))))
+    rot_mat[0, 2] += (new_w / 2.0) - center[0]
+    rot_mat[1, 2] += (new_h / 2.0) - center[1]
+    rotated = cv2.warpAffine(
+        crop, rot_mat, (new_w, new_h),
+        flags=cv2.INTER_CUBIC,
+        borderMode=cv2.BORDER_REPLICATE
+    )
+    return rotated, rot_mat
+
+
 class OCREngine:
     def __init__(
         self,
@@ -237,6 +369,7 @@ class OCREngine:
         self.enable_ensemble_recognition = enable_ensemble_recognition
         self._paddle_ocr = None
         self._easyocr_reader = None
+        self._easyocr_en_reader = None
         self._manga_ocr = None
         self._ctd_detector = None
 
@@ -325,12 +458,141 @@ class OCREngine:
                         print(f"[!] Warning: PaddleOCR CPU init failed: {e2}. Fallback to generic init...")
                         self._paddle_ocr = PaddleOCR(lang=self.lang)
 
-    def _init_easyocr(self):
-        if self._easyocr_reader is None:
-            import easyocr
-            langs = ['ja', 'en'] if self.lang in ['japan', 'ja'] else ['ch_sim', 'en']
-            print(f"[*] Initializing EasyOCR (langs={langs}, gpu={self.use_gpu})...")
-            self._easyocr_reader = easyocr.Reader(langs, gpu=self.use_gpu)
+    def _init_easyocr(self, is_english: bool = False):
+        if is_english:
+            if getattr(self, "_easyocr_en_reader", None) is None:
+                import easyocr
+                print(f"[*] Initializing EasyOCR for English (langs=['en'], gpu={self.use_gpu})...")
+                self._easyocr_en_reader = easyocr.Reader(['en'], gpu=self.use_gpu)
+        else:
+            if self._easyocr_reader is None:
+                import easyocr
+                langs = ['ja', 'en'] if self.lang in ['japan', 'ja'] else ['ch_sim', 'en']
+                print(f"[*] Initializing EasyOCR (langs={langs}, gpu={self.use_gpu})...")
+                self._easyocr_reader = easyocr.Reader(langs, gpu=self.use_gpu)
+
+    def _get_easyocr_reader(self, is_english: bool = False):
+        if is_english:
+            if getattr(self, "_easyocr_en_reader", None) is not None:
+                return self._easyocr_en_reader
+            if getattr(self, "_easyocr_reader", None) is not None:
+                return self._easyocr_reader
+            self._init_easyocr(is_english=True)
+            return self._easyocr_en_reader
+        else:
+            if self._easyocr_reader is None:
+                self._init_easyocr(is_english=False)
+            return self._easyocr_reader
+
+    def detect_page_language(
+        self,
+        image: np.ndarray,
+        candidate_boxes: Optional[List[Dict[str, Any]]] = None
+    ) -> Tuple[bool, str]:
+        """
+        Detects whether the image is an English manga page:
+        1. If self.lang explicitly specifies English, returns (True, 'en').
+        2. Fast sampling on candidate boxes or whole page using English EasyOCR.
+        3. Returns (is_english, detected_lang).
+        """
+        if any(w in str(self.lang).lower() for w in ["en", "eng", "english", "latin"]):
+            return True, "en"
+
+        reader = self._get_easyocr_reader(is_english=True)
+        sampled_texts = []
+
+        if candidate_boxes:
+            sorted_boxes = sorted(
+                candidate_boxes,
+                key=lambda b: (b.get("xmax", 0) - b.get("xmin", 0)) * (b.get("ymax", 0) - b.get("ymin", 0)),
+                reverse=True
+            )
+            for b in sorted_boxes[:4]:
+                w_b = b.get("xmax", 0) - b.get("xmin", 0)
+                h_b = b.get("ymax", 0) - b.get("ymin", 0)
+                if w_b >= 30 and h_b >= 20:
+                    bx1 = max(0, min(b["xmin"], image.shape[1] - 1))
+                    by1 = max(0, min(b["ymin"], image.shape[0] - 1))
+                    bx2 = max(bx1 + 1, min(b["xmax"], image.shape[1]))
+                    by2 = max(by1 + 1, min(b["ymax"], image.shape[0]))
+                    crop = image[by1:by2, bx1:bx2]
+                    if crop.size > 0:
+                        rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+                        res = reader.readtext(rgb)
+                        for r in res:
+                            if len(r) > 1 and str(r[1]).strip():
+                                sampled_texts.append(str(r[1]).strip())
+
+        if not sampled_texts and image is not None and image.size > 0:
+            h, w = image.shape[:2]
+            scale = 1024.0 / max(h, w) if max(h, w) > 1024 else 1.0
+            small_img = cv2.resize(image, (int(w * scale), int(h * scale))) if scale < 1.0 else image
+            rgb = cv2.cvtColor(small_img, cv2.COLOR_BGR2RGB)
+            res = reader.readtext(rgb)
+            for r in res:
+                if len(r) > 1 and str(r[1]).strip():
+                    sampled_texts.append(str(r[1]).strip())
+
+        # If candidate boxes already contain authentic CJK text, it's definitely not English
+        if candidate_boxes:
+            for b in candidate_boxes:
+                b_text = str(b.get("text", ""))
+                if any(('\u4e00' <= c <= '\u9fff') or ('\u3040' <= c <= '\u309f') or ('\u30a0' <= c <= '\u30ff') for c in b_text):
+                    return False, str(self.lang)
+
+        combined_text = " ".join(sampled_texts)
+        import re
+        latin_words = re.findall(r'[a-zA-Z]{2,}', combined_text)
+        distinct_words = set(w.lower() for w in latin_words)
+        cjk_chars = [
+            c for c in combined_text
+            if ('\u4e00' <= c <= '\u9fff') or ('\u3040' <= c <= '\u309f') or ('\u30a0' <= c <= '\u30ff')
+        ]
+        total_latin = sum(len(w) for w in latin_words)
+        total_cjk = len(cjk_chars)
+
+        # Require substantial English evidence (multiple distinct words and characters)
+        if (len(distinct_words) >= 3 and total_latin >= 10 and total_latin > total_cjk * 2) or \
+           (len(distinct_words) >= 2 and total_latin >= 8 and total_cjk == 0 and len(latin_words) >= 3):
+            return True, "en"
+
+        return False, str(self.lang)
+
+    def _read_block_easyocr(self, crop: np.ndarray, angle: float = 0.0, is_english: bool = True) -> Tuple[str, float]:
+        """
+        Reads text in a cropped dialogue or narration box:
+        - If slanted (abs(angle) >= 2.5), affine rotates crop upright before recognition.
+        - Sorts all detected fragments in 2D reading order (top-to-bottom, left-to-right).
+        - Cleans up trailing colons or broken words.
+        """
+        if crop is None or crop.size == 0:
+            return "", 0.0
+
+        reader = self._get_easyocr_reader(is_english=is_english)
+
+        if abs(angle) >= 2.5:
+            crop_upright, _ = rotate_crop_upright(crop, angle)
+            rgb_upright = cv2.cvtColor(crop_upright, cv2.COLOR_BGR2RGB)
+            res_upright = reader.readtext(rgb_upright)
+            text_up, conf_up = sort_easyocr_fragments_2d(res_upright)
+
+            rgb_raw = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+            res_raw = reader.readtext(rgb_raw)
+            text_raw, conf_raw = sort_easyocr_fragments_2d(res_raw)
+
+            if len(text_up.strip()) >= len(text_raw.strip()) and conf_up >= 0.25:
+                text, conf = text_up, conf_up
+            elif len(text_raw.strip()) > 0:
+                text, conf = text_raw, conf_raw
+            else:
+                text, conf = text_up, conf_up
+        else:
+            rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+            res = reader.readtext(rgb)
+            text, conf = sort_easyocr_fragments_2d(res)
+
+        text = clean_ocr_syntax(text)
+        return text, conf
 
     def detect_and_recognize(self, image: np.ndarray, progress_callback=None, reading_direction: Optional[str] = None) -> List[Dict[str, Any]]:
         """
@@ -353,6 +615,7 @@ class OCREngine:
 
         h_img, w_img = image.shape[:2]
         raw_boxes = []
+        page_is_english = any(w in str(self.lang).lower() for w in ["en", "eng", "english", "latin"])
 
         if progress_callback:
             progress_callback(10, "正在加载 OCR 识别引擎...")
@@ -399,44 +662,25 @@ class OCREngine:
 
             # If CTD produced candidate boxes, perform smart recognition
             if raw_boxes:
-                is_explicit_english = any(w in str(self.lang).lower() for w in ["en", "eng", "english"])
-
-                # Check if page is actually an English comic
-                page_is_english = is_explicit_english
-                if not is_explicit_english:
-                    first_crop = None
-                    for b in raw_boxes:
-                        w_b = b["xmax"] - b["xmin"]
-                        h_b = b["ymax"] - b["ymin"]
-                        if w_b > 40 and h_b > 30:
-                            first_crop = image[b["ymin"]:b["ymax"], b["xmin"]:b["xmax"]]
-                            break
-                    if first_crop is not None and first_crop.size > 0:
-                        try:
-                            self._init_easyocr()
-                            t_check = self._easyocr_reader.readtext(cv2.cvtColor(first_crop, cv2.COLOR_BGR2RGB))
-                            combined_t = " ".join(t[1] for t in t_check)
-                            import re
-                            if len(re.findall(r'[a-zA-Z]{3,}', combined_t)) >= 2:
-                                page_is_english = True
-                        except Exception:
-                            page_is_english = False
+                page_is_english, _ = self.detect_page_language(image, raw_boxes)
 
                 if page_is_english:
                     if progress_callback:
-                        progress_callback(55, "探知为英文漫画，自动切换 EasyOCR 准确提取英文...")
-                    self._init_easyocr()
+                        progress_callback(55, "探知为英文漫画，自动切换 EasyOCR 准确提取英文 (硬禁用 Manga-OCR)...")
+                    # Hard-disable Manga-OCR to strictly eliminate Japanese kana/hiragana/katakana hallucinations
+                    self._manga_ocr = None
                     for box in raw_boxes:
-                        bx1, by1 = box["xmin"], box["ymin"]
-                        bx2, by2 = box["xmax"], box["ymax"]
+                        bx1 = max(0, min(box["xmin"], w_img - 1))
+                        by1 = max(0, min(box["ymin"], h_img - 1))
+                        bx2 = max(bx1 + 1, min(box["xmax"], w_img))
+                        by2 = max(by1 + 1, min(box["ymax"], h_img))
                         crop = image[by1:by2, bx1:bx2]
                         if crop.size > 0:
                             crop = mask_crop_with_lines(crop, box, bx1, by1)
-                            rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-                            res = self._easyocr_reader.readtext(rgb)
-                            if res:
-                                box["text"] = " ".join(t[1].strip() for t in res if t[1].strip())
-                                box["conf"] = float(np.mean([t[2] for t in res]))
+                            txt, conf = self._read_block_easyocr(crop, angle=box.get("angle", 0.0), is_english=True)
+                            if txt:
+                                box["text"] = txt
+                                box["conf"] = conf
                 else:
                     if self._manga_ocr is None:
                         from app.core.ocr.manga_ocr_wrapper import get_manga_ocr
@@ -459,12 +703,11 @@ class OCREngine:
                             conf_sec = float(box.get("sec_conf", 0.0))
                             if not txt_sec and crop.size > 0:
                                 try:
-                                    self._init_easyocr()
+                                    self._init_easyocr(is_english=False)
                                     rgb_c = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
                                     sec_res = self._easyocr_reader.readtext(rgb_c)
                                     if sec_res:
-                                        txt_sec = " ".join(t[1].strip() for t in sec_res if t[1].strip())
-                                        conf_sec = float(np.mean([t[2] for t in sec_res]))
+                                        txt_sec, conf_sec = sort_easyocr_fragments_2d(sec_res)
                                 except Exception:
                                     pass
                             final_t, final_c = ensemble_recognize_text(
@@ -620,7 +863,7 @@ class OCREngine:
                     print(f"[-] EasyOCR 回退识别亦发生异常: {e_easy}")
 
         # Decoupled recognition / Recognition ensemble: Manga-OCR for Paddle Japanese text crops
-        if (self.engine_type == "paddle_manga" or (self.engine_type == "paddle" and self.enable_ensemble_recognition)) and any(w in str(self.lang).lower() for w in ["japan", "ja"]):
+        if not page_is_english and (self.engine_type == "paddle_manga" or (self.engine_type == "paddle" and self.enable_ensemble_recognition)) and any(w in str(self.lang).lower() for w in ["japan", "ja"]):
             try:
                 if self._manga_ocr is None:
                     from app.core.ocr.manga_ocr_wrapper import get_manga_ocr
@@ -692,7 +935,19 @@ class OCREngine:
             is_bubble = True
             aspect = (xmax - xmin) / max(1, (ymax - ymin))
             if aspect > 4.0 or aspect < 0.15:
-                is_bubble = False
+                is_uniform_banner = False
+                if aspect > 4.0 and crop.size > 0:
+                    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+                    h_c, w_c = gray.shape[:2]
+                    if h_c >= 4 and w_c >= 4:
+                        border_pixels = np.concatenate([gray[0, :], gray[-1, :], gray[:, 0], gray[:, -1]])
+                        border_std = float(np.std(border_pixels))
+                        conf = float(box.get("conf", 1.0))
+                        text_str = str(box.get("text", "")).strip()
+                        if border_std < 22.0 and (conf >= 0.20 or len(text_str) >= 3):
+                            is_uniform_banner = True
+                if not is_uniform_banner:
+                    is_bubble = False
 
             tb = TranslationBlock(
                 id=str(uuid.uuid4())[:8],
@@ -716,7 +971,7 @@ class OCREngine:
         eff_direction = reading_direction or getattr(self, "reading_direction", None)
         if eff_direction:
             resolved_mode = eff_direction
-        elif any(w in str(self.lang).lower() for w in ["en", "eng", "english", "latin"]):
+        elif page_is_english or any(w in str(self.lang).lower() for w in ["en", "eng", "english", "latin"]):
             resolved_mode = ReadingOrderMode.WESTERN_LTR.value
         elif (h_img / max(1, w_img)) >= 2.2:
             resolved_mode = ReadingOrderMode.WEBTOON_TTB.value

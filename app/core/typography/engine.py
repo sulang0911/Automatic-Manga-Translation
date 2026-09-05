@@ -415,21 +415,67 @@ class TypographyEngine:
 
             font = self.get_font(font_family, font_size)
 
-            # Sample background color and luminance underneath this bubble
-            bg_rgb = (255, 255, 255)
-            bg_lum = 255.0
+            # Prioritize stored block.bg_color (and override)
+            stored_bg_hex = getattr(block, "bg_color_override", None) or getattr(block, "bg_color", None)
+            if isinstance(block, dict):
+                stored_bg_hex = block.get("bg_color_override") or block.get("bg_color")
+
+            stored_bg_rgb = None
+            stored_bg_lum = None
+            if stored_bg_hex and isinstance(stored_bg_hex, str):
+                s_hex = stored_bg_hex.strip()
+                if s_hex.startswith("#") and len(s_hex) >= 7:
+                    try:
+                        s_r = int(s_hex[1:3], 16)
+                        s_g = int(s_hex[3:5], 16)
+                        s_b = int(s_hex[5:7], 16)
+                        stored_bg_rgb = (s_r, s_g, s_b)
+                        stored_bg_lum = 0.299 * s_r + 0.587 * s_g + 0.114 * s_b
+                    except ValueError:
+                        pass
+
+            # Sample background color and luminance underneath this bubble from erased_image
+            sampled_rgb = (255, 255, 255)
+            sampled_lum = 255.0
             bx1, by1 = max(0, int(x)), max(0, int(y))
             bx2, by2 = min(w_img, int(x + w)), min(h_img, int(y + h))
             if bx2 > bx1 and by2 > by1:
                 crop = erased_image[by1:by2, bx1:bx2]
-                bg_rgb = get_background_color_rgb(crop)
-                bg_lum = 0.299 * bg_rgb[0] + 0.587 * bg_rgb[1] + 0.114 * bg_rgb[2]
+                sampled_rgb = get_background_color_rgb(crop)
+                sampled_lum = 0.299 * sampled_rgb[0] + 0.587 * sampled_rgb[1] + 0.114 * sampled_rgb[2]
+
+            # Prevent noisy perimeter re-sampling on erased_image from mistaking a dark box
+            # touching the image border (e.g. x=0) as light:
+            # Prioritize the stored block.bg_color!
+            is_stored_dark = (
+                (stored_bg_hex and str(stored_bg_hex).strip().lower() == "#000000") or
+                (stored_bg_lum is not None and stored_bg_lum < 60.0)
+            )
+            is_sampled_dark = sampled_lum < 60.0
+
+            if is_stored_dark:
+                bg_rgb = stored_bg_rgb if stored_bg_rgb is not None else (0, 0, 0)
+                bg_lum = stored_bg_lum if stored_bg_lum is not None else 0.0
+            elif is_sampled_dark:
+                bg_rgb = sampled_rgb
+                bg_lum = sampled_lum
+            elif stored_bg_lum is not None and str(stored_bg_hex).strip().upper() != "#FFFFFF":
+                bg_rgb = stored_bg_rgb
+                bg_lum = stored_bg_lum
+            else:
+                bg_rgb = sampled_rgb
+                bg_lum = sampled_lum
+
+            is_dark_bg_block = is_stored_dark or (bg_lum < 60.0)
 
             # Color resolution
             if block.text_color_override:
                 text_color_hex = block.text_color_override
             elif cfg.text_color_mode == TextColorMode.CUSTOM.value:
                 text_color_hex = cfg.custom_text_color
+            elif is_dark_bg_block:
+                # If block.bg_color is dark (luminance < 60), automatically select white text
+                text_color_hex = "#FFFFFF"
             else:
                 # Automatic / original mode: check candidate color
                 cand_hex = block.text_color or "#000000"
@@ -468,7 +514,12 @@ class TypographyEngine:
             stroke = None
             if stroke_mode == StrokeMode.AUTO.value:
                 sw_param = block.stroke_width_override if block.stroke_width_override is not None else cfg.stroke_width
-                stroke = StrokeRenderer.get_auto_contrast_stroke((r, g, b), font_size, bg_rgb=bg_rgb, base_stroke_w=sw_param)
+                if is_dark_bg_block:
+                    # Contrasting dark outline (stroke_color = "#000000") for dark boxes
+                    sw = float(sw_param) if sw_param is not None else max(1.5, font_size * 0.08)
+                    stroke = StrokeStyle(color_rgba=(0, 0, 0, 255), width=float(sw))
+                else:
+                    stroke = StrokeRenderer.get_auto_contrast_stroke((r, g, b), font_size, bg_rgb=bg_rgb, base_stroke_w=sw_param)
             elif stroke_mode == StrokeMode.MANUAL.value:
                 stroke_hex = block.stroke_color_override or cfg.stroke_color
                 sr = int(stroke_hex[1:3], 16) if len(stroke_hex) >= 7 else 255

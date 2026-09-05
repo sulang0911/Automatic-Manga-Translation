@@ -8,6 +8,7 @@ import sys
 import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
+import math
 import numpy as np
 import cv2
 import torch
@@ -24,11 +25,160 @@ DEFAULT_CTD_WEIGHT_PATHS = [
 ]
 
 
+def _get_line_angle(ln_pts: Any) -> float:
+    ln_arr = np.asarray(ln_pts, dtype=np.float32)
+    if len(ln_arr) < 3:
+        return 0.0
+    return calculate_polygon_angle(ln_arr.astype(int).tolist(), threshold=3.5)
+
+
+def _has_dark_boundary_barrier_lines(
+    image_src: Optional[np.ndarray],
+    l1: Any,
+    l2: Any,
+    luminance_threshold: float = 90.0,
+) -> bool:
+    if image_src is None or not hasattr(image_src, "shape") or image_src.size == 0:
+        return False
+    try:
+        gray = cv2.cvtColor(image_src, cv2.COLOR_BGR2GRAY) if image_src.ndim == 3 else image_src
+        a1 = np.asarray(l1, dtype=np.float32)
+        a2 = np.asarray(l2, dtype=np.float32)
+        if len(a1) == 0 or len(a2) == 0:
+            return False
+
+        h_img_loc, w_img_loc = gray.shape[:2]
+        y1_min, y1_max = float(a1[:, 1].min()), float(a1[:, 1].max())
+        y2_min, y2_max = float(a2[:, 1].min()), float(a2[:, 1].max())
+        x1_min, x1_max = float(a1[:, 0].min()), float(a1[:, 0].max())
+        x2_min, x2_max = float(a2[:, 0].min()), float(a2[:, 0].max())
+
+        # If l1 is above l2 in y:
+        if y2_min > y1_max:
+            y_start = max(0, int(round(y1_max)))
+            y_end = min(h_img_loc, int(round(y2_min)))
+            x_start = max(0, int(round(min(x1_min, x2_min))))
+            x_end = min(w_img_loc, int(round(max(x1_max, x2_max))))
+            if y_end > y_start and x_end > x_start:
+                strip = gray[y_start:y_end, x_start:x_end]
+                if strip.size > 0 and float(strip.min()) < luminance_threshold:
+                    return True
+        elif y1_min > y2_max:
+            y_start = max(0, int(round(y2_max)))
+            y_end = min(h_img_loc, int(round(y1_min)))
+            x_start = max(0, int(round(min(x1_min, x2_min))))
+            x_end = min(w_img_loc, int(round(max(x1_max, x2_max))))
+            if y_end > y_start and x_end > x_start:
+                strip = gray[y_start:y_end, x_start:x_end]
+                if strip.size > 0 and float(strip.min()) < luminance_threshold:
+                    return True
+
+        # Ray-casting between centroids
+        cx1, cy1 = float(a1[:, 0].mean()), float(a1[:, 1].mean())
+        cx2, cy2 = float(a2[:, 0].mean()), float(a2[:, 1].mean())
+        dist = math.hypot(cx2 - cx1, cy2 - cy1)
+        if dist > 2.0:
+            num_samples = max(10, int(dist))
+            xs = np.linspace(cx1, cx2, num_samples)
+            ys = np.linspace(cy1, cy2, num_samples)
+            for x, y in zip(xs, ys):
+                in_l1 = (x1_min <= x <= x1_max) and (y1_min <= y <= y1_max)
+                in_l2 = (x2_min <= x <= x2_max) and (y2_min <= y <= y2_max)
+                if not in_l1 and not in_l2:
+                    ix = int(round(x))
+                    iy = int(round(y))
+                    if 0 <= iy < h_img_loc and 0 <= ix < w_img_loc:
+                        if float(gray[iy, ix]) < luminance_threshold:
+                            return True
+        return False
+    except Exception:
+        return False
+
+
+def _cluster_lines_by_angle(lines_list: List[Any], img_src: Optional[np.ndarray] = None) -> List[List[Any]]:
+    if len(lines_list) <= 1:
+        return [lines_list]
+    line_angles = [_get_line_angle(ln) for ln in lines_list]
+    clusters: List[List[Any]] = []
+    cluster_angles: List[float] = []
+    for ln, ang in zip(lines_list, line_angles):
+        matched = False
+        for c_idx, c_ang in enumerate(cluster_angles):
+            diff = abs(ang - c_ang)
+            if diff > 90.0:
+                diff = abs(diff - 180.0)
+            if diff <= 8.0:
+                clusters[c_idx].append(ln)
+                matched = True
+                break
+        if not matched:
+            clusters.append([ln])
+            cluster_angles.append(ang)
+
+    # Sub-split each angle cluster by spatial gaps and dark boundary barriers
+    final_groups: List[List[Any]] = []
+    for c_idx, cl_lines in enumerate(clusters):
+        if len(cl_lines) <= 1:
+            final_groups.append(cl_lines)
+            continue
+
+        c_ang = cluster_angles[c_idx]
+        is_vertical = abs(c_ang) > 45.0
+
+        if not is_vertical:
+            # Horizontal / slanted lines: sort top to bottom by ymin
+            sorted_lines = sorted(cl_lines, key=lambda ln: np.asarray(ln, dtype=np.float32)[:, 1].min())
+            cur_group = [sorted_lines[0]]
+            for ln in sorted_lines[1:]:
+                prev_ln = cur_group[-1]
+                p_arr = np.asarray(prev_ln, dtype=np.float32)
+                c_arr = np.asarray(ln, dtype=np.float32)
+                p_h = p_arr[:, 1].max() - p_arr[:, 1].min()
+                c_h = c_arr[:, 1].max() - c_arr[:, 1].min()
+                avg_h = (p_h + c_h) / 2.0
+                y_gap = c_arr[:, 1].min() - p_arr[:, 1].max()
+                has_barrier = _has_dark_boundary_barrier_lines(img_src, prev_ln, ln) if img_src is not None else False
+                should_split = (y_gap > max(20, int(1.2 * avg_h))) or (has_barrier and y_gap > 10)
+                if should_split:
+                    final_groups.append(cur_group)
+                    cur_group = [ln]
+                else:
+                    cur_group.append(ln)
+            if cur_group:
+                final_groups.append(cur_group)
+        else:
+            # Vertical lines: sort right to left by xmax
+            sorted_lines = sorted(cl_lines, key=lambda ln: -np.asarray(ln, dtype=np.float32)[:, 0].max())
+            cur_group = [sorted_lines[0]]
+            for ln in sorted_lines[1:]:
+                prev_ln = cur_group[-1]
+                p_arr = np.asarray(prev_ln, dtype=np.float32)
+                c_arr = np.asarray(ln, dtype=np.float32)
+                p_w = p_arr[:, 0].max() - p_arr[:, 0].min()
+                c_w = c_arr[:, 0].max() - c_arr[:, 0].min()
+                avg_w = (p_w + c_w) / 2.0
+                x_gap = p_arr[:, 0].min() - c_arr[:, 0].max()
+                has_barrier = _has_dark_boundary_barrier_lines(img_src, prev_ln, ln) if img_src is not None else False
+                should_split = (x_gap > max(20, int(1.2 * avg_w))) or (has_barrier and x_gap > 10)
+                if should_split:
+                    final_groups.append(cur_group)
+                    cur_group = [ln]
+                else:
+                    cur_group.append(ln)
+            if cur_group:
+                final_groups.append(cur_group)
+
+    return final_groups
+
+
 class ComicTextDetectorEngine:
     """
     Wrapper around comic_text_detector.inference.TextDetector.
     Detects dialogue bubbles, onomatopoeia, and slanted text lines with high recall.
     """
+
+    _cluster_lines_by_angle = staticmethod(_cluster_lines_by_angle)
+    _has_dark_boundary_barrier_lines = staticmethod(_has_dark_boundary_barrier_lines)
 
     def __init__(
         self,
@@ -118,33 +268,6 @@ class ComicTextDetectorEngine:
             logger.warning(f"CTD inference error: {e}", exc_info=True)
             return [], None
 
-        def _get_line_angle(ln_pts: Any) -> float:
-            ln_arr = np.asarray(ln_pts, dtype=np.float32)
-            if len(ln_arr) < 3:
-                return 0.0
-            return calculate_polygon_angle(ln_arr.astype(int).tolist(), threshold=3.5)
-
-        def _cluster_lines_by_angle(lines_list: List[Any]) -> List[List[Any]]:
-            if len(lines_list) <= 1:
-                return [lines_list]
-            line_angles = [_get_line_angle(ln) for ln in lines_list]
-            clusters: List[List[Any]] = []
-            cluster_angles: List[float] = []
-            for ln, ang in zip(lines_list, line_angles):
-                matched = False
-                for c_idx, c_ang in enumerate(cluster_angles):
-                    diff = abs(ang - c_ang)
-                    if diff > 90.0:
-                        diff = abs(diff - 180.0)
-                    if diff <= 8.0:
-                        clusters[c_idx].append(ln)
-                        matched = True
-                        break
-                if not matched:
-                    clusters.append([ln])
-                    cluster_angles.append(ang)
-            return clusters
-
         raw_boxes = []
         for blk in blk_list:
             xyxy = getattr(blk, "xyxy", None)
@@ -178,7 +301,7 @@ class ComicTextDetectorEngine:
                 })
                 continue
 
-            line_clusters = _cluster_lines_by_angle(lines)
+            line_clusters = _cluster_lines_by_angle(lines, img_src=image)
             for cl_lines in line_clusters:
                 cl_line_data = []
                 all_line_pts = []

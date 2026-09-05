@@ -79,9 +79,11 @@ class TranslationEngine:
         if progress_callback:
             progress_callback(20, f"正在向 {self.provider.upper()} ({self.model}) 发送翻译请求...")
 
+        from app.core.pipeline import normalize_domain_slang, clean_translation_syntax
+
         # Build payload with narrative index and original text anchor
         items_payload = [
-            {"index": idx + 1, "id": b.get("id"), "original_text": b.get("original_text", "")}
+            {"index": idx + 1, "id": b.get("id"), "original_text": normalize_domain_slang(b.get("original_text", ""))}
             for idx, b in enumerate(blocks)
         ]
         user_message = (
@@ -138,6 +140,7 @@ class TranslationEngine:
 
             for orig_b, aligned_b in zip(blocks, aligned_tb):
                 clean_text = re.sub(r'<\|im_end\|>|<\|im_start\|>|</s>|<\|endoftext\|>', '', str(aligned_b.translated_text)).strip()
+                clean_text = clean_translation_syntax(clean_text, str(orig_b.get("original_text", "")))
                 if isinstance(orig_b, dict):
                     orig_b["translated_text"] = clean_text
                     if aligned_b.type:
