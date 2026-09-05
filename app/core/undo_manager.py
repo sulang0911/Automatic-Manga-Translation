@@ -59,7 +59,7 @@ class PageSnapshot:
         return cls(
             page_path=page_path or "",
             blocks=serialized_blocks,
-            erased_img=erased_img,
+            erased_img=erased_img.copy() if (erased_img is not None and hasattr(erased_img, "copy")) else None,
             style=copied_style,
             description=description
         )

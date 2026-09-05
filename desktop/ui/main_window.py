@@ -231,11 +231,101 @@ class MainWindow(QMainWindow):
 
     def _on_block_deleted(self, block_id: str):
         if self.current_image_data and self.current_image_data.get("blocks"):
-            self.current_image_data["blocks"] = [
-                b for b in self.current_image_data["blocks"] if b.get("id") != block_id
+            blocks = self.current_image_data["blocks"]
+            target_block = next(
+                (b for b in blocks if str(b.get("id") if isinstance(b, dict) else getattr(b, "id", None)) == str(block_id)),
+                None
+            )
+            remaining_blocks = [
+                b for b in blocks if str(b.get("id") if isinstance(b, dict) else getattr(b, "id", None)) != str(block_id)
             ]
-            self.canvas_view.blocks = self.current_image_data["blocks"]
+
+            original_cv = getattr(self.canvas_view, "original_cv", None)
+            erased_cv = self.current_image_data.get("erased_img") or getattr(self.canvas_view, "erased_cv", None)
+
+            if target_block and original_cv is not None and erased_cv is not None:
+                from app.core.inpaint.restore_helper import restore_block_pixels
+                restored_erased = restore_block_pixels(
+                    original_img=original_cv,
+                    erased_img=erased_cv,
+                    deleted_block=target_block,
+                    remaining_blocks=remaining_blocks,
+                    padding=4
+                )
+                self.current_image_data["erased_img"] = restored_erased
+                self.canvas_view.erased_cv = restored_erased
+
+            self.current_image_data["blocks"] = remaining_blocks
+            self.canvas_view.blocks = remaining_blocks
+
+            path = self.current_image_data.get("path")
+            if path and self.current_image_data.get("erased_img") is not None:
+                try:
+                    from app.core.cache.cache_manager import get_cache_manager
+                    get_cache_manager().save_page_cache(
+                        path,
+                        blocks=remaining_blocks,
+                        erased_img=self.current_image_data["erased_img"]
+                    )
+                except Exception:
+                    pass
+
             self._re_render_current_page()
+
+    def _re_render_current_page(self):
+        """Performs live typography re-render onto canvas."""
+        if not self.current_image_data:
+            return
+        blocks = self.current_image_data.get("blocks", [])
+        base_img = self.current_image_data.get("erased_img") or getattr(self.canvas_view, "original_cv", None)
+        if base_img is None:
+            return
+
+        path = self.current_image_data.get("path")
+
+        if not blocks:
+            rendered = base_img.copy()
+            self.current_image_data["translated_img"] = rendered
+            self.canvas_view.translated_cv = rendered
+            self.canvas_view.update_translated_image(rendered, erased_cv=base_img)
+            if path:
+                try:
+                    from app.core.cache.cache_manager import get_cache_manager
+                    get_cache_manager().save_page_cache(
+                        path,
+                        blocks=[],
+                        erased_img=base_img,
+                        rendered_img=rendered
+                    )
+                except Exception:
+                    pass
+            return
+
+        try:
+            from app.core.typography.engine import TypographyEngine
+            from app.core.models import TranslationBlock
+            model_blocks = [
+                b if isinstance(b, TranslationBlock) else TranslationBlock.from_dict(b)
+                for b in blocks
+            ]
+            engine = TypographyEngine()
+            rendered = engine.render_page(base_img, model_blocks)
+            self.current_image_data["translated_img"] = rendered
+            self.canvas_view.translated_cv = rendered
+            self.canvas_view.update_translated_image(rendered, erased_cv=base_img)
+            if path:
+                try:
+                    from app.core.cache.cache_manager import get_cache_manager
+                    get_cache_manager().save_page_cache(
+                        path,
+                        blocks=model_blocks,
+                        erased_img=base_img,
+                        rendered_img=rendered
+                    )
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"[-] Legacy re-render error: {e}")
 
     def _run_full_pipeline(self):
         if not self.current_image_data:

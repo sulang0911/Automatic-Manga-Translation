@@ -142,11 +142,26 @@ class BatchWorker(QThread):
                     if export_path:
                         if not os.path.exists(export_path):
                             full_c = cache_mgr.load_page_cache(img_path, load_images=True)
-                            if full_c["rendered_img"] is not None:
+                            rendered_to_export = full_c.get("rendered_img")
+                            if rendered_to_export is None:
+                                base_bg = full_c.get("erased_img")
+                                if base_bg is None:
+                                    base_bg = safe_cv2_imread(img_path)
+                                if base_bg is not None:
+                                    rendered_to_export = typo_eng.render_translations(base_bg, cached_data.get("blocks", []), self.config)
+                            if rendered_to_export is not None:
+                                compressed = False
+                                if hasattr(self.config, "style"):
+                                    compressed = getattr(self.config.style, "export_compressed", False)
+                                elif isinstance(self.config, dict):
+                                    style_cfg = self.config.get("style", {})
+                                    if isinstance(style_cfg, dict):
+                                        compressed = style_cfg.get("export_compressed", False)
                                 MangaExporter.export_hierarchical_image(
-                                    full_c["rendered_img"],
+                                    rendered_to_export,
                                     export_path,
-                                    source_path=img_path
+                                    source_path=img_path,
+                                    compressed=compressed
                                 )
 
                     self.sig_batch_progress.emit(idx + 1, total, filename, 100, "秒速恢复(缓存)")
@@ -209,22 +224,13 @@ class BatchWorker(QThread):
                     blocks = trans_mgr.translate(blocks=blocks, mode="text", source_lang=source_lang, target_lang=target_lang)
                     cache_mgr.save_page_cache(img_path, blocks=blocks)
 
-                # 6. Render Stage
-                self.sig_batch_progress.emit(idx + 1, total, filename, 90, "正在生成排版...")
-                base_bg = erased_img if erased_img is not None else original_img
-                translated_img = typo_eng.render_translations(base_bg, blocks, self.config)
-
-                # 7. Persist complete cache to disk (.amt_cache/)
-                cache_mgr.save_page_cache(
-                    img_path,
-                    erased_img=erased_img,
-                    blocks=blocks,
-                    rendered_img=translated_img
-                )
-
-                # 8. Auto export if export_dir specified
+                # 6. Render & Export Stage (Deferred Typography if no export path)
                 export_path = self.resolve_export_path(item)
+                translated_img = None
                 if export_path:
+                    self.sig_batch_progress.emit(idx + 1, total, filename, 90, "正在生成排版并导出...")
+                    base_bg = erased_img if erased_img is not None else original_img
+                    translated_img = typo_eng.render_translations(base_bg, blocks, self.config)
                     compressed = False
                     if hasattr(self.config, "style"):
                         compressed = getattr(self.config.style, "export_compressed", False)
@@ -237,6 +243,19 @@ class BatchWorker(QThread):
                         export_path,
                         source_path=img_path,
                         compressed=compressed
+                    )
+                    cache_mgr.save_page_cache(
+                        img_path,
+                        erased_img=erased_img,
+                        blocks=blocks,
+                        rendered_img=translated_img
+                    )
+                else:
+                    self.sig_batch_progress.emit(idx + 1, total, filename, 90, "已保存译文数据 (按需排版)...")
+                    cache_mgr.save_page_cache(
+                        img_path,
+                        erased_img=erased_img,
+                        blocks=blocks
                     )
 
                 self.sig_batch_progress.emit(idx + 1, total, filename, 100, "完成并已存盘")

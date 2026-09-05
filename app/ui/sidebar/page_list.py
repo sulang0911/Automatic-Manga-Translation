@@ -233,6 +233,7 @@ class PageListWidget(QWidget):
     sig_start_retranslate_all = pyqtSignal()
     sig_translate_page = pyqtSignal(dict)
     sig_export_page = pyqtSignal(dict)
+    sig_export_all = pyqtSignal()
     sig_edit_page_style = pyqtSignal(dict)
     sig_cache_cleared = pyqtSignal(dict)
     sig_count_changed = pyqtSignal(int)
@@ -548,6 +549,7 @@ class PageListWidget(QWidget):
         act_translate = menu.addAction(get_icon("play", color="#3B82F6", size=14), "翻译此页面")
         act_retranslate_this = menu.addAction(get_icon("refresh", color="#F59E0B", size=14), "🔄 重新翻译此页面 (重译当前页)")
         act_export = menu.addAction(get_icon("download", color="#10B981", size=14), "导出此页面...")
+        act_export_all = menu.addAction(get_icon("download", color="#3B82F6", size=14), "📦 批量导出全本全部页面...")
         menu.addSeparator()
         act_retranslate_all = menu.addAction(get_icon("play_all", color="#F59E0B", size=14), "🔄 批量全部重新翻译 (重译本章全部页面)...")
         menu.addSeparator()
@@ -570,6 +572,8 @@ class PageListWidget(QWidget):
             self.sig_start_retranslate_all.emit()
         elif chosen == act_export:
             self.sig_export_page.emit(data)
+        elif chosen == act_export_all:
+            self.sig_export_all.emit()
         elif chosen == act_locate:
             if path and os.path.exists(path):
                 import subprocess

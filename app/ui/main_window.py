@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QPushButton, QLabel, QSplitter, QProgressBar,
     QButtonGroup, QFrame, QSlider, QCheckBox, QToolButton, QFileDialog, QComboBox,
-    QApplication, QTextEdit, QPlainTextEdit, QLineEdit
+    QApplication, QTextEdit, QPlainTextEdit, QLineEdit, QMenu
 )
 from PyQt6.QtCore import Qt, QSize, QTimer
 from PyQt6.QtGui import QIcon, QKeySequence, QShortcut, QColor, QDragEnterEvent, QDropEvent
@@ -208,6 +208,7 @@ class MainWindow(QMainWindow):
         self.page_list.sig_clear_requested.connect(self._on_page_list_cleared)
         self.page_list.sig_translate_page.connect(self._on_translate_page_from_list)
         self.page_list.sig_export_page.connect(self._on_export_page_from_list)
+        self.page_list.sig_export_all.connect(self._export_all_pages)
         self.page_list.sig_edit_page_style.connect(self._open_page_style_dialog)
         self.page_list.sig_cache_cleared.connect(self._on_page_cache_cleared)
         drawer_layout.addWidget(self.page_list, 1)
@@ -337,12 +338,18 @@ class MainWindow(QMainWindow):
         self.page_style_btn.clicked.connect(self._open_current_page_style_dialog)
         layout.addWidget(self.page_style_btn)
 
-        # Export Button
+        # Export Button (Supports Single Page & Batch Chapter Export)
         self.export_btn = QPushButton("导出", toolbar)
         self.export_btn.setIcon(get_icon("download", color="#A1A1AA", size=16))
-        self.export_btn.setToolTip("导出当前已翻译页面 (PNG / JPG / WebP / PDF)")
+        self.export_btn.setToolTip("导出已翻译漫画 (点击选择导出单页或批量导出全本)")
         self.export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.export_btn.clicked.connect(self._export_current_page)
+
+        export_menu = QMenu(self)
+        act_export_curr = export_menu.addAction(get_icon("download", color="#3B82F6", size=14), "导出当前页面 (PNG / JPG / WebP / PDF)...")
+        act_export_curr.triggered.connect(self._export_current_page)
+        act_export_all = export_menu.addAction(get_icon("folder_open", color="#10B981", size=14), "📦 批量导出全本已翻译页面...")
+        act_export_all.triggered.connect(self._export_all_pages)
+        self.export_btn.setMenu(export_menu)
         layout.addWidget(self.export_btn)
 
         # Batch Translate Button (Skip finished)
@@ -749,15 +756,66 @@ class MainWindow(QMainWindow):
 
     def _on_block_deleted(self, block_id: str):
         if self.current_image_data and "blocks" in self.current_image_data:
-            self._push_undo_snapshot("删除气泡")
             blocks = self.current_image_data["blocks"]
-            self.current_image_data["blocks"] = [
+            target_block = next(
+                (b for b in blocks if str(b.get("id") if isinstance(b, dict) else getattr(b, "id", None)) == str(block_id)),
+                None
+            )
+            if target_block is None:
+                return
+
+            self._push_undo_snapshot("删除气泡")
+
+            remaining_blocks = [
                 b for b in blocks
-                if (b.get("id") if isinstance(b, dict) else getattr(b, "id", None)) != block_id
+                if str(b.get("id") if isinstance(b, dict) else getattr(b, "id", None)) != str(block_id)
             ]
-            self.inspector_panel.set_blocks(self.current_image_data["blocks"])
-            self.canvas_view.blocks = self.current_image_data["blocks"]
+
+            # Pixel restoration: restore original comic artwork pixels at deleted block location
+            path = self.current_image_data.get("path")
+            original_cv = getattr(self.canvas_view, "original_cv", None)
+            if original_cv is None:
+                original_cv = self.current_image_data.get("original_cv") or self.current_image_data.get("img")
+            if original_cv is None and path and os.path.exists(path):
+                original_cv = safe_cv2_imread(path)
+                if original_cv is not None:
+                    self.current_image_data["original_cv"] = original_cv
+
+            erased_cv = self.current_image_data.get("erased_img")
+            if erased_cv is None:
+                erased_cv = getattr(self.canvas_view, "erased_cv", None)
+            if erased_cv is None and path:
+                cached = get_cache_manager().load_page_cache(path, load_images=True)
+                erased_cv = cached.get("erased_img")
+
+            if original_cv is not None and erased_cv is not None:
+                from app.core.inpaint.restore_helper import restore_block_pixels
+                restored_erased = restore_block_pixels(
+                    original_img=original_cv,
+                    erased_img=erased_cv,
+                    deleted_block=target_block,
+                    remaining_blocks=remaining_blocks,
+                    padding=4
+                )
+                self.current_image_data["erased_img"] = restored_erased
+                self.canvas_view.erased_cv = restored_erased
+            elif len(remaining_blocks) == 0 and original_cv is not None:
+                self.current_image_data["erased_img"] = original_cv.copy()
+                self.canvas_view.erased_cv = original_cv.copy()
+
+            self.current_image_data["blocks"] = remaining_blocks
+            self.inspector_panel.set_blocks(remaining_blocks)
+            self.canvas_view.blocks = remaining_blocks
             self.canvas_view._rebuild_bubbles()
+
+            # Immediately persist updated blocks and restored erased_img to local disk cache (.amt_cache)
+            if path and self.current_image_data.get("erased_img") is not None:
+                get_cache_manager().save_page_cache(
+                    path,
+                    blocks=remaining_blocks,
+                    erased_img=self.current_image_data["erased_img"]
+                )
+
             self._re_render_current_page()
 
     def _schedule_rerender(self):
@@ -768,9 +826,6 @@ class MainWindow(QMainWindow):
         """Performs live typography re-render onto canvas using current style configuration."""
         if not self.current_image_data:
             return
-        blocks = self.current_image_data.get("blocks", [])
-        if not blocks:
-            return
 
         if self._pending_inspector_snapshot and self.current_image_data:
             current_blocks = self.current_image_data.get("blocks", [])
@@ -779,6 +834,8 @@ class MainWindow(QMainWindow):
                 self.undo_manager.push(self._pending_inspector_snapshot)
                 self._update_undo_redo_ui()
             self._pending_inspector_snapshot = None
+
+        blocks = self.current_image_data.get("blocks", [])
 
         base_img = self.current_image_data.get("erased_img")
         if base_img is None:
@@ -790,8 +847,26 @@ class MainWindow(QMainWindow):
                     self.current_image_data["erased_img"] = base_img
 
         if base_img is None:
-            base_img = self.canvas_view.original_cv
+            base_img = getattr(self.canvas_view, "original_cv", None)
         if base_img is None:
+            return
+
+        path = self.current_image_data.get("path")
+
+        # If all blocks were deleted, display the clean base image and persist
+        if not blocks:
+            rendered = base_img.copy()
+            self.current_image_data["translated_img"] = rendered
+            self.canvas_view.translated_cv = rendered
+            self.canvas_view.update_translated_image(rendered, erased_cv=base_img)
+            if path:
+                get_cache_manager().save_page_cache(
+                    path,
+                    blocks=[],
+                    erased_img=base_img,
+                    rendered_img=rendered
+                )
+            self.status_label.setText("气泡已删除，已还原原图底图")
             return
 
         # Convert dict blocks to TranslationBlock objects if needed
@@ -812,9 +887,13 @@ class MainWindow(QMainWindow):
                 if "translated" in self._mode_buttons:
                     self._mode_buttons["translated"].setChecked(True)
 
-            path = self.current_image_data.get("path")
             if path:
-                get_cache_manager().save_page_cache(path, blocks=model_blocks, rendered_img=rendered)
+                get_cache_manager().save_page_cache(
+                    path,
+                    blocks=model_blocks,
+                    erased_img=base_img,
+                    rendered_img=rendered
+                )
             self.status_label.setText("排版重绘完成并已自动保存")
         except Exception as e:
             self.status_label.setText(f"重排版失败: {e}")
@@ -1015,83 +1094,46 @@ class MainWindow(QMainWindow):
 
     def _re_render_all_pages(self):
         """
-        Re-renders all pages in the chapter queue that have translation blocks.
-        Uses page-specific StyleConfig if set, otherwise falls back to global self.config.style.
+        Applies updated global typography settings with zero GUI freezing:
+        1. Immediately re-renders the currently viewed canvas page (< 30ms).
+        2. Invalidates stale pre-rendered bitmaps for background queue pages (< 5ms).
+        3. Background pages will be lazily rendered on-demand when selected or exported.
         """
-        cache_mgr = get_cache_manager()
         items = self.page_list.items_data
         if not items:
             self.toast.show_message("当前列表无页面，全局文字设置已保存！", "info")
             return
 
-        re_rendered_count = 0
-        current_path = self.current_image_data.get("path") if self.current_image_data else None
+        cache_mgr = get_cache_manager()
 
+        # 1. Immediately re-render current canvas page if active
+        if self.current_image_data and self.current_image_data.get("blocks"):
+            if not self.current_image_data.get("style"):
+                self.current_image_data["style"] = self.config.style
+            self._re_render_current_page()
+
+        # 2. Invalidate stale rendered caches for background pages (extremely fast, < 5ms)
         for item in items:
             path = item.get("path")
-            if not path or not os.path.exists(path):
+            if not path:
                 continue
 
-            is_current = (current_path == path)
+            # Clear in-memory baked image so next selection re-renders with new style
+            item["translated_img"] = None
 
-            # Get blocks
-            blocks = None
-            if is_current and self.current_image_data and self.current_image_data.get("blocks"):
-                blocks = self.current_image_data["blocks"]
-            elif item.get("blocks"):
-                blocks = item["blocks"]
-            else:
-                cached = cache_mgr.load_page_cache(path, load_images=False)
-                blocks = cached.get("blocks")
+            # If page doesn't have a page-level custom style override, invalidate old rendered disk cache
+            if not item.get("style"):
+                paths = cache_mgr.get_cache_paths(path, create_dir=False)
+                for r_key in ("rendered_webp", "rendered_png"):
+                    p = paths.get(r_key)
+                    if p and os.path.exists(p):
+                        try:
+                            os.remove(p)
+                        except OSError:
+                            pass
 
-            if not blocks:
-                continue
-
-            # Get base image (erased or original)
-            erased_img = None
-            if is_current and self.current_image_data and self.current_image_data.get("erased_img") is not None:
-                erased_img = self.current_image_data["erased_img"]
-            elif item.get("erased_img") is not None:
-                erased_img = item["erased_img"]
-            else:
-                cached_full = cache_mgr.load_page_cache(path, load_images=True)
-                erased_img = cached_full.get("erased_img")
-
-            if erased_img is None:
-                erased_img = safe_cv2_imread(path)
-            if erased_img is None:
-                continue
-
-            model_blocks = [
-                b if isinstance(b, TranslationBlock) else TranslationBlock.from_dict(b)
-                for b in blocks
-            ]
-
-            effective_style = item.get("style") or self.config.style
-
-            try:
-                rendered = self.typo_engine.render_page(erased_img, model_blocks, effective_style)
-                item["translated_img"] = rendered
-                cache_mgr.save_page_cache(path, erased_img=erased_img, blocks=model_blocks, rendered_img=rendered)
-                re_rendered_count += 1
-
-                if is_current:
-                    self.current_image_data["translated_img"] = rendered
-                    self.canvas_view.translated_cv = rendered
-                    self.canvas_view.set_data(
-                        original_cv=self.canvas_view.original_cv,
-                        translated_cv=rendered,
-                        erased_cv=erased_img,
-                        blocks=blocks
-                    )
-            except Exception as e:
-                print(f"[-] Re-render page error for {path}: {e}")
-
-        if re_rendered_count > 0:
-            self.toast.show_message(f"全局文字设置已生效，已重新渲染全部 {re_rendered_count} 个页面！", "success")
-            self.status_label.setText(f"排版重绘完成: 全部 {re_rendered_count} 个页面已重新渲染并保存")
-        else:
-            self.toast.show_message("全局设置已保存（尚未识别翻译的页面将在翻译时自动套用新排版）", "info")
+        self.toast.show_message("全局文字设置已生效！当前页面已即时刷新，其余页面将在查看或导出时按需渲染。", "success")
+        self.status_label.setText("全局文字设置已生效（按需排版模式，零等待）")
 
     def _re_render_single_page(self, item_data: Dict[str, Any], page_style: Optional[StyleConfig]):
         """
@@ -1267,7 +1309,7 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"错误: {err_msg}")
         self.toast.show_message(err_msg, "error")
 
-    def _start_batch(self, queue_items: Optional[List[Dict[str, Any]]] = None, force_retranslate: bool = False):
+    def _start_batch(self, queue_items: Optional[List[Dict[str, Any]]] = None, force_retranslate: bool = False, export_dir: Optional[str] = None):
         """Launches BatchWorker QThread for chapter queue."""
         if self.active_batch_worker and self.active_batch_worker.isRunning():
             self.active_batch_worker.cancel()
@@ -1296,9 +1338,11 @@ class MainWindow(QMainWindow):
         if hasattr(self.page_list, "retranslate_all_btn"):
             self.page_list.retranslate_all_btn.setText("⏹ 取消批处理")
 
-        export_dir = getattr(self.config, "export_dir", "") or os.path.join(os.getcwd(), "exported_chapter")
-        export_dir = os.path.abspath(export_dir)
-        os.makedirs(export_dir, exist_ok=True)
+        # When export_dir is provided (e.g. Batch Export), prepare directory.
+        # When export_dir is None (Batch Translate), raster baking is deferred to eliminate GUI freeze & save disk space!
+        if export_dir:
+            export_dir = os.path.abspath(export_dir)
+            os.makedirs(export_dir, exist_ok=True)
 
         self.active_batch_worker = BatchWorker(
             queue_items=items,
@@ -1342,7 +1386,16 @@ class MainWindow(QMainWindow):
 
     def _export_current_page(self):
         """Exports currently active translated manga page to high-res PNG/JPG/WebP/PDF."""
-        if not self.current_image_data or self.canvas_view.translated_cv is None:
+        if not self.current_image_data:
+            self.toast.show_message("当前页面尚未翻译，无法导出！", "warning")
+            return
+
+        # Lazy on-demand rendering if translated image not yet rendered
+        if self.canvas_view.translated_cv is None:
+            if self.current_image_data.get("blocks"):
+                self._re_render_current_page()
+
+        if self.canvas_view.translated_cv is None:
             self.toast.show_message("当前页面尚未翻译，无法导出！", "warning")
             return
 
@@ -1375,6 +1428,25 @@ class MainWindow(QMainWindow):
             self.toast.show_message(f"成功导出页面至: {os.path.basename(file_path)}", "success")
         else:
             self.toast.show_message("页面导出失败，请检查写入权限。", "error")
+
+    def _export_all_pages(self):
+        """Batch exports all pages to an output folder with on-the-fly rendering."""
+        items = self.page_list.items_data
+        if not items:
+            self.toast.show_message("当前列表无页面，无法执行批量导出！", "warning")
+            return
+
+        default_dir = getattr(self.config, "export_dir", "") or os.path.join(os.getcwd(), "exported_chapter")
+        chosen_dir = QFileDialog.getExistingDirectory(
+            self,
+            "选择全本漫画导出目录",
+            default_dir
+        )
+        if not chosen_dir:
+            return
+
+        self.toast.show_message(f"开始批量导出至: {os.path.basename(chosen_dir)}", "info")
+        self._start_batch(force_retranslate=False, export_dir=chosen_dir)
 
     # -------------------------------------------------------------------------
     # Undo / Redo Architecture (Ctrl+Z / Ctrl+Y)

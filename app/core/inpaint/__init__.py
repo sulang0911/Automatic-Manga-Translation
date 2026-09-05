@@ -12,6 +12,7 @@ from .color_analyzer import (
 )
 from .opencv_engine import OpenCVInpainter
 from .lama_engine import LaMaInpainter
+from .restore_helper import get_block_pixel_mask, restore_block_pixels
 
 __all__ = [
     "BaseInpainter",
@@ -24,4 +25,6 @@ __all__ = [
     "dilate_mask",
     "OpenCVInpainter",
     "LaMaInpainter",
+    "get_block_pixel_mask",
+    "restore_block_pixels",
 ]
