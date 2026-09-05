@@ -82,7 +82,9 @@ class BlockOcrTranslateWorker(QThread):
             ocr_eng = OCREngine(
                 engine_type=ocr_cfg.get("engine", self.config.get("ocr_engine", "easyocr")),
                 use_gpu=not ocr_cfg.get("force_cpu", False) if "force_cpu" in ocr_cfg else self.config.get("use_gpu", True),
-                lang=ocr_cfg.get("lang", self.config.get("ocr_lang", "japan"))
+                lang=ocr_cfg.get("lang", self.config.get("ocr_lang", "japan")),
+                enable_ensemble_detection=ocr_cfg.get("ensemble_detection", self.config.get("ocr_ensemble_detection", False)),
+                enable_ensemble_recognition=ocr_cfg.get("ensemble_recognition", self.config.get("ocr_ensemble_recognition", False)),
             )
 
             rec_text, tight_box = self._run_context_ocr(

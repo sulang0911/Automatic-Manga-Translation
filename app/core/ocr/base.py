@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional, Callable
 import numpy as np
 from app.core.models import TranslationBlock
+from app.core.inpaint.color_analyzer import get_background_color_hex
 
 
 class BaseOCREngine(ABC):
@@ -165,10 +166,43 @@ def order_polygon_vertices(pts: Any, angle_deg: float) -> List[List[int]]:
     return [[int(round(p[0])), int(round(p[1]))] for p in ordered]
 
 
+def estimate_line_height(box: Dict[str, Any], has_cjk: bool) -> float:
+    """
+    Estimates the effective line height of a text box.
+    If explicit line_count or splitlines() > 1 exists, derives line_h from that.
+    Otherwise, for horizontal multi-word paragraph boxes, estimates line count to prevent
+    the line height from exploding to the full paragraph height and falsely inflating merge gaps.
+    """
+    h = max(1.0, float(max(box["ymin"], box["ymax"]) - min(box["ymin"], box["ymax"])))
+    w = max(1.0, float(max(box["xmin"], box["xmax"]) - min(box["xmin"], box["xmax"])))
+
+    explicit_lines = box.get("line_count")
+    if explicit_lines and explicit_lines > 1:
+        return h / float(explicit_lines)
+
+    text = str(box.get("text", "")).strip()
+    split_lines = text.splitlines()
+    if len(split_lines) > 1:
+        return h / float(len(split_lines))
+
+    if not has_cjk and text:
+        words = text.split()
+        num_words = len(words)
+        if num_words >= 4 or (h >= 50.0 and h >= w * 0.40):
+            avg_char_w = max(6.0, min(16.0, w / 15.0))
+            chars_per_line = max(8.0, w / avg_char_w)
+            est_lines = max(1.0, math.ceil(len(text) / chars_per_line))
+            clamped_lines = max(est_lines, h / 45.0)
+            return h / float(clamped_lines)
+
+    return h
+
+
 def compute_bubble_labels(image: Optional[np.ndarray]) -> Optional[np.ndarray]:
     """
     Computes connected-component labels for continuous light speech bubble closures.
-    Uses adaptive binary thresholding, morphological ellipse closing, and cv2.connectedComponents.
+    Uses adaptive binary thresholding, morphological ellipse closing, and cv2.connectedComponentsWithStats.
+    Excludes large page backgrounds and margins spanning across the outer borders of the page.
     Returns an integer label matrix of shape (H, W), or None if image is None or invalid.
     """
     if image is None or not hasattr(image, "size") or image.size == 0:
@@ -181,10 +215,47 @@ def compute_bubble_labels(image: Optional[np.ndarray]) -> Optional[np.ndarray]:
         # Morphological closing with ellipse kernel bridges text strokes inside the bubble
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
         closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-        _, labels = cv2.connectedComponents(closed)
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(closed)
+        if num_labels <= 1:
+            return labels
+
+        total_pixels = float(labels.shape[0] * labels.shape[1])
+        H_lbl, W_lbl = labels.shape[:2]
+
+        # In manga, page margins, white panel backgrounds, and inter-panel gutters
+        # often form giant connected components spanning across the entire page.
+        # A single dialogue bubble never spans the entire page or covers > 35% of the page area.
+        for lbl_idx in range(1, num_labels):
+            area = stats[lbl_idx, cv2.CC_STAT_AREA]
+            area_ratio = area / total_pixels
+            left = stats[lbl_idx, cv2.CC_STAT_LEFT]
+            top = stats[lbl_idx, cv2.CC_STAT_TOP]
+            width = stats[lbl_idx, cv2.CC_STAT_WIDTH]
+            height = stats[lbl_idx, cv2.CC_STAT_HEIGHT]
+
+            touches = [
+                left <= 2,
+                top <= 2,
+                left + width >= W_lbl - 2,
+                top + height >= H_lbl - 2
+            ]
+            border_touch_count = sum(touches)
+
+            is_page_bg = False
+            if border_touch_count >= 3 and area_ratio > 0.10:
+                is_page_bg = True
+            elif border_touch_count >= 2 and area_ratio > 0.15:
+                is_page_bg = True
+            elif border_touch_count >= 1 and area_ratio > 0.45:
+                is_page_bg = True
+
+            if is_page_bg:
+                labels[labels == lbl_idx] = 0
+
         return labels
     except Exception:
         return None
+
 
 
 def can_merge_pair(
@@ -214,12 +285,35 @@ def can_merge_pair(
                 ang_diff = abs(ang_diff - 180.0)
             if ang_diff > 10.0:
                 return False
+            # Off-bubble slanted text guard: reject if one is clearly slanted and the other is horizontal dialogue
+            if min(abs(a1), abs(a2)) < 3.0 and max(abs(a1), abs(a2)) >= 8.0 and ang_diff >= 8.0:
+                return False
         except (ValueError, TypeError):
             pass
 
     # Visual background color difference guard: reject if high contrast between candidate boxes
     c1 = b1.get("bg_color")
     c2 = b2.get("bg_color")
+    if image is not None and (c1 is None or c2 is None):
+        try:
+            bx1 = max(0, min(int(round(b1["xmin"])), img_w - 1))
+            by1 = max(0, min(int(round(b1["ymin"])), img_h - 1))
+            bx2 = max(bx1 + 1, min(int(round(b1["xmax"])), img_w))
+            by2 = max(by1 + 1, min(int(round(b1["ymax"])), img_h))
+            if c1 is None and by2 > by1 and bx2 > bx1:
+                c1 = get_background_color_hex(image[by1:by2, bx1:bx2])
+                b1["bg_color"] = c1
+
+            bx1_2 = max(0, min(int(round(b2["xmin"])), img_w - 1))
+            by1_2 = max(0, min(int(round(b2["ymin"])), img_h - 1))
+            bx2_2 = max(bx1_2 + 1, min(int(round(b2["xmax"])), img_w))
+            by2_2 = max(by1_2 + 1, min(int(round(b2["ymax"])), img_h))
+            if c2 is None and by2_2 > by1_2 and bx2_2 > bx1_2:
+                c2 = get_background_color_hex(image[by1_2:by2_2, bx1_2:bx2_2])
+                b2["bg_color"] = c2
+        except Exception:
+            pass
+
     if c1 and c2:
         try:
             def _parse_color(c):
@@ -362,7 +456,18 @@ def can_merge_pair(
     v_scale = max(0.2, float(v_thresh_ratio) / 0.025)
     h_scale = max(0.2, float(h_thresh_ratio) / 0.035)
 
-    has_cjk = any(_is_cjk_char(c) for c in str(b1.get("text", ""))) or any(_is_cjk_char(c) for c in str(b2.get("text", "")))
+    def _is_cjk_block(t: str) -> bool:
+        if not t:
+            return False
+        cjk_cnt = sum(1 for c in t if _is_cjk_char(c))
+        if cjk_cnt == 0:
+            return False
+        latin_cnt = sum(1 for c in t if ('a' <= c <= 'z' or 'A' <= c <= 'Z'))
+        if latin_cnt > 0 and (cjk_cnt / float(cjk_cnt + latin_cnt)) < 0.35:
+            return False
+        return True
+
+    has_cjk = _is_cjk_block(str(b1.get("text", ""))) or _is_cjk_block(str(b2.get("text", "")))
 
     # Criterion 1: Significant 2D overlap / Inclusion (>= 50% area of smaller box)
     inter_area = x_overlap * y_overlap
@@ -402,10 +507,8 @@ def can_merge_pair(
                     return True
 
     # Criterion 4: Horizontal multi-line text (lines stacked vertically within bubble/dialogue block)
-    lines1 = max(1, len(str(b1.get("text", "")).splitlines()))
-    lines2 = max(1, len(str(b2.get("text", "")).splitlines()))
-    line_h1 = h1 / float(lines1)
-    line_h2 = h2 / float(lines2)
+    line_h1 = estimate_line_height(b1, has_cjk)
+    line_h2 = estimate_line_height(b2, has_cjk)
     min_line_h = min(line_h1, line_h2)
     max_line_h = max(line_h1, line_h2)
 
@@ -548,6 +651,16 @@ def merge_adjacent_boxes(
             except Exception:
                 qr_regions = None
 
+        for b in raw_boxes:
+            if not b.get("bg_color"):
+                bx1 = max(0, min(int(round(b["xmin"])), img_w - 1))
+                by1 = max(0, min(int(round(b["ymin"])), img_h - 1))
+                bx2 = max(bx1 + 1, min(int(round(b["xmax"])), img_w))
+                by2 = max(by1 + 1, min(int(round(b["ymax"])), img_h))
+                crop = image[by1:by2, bx1:bx2]
+                if crop.size > 0:
+                    b["bg_color"] = get_background_color_hex(crop)
+
     n = len(raw_boxes)
     if n == 1:
         b = raw_boxes[0]
@@ -568,7 +681,8 @@ def merge_adjacent_boxes(
             "conf": float(b.get("conf", 1.0) if b.get("conf") is not None else 1.0),
             "line_count": 1,
             "angle": ang,
-            "polygon": poly
+            "polygon": poly,
+            "bg_color": b.get("bg_color")
         }]
 
     # Build adjacency graph based on precise pairing criteria
@@ -768,7 +882,8 @@ def merge_adjacent_boxes(
             "conf": float(np.mean(confs)) if confs else 1.0,
             "line_count": line_count,
             "angle": avg_angle,
-            "polygon": merged_poly
+            "polygon": merged_poly,
+            "bg_color": comp_boxes[0].get("bg_color")
         })
 
     return merged

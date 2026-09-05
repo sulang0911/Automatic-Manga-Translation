@@ -58,7 +58,9 @@ class PipelineWorker(QThread):
                 ocr_eng = OCREngine(
                     engine_type=self.config.get("ocr_engine", "paddle"),
                     use_gpu=self.config.get("use_gpu", True),
-                    lang=self.config.get("ocr_lang", "japan")
+                    lang=self.config.get("ocr_lang", "japan"),
+                    enable_ensemble_detection=self.config.get("ocr_ensemble_detection", False),
+                    enable_ensemble_recognition=self.config.get("ocr_ensemble_recognition", False)
                 )
                 
                 def ocr_cb(pct, msg):

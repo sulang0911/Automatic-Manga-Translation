@@ -63,6 +63,89 @@ class TestComicTextDetectorEngine:
         assert boxes[1]["xmin"] == 120
         assert boxes[1]["ymin"] == 30
 
+    def test_slanted_off_bubble_line_splitting(self):
+        """
+        Critical bugfix verification: When CTD YOLO groups a slanted line (e.g. 20.0 deg)
+        together with horizontal speech bubble lines (0.0 deg), detect() must automatically
+        split them into separate text boxes instead of bundling them together.
+        """
+        engine = ComicTextDetectorEngine(use_gpu=False)
+        mock_detector = MagicMock()
+
+        dummy_mixed_block = MagicMock()
+        dummy_mixed_block.xyxy = [100, 50, 400, 300]
+        dummy_mixed_block.angle = 0.0
+        dummy_mixed_block.prob = 0.96
+        # 2 horizontal dialogue lines + 1 slanted off-bubble line (at ~20 deg)
+        dummy_mixed_block.lines = [
+            # Line 1: Horizontal dialogue
+            [[120, 60], [350, 60], [350, 95], [120, 95]],
+            # Line 2: Horizontal dialogue
+            [[120, 105], [360, 105], [360, 140], [120, 140]],
+            # Line 3: Slanted off-bubble text (dx=100, dy=36.4 -> ~20 deg)
+            [[250, 200], [350, 236], [340, 260], [240, 224]],
+        ]
+
+        mock_detector.return_value = (None, None, [dummy_mixed_block])
+        engine._detector = mock_detector
+
+        img = np.full((500, 500, 3), 255, dtype=np.uint8)
+        boxes, _ = engine.detect(img)
+
+        # Must be split into 2 separate boxes
+        assert len(boxes) == 2
+
+        # One box is the horizontal bubble dialogue
+        bubble_box = next(b for b in boxes if b["angle"] == 0.0)
+        assert bubble_box["line_count"] == 2
+        assert bubble_box["ymin"] >= 60 and bubble_box["ymax"] <= 150
+
+        # One box is the slanted off-bubble text
+        slanted_box = next(b for b in boxes if b["angle"] != 0.0)
+        assert slanted_box["line_count"] == 1
+        assert abs(slanted_box["angle"] - 20.0) <= 2.0
+
+    def test_moderate_slant_angle_preserved(self):
+        """Verifies that moderate slant angles (e.g. -14.0 deg) are not wiped out by the deadband."""
+        engine = ComicTextDetectorEngine(use_gpu=False)
+        mock_detector = MagicMock()
+
+        dummy_tilted_14 = MagicMock()
+        dummy_tilted_14.xyxy = [100, 100, 300, 180]
+        dummy_tilted_14.angle = -14.0
+        dummy_tilted_14.prob = 0.90
+        dummy_tilted_14.lines = [
+            # dx = 150, dy = -37.5 -> -14.0 deg
+            [[100, 140], [250, 103], [255, 125], [105, 162]]
+        ]
+
+        mock_detector.return_value = (None, None, [dummy_tilted_14])
+        engine._detector = mock_detector
+
+        img = np.full((400, 400, 3), 255, dtype=np.uint8)
+        boxes, _ = engine.detect(img)
+
+        assert len(boxes) == 1
+        assert abs(boxes[0]["angle"] - (-14.0)) <= 1.0
+
+    def test_can_merge_pair_rejects_slanted_adjacent_to_bubble(self):
+        """Verifies can_merge_pair strictly rejects merging slanted off-bubble text into horizontal dialogue."""
+        from app.core.ocr.base import can_merge_pair
+
+        # Horizontal speech bubble dialogue
+        bubble_box = {
+            "xmin": 100, "ymin": 100, "xmax": 300, "ymax": 180,
+            "text": "Yeah, man. Whatever.", "angle": 0.0
+        }
+        # Adjacent slanted off-bubble text (-14 deg)
+        slanted_box = {
+            "xmin": 120, "ymin": 190, "xmax": 310, "ymax": 240,
+            "text": "It's her BF's or something", "angle": -14.0
+        }
+
+        # Should be strictly rejected
+        assert can_merge_pair(bubble_box, slanted_box, img_w=1000, img_h=1000) is False
+
 
 class TestPurePyTorchOCREngine:
     def test_ctd_engine_init(self):

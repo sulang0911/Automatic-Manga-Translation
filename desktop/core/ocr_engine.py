@@ -5,7 +5,7 @@ import torch  # CRITICAL WINDOWS DLL PROTECTION: Must import torch before paddle
 import uuid
 import numpy as np
 import cv2
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 try:
     from app.core.ocr.base import merge_adjacent_boxes, calculate_polygon_angle
@@ -18,6 +18,152 @@ except ImportError:
     from app.core.ocr.base import merge_adjacent_boxes, calculate_polygon_angle
     from app.core.ocr.reading_order import sort_reading_order
     from app.core.models import TranslationBlock, ReadingOrderMode
+
+
+def compute_box_iou(b1: Dict[str, Any], b2: Dict[str, Any]) -> Tuple[float, float]:
+    """
+    Computes Intersection over Union (IoU) and Coverage ratio between two bounding boxes.
+    Coverage is defined as inter_area / min(area1, area2).
+    """
+    x1 = max(float(b1.get('xmin', 0)), float(b2.get('xmin', 0)))
+    y1 = max(float(b1.get('ymin', 0)), float(b2.get('ymin', 0)))
+    x2 = min(float(b1.get('xmax', 0)), float(b2.get('xmax', 0)))
+    y2 = min(float(b1.get('ymax', 0)), float(b2.get('ymax', 0)))
+    inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    if inter <= 0.0:
+        return 0.0, 0.0
+    a1 = max(1.0, float(b1.get('xmax', 0) - b1.get('xmin', 0)) * float(b1.get('ymax', 0) - b1.get('ymin', 0)))
+    a2 = max(1.0, float(b2.get('xmax', 0) - b2.get('xmin', 0)) * float(b2.get('ymax', 0) - b2.get('ymin', 0)))
+    union = a1 + a2 - inter
+    iou = inter / max(1.0, union)
+    coverage = inter / min(a1, a2)
+    return float(iou), float(coverage)
+
+
+def fuse_detected_boxes(
+    primary_boxes: List[Dict[str, Any]],
+    secondary_boxes: List[Dict[str, Any]],
+    iou_thresh: float = 0.35,
+    coverage_thresh: float = 0.60,
+    min_w: int = 12,
+    min_h: int = 10
+) -> List[Dict[str, Any]]:
+    """
+    Fuses candidate detection boxes from a primary detector (e.g. CTD) and a secondary detector (e.g. EasyOCR).
+    - If a secondary box overlaps with an existing primary box (IoU >= iou_thresh or Coverage >= coverage_thresh),
+      it is considered already captured, preserving the primary box's geometry (polygons etc.) while attaching
+      secondary text/conf for recognition arbitration.
+    - If a secondary box has no match and meets minimum dimensions, it is appended as a newly recovered text box.
+    """
+    fused: List[Dict[str, Any]] = [dict(b) for b in primary_boxes]
+    for s_box in secondary_boxes:
+        w = s_box.get('xmax', 0) - s_box.get('xmin', 0)
+        h = s_box.get('ymax', 0) - s_box.get('ymin', 0)
+        if w < min_w or h < min_h:
+            continue
+
+        matched_idx = -1
+        best_cov = 0.0
+        for idx, p_box in enumerate(fused):
+            iou, cov = compute_box_iou(p_box, s_box)
+            if iou >= iou_thresh or cov >= coverage_thresh:
+                if cov > best_cov:
+                    best_cov = cov
+                    matched_idx = idx
+
+        if matched_idx >= 0:
+            # Attach secondary detector's text & conf to matched primary box if available
+            p_box = fused[matched_idx]
+            if "sec_text" not in p_box and s_box.get("text"):
+                p_box["sec_text"] = s_box.get("text", "")
+                p_box["sec_conf"] = float(s_box.get("conf", 0.0))
+        else:
+            # Recovered box: ensure standard fields
+            new_box = dict(s_box)
+            if "polygon" not in new_box:
+                x1, y1 = new_box.get("xmin", 0), new_box.get("ymin", 0)
+                x2, y2 = new_box.get("xmax", 0), new_box.get("ymax", 0)
+                new_box["polygon"] = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+            if "angle" not in new_box:
+                new_box["angle"] = 0.0
+            fused.append(new_box)
+
+    return fused
+
+
+def ensemble_recognize_text(
+    text_pri: str,
+    conf_pri: float,
+    text_sec: str,
+    conf_sec: float,
+    target_lang: str = "japan"
+) -> Tuple[str, float]:
+    """
+    Arbitrates and fuses text recognition results from primary (e.g. Manga-OCR) and secondary (e.g. EasyOCR) engines.
+    Prevents Manga-OCR Kana hallucinations on alphanumeric strings (names, numbers, English SFX)
+    while preserving genuine Japanese Kana/Kanji and Chinese characters.
+    """
+    t1 = (text_pri or "").strip()
+    t2 = (text_sec or "").strip()
+    if not t1 and not t2:
+        return "", 0.0
+    if not t1:
+        return t2, float(conf_sec)
+    if not t2:
+        return t1, float(conf_pri)
+    if t1 == t2:
+        return t1, min(1.0, max(float(conf_pri), float(conf_sec)) + 0.05)
+
+    is_japanese = any(w in str(target_lang).lower() for w in ["japan", "ja"])
+    is_chinese = any(w in str(target_lang).lower() for w in ["ch", "chinese", "zh"])
+    is_english = any(w in str(target_lang).lower() for w in ["en", "eng", "english"])
+
+    def is_cjk(c: str) -> bool:
+        return ('\u4e00' <= c <= '\u9fff') or ('\u3040' <= c <= '\u309f') or ('\u30a0' <= c <= '\u30ff')
+
+    cjk_cnt1 = sum(1 for c in t1 if is_cjk(c))
+    cjk_cnt2 = sum(1 for c in t2 if is_cjk(c))
+    latin_letters_cnt1 = sum(1 for c in t1 if ('a' <= c <= 'z' or 'A' <= c <= 'Z'))
+    latin_letters_cnt2 = sum(1 for c in t2 if ('a' <= c <= 'z' or 'A' <= c <= 'Z'))
+    alphanumeric_cnt1 = sum(1 for c in t1 if (c.isalnum() or c in ".,!?'\"-()") and not is_cjk(c))
+    alphanumeric_cnt2 = sum(1 for c in t2 if (c.isalnum() or c in ".,!?'\"-()") and not is_cjk(c))
+
+    # Case 1: Alphanumeric protection against Manga-OCR Japanese kana hallucination
+    # e.g., t1="アリス(19)" or "フレンドA" or "ハハ" when original comic text is pure English "Chris (19)" or "Friend A" or "Haha"
+    # Secondary recognizer detects clean English/numbers with 0 CJK characters:
+    if latin_letters_cnt2 >= 2 and cjk_cnt2 == 0 and conf_sec >= 0.75:
+        # If primary has no CJK at all:
+        if cjk_cnt1 == 0:
+            return t2, float(conf_sec)
+        # If primary mixed kana with alphanumeric (e.g. "アリス(19)" having "(19)", or "フレンドA" having "A"):
+        if alphanumeric_cnt1 >= 1:
+            return t2, float(conf_sec)
+        # If secondary is clearly a known English word or has higher confidence than primary:
+        if conf_sec >= conf_pri or latin_letters_cnt2 >= 4:
+            return t2, float(conf_sec)
+
+    # Case 2: Genuine CJK protection for Japanese/Chinese manga
+    # Manga-OCR is vastly superior for authentic Japanese kana/kanji over EasyOCR:
+    if (is_japanese or is_chinese) and cjk_cnt1 > 0:
+        # If secondary has no CJK or lower confidence, trust Manga-OCR:
+        if cjk_cnt2 == 0 or conf_pri >= conf_sec:
+            return t1, float(conf_pri)
+
+    # Case 3: English target language
+    if is_english:
+        if latin_letters_cnt2 > latin_letters_cnt1 and conf_sec >= 0.4:
+            return t2, float(conf_sec)
+        if latin_letters_cnt1 >= latin_letters_cnt2:
+            return t1, float(conf_pri)
+
+    # Case 4: Significant confidence gap (> 0.25)
+    if conf_sec > conf_pri + 0.25:
+        return t2, float(conf_sec)
+    if conf_pri > conf_sec + 0.25:
+        return t1, float(conf_pri)
+
+    # Default to primary model
+    return t1, float(conf_pri)
 
 
 def get_background_color_hex(crop: np.ndarray) -> str:
@@ -41,7 +187,15 @@ def get_background_color_hex(crop: np.ndarray) -> str:
     return f"#{int(r):02x}{int(g):02x}{int(b):02x}".upper()
 
 class OCREngine:
-    def __init__(self, engine_type: str = "paddle", use_gpu: bool = True, lang: str = "japan", reading_direction: Optional[str] = None):
+    def __init__(
+        self,
+        engine_type: str = "paddle",
+        use_gpu: bool = True,
+        lang: str = "japan",
+        reading_direction: Optional[str] = None,
+        enable_ensemble_detection: bool = False,
+        enable_ensemble_recognition: bool = False
+    ):
         self.engine_type = engine_type
         if self.engine_type == "cpu_paddle":
             self.use_gpu = False
@@ -49,6 +203,8 @@ class OCREngine:
             self.use_gpu = use_gpu
         self.lang = lang
         self.reading_direction = reading_direction
+        self.enable_ensemble_detection = enable_ensemble_detection
+        self.enable_ensemble_recognition = enable_ensemble_recognition
         self._paddle_ocr = None
         self._easyocr_reader = None
         self._manga_ocr = None
@@ -182,6 +338,35 @@ class OCREngine:
                 print(f"[-] Comic-Text-Detector 未能运行: {e_ctd}，自动回退到 EasyOCR...")
                 raw_boxes = []
 
+            # Dual-Model Detection Fusion (CTD + General detector)
+            if self.enable_ensemble_detection:
+                try:
+                    self._init_easyocr()
+                    if progress_callback:
+                        progress_callback(40, "正在运行辅助检测器进行双模型联合找框...")
+                    rgb_full = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                    easy_results = self._easyocr_reader.readtext(rgb_full)
+                    sec_boxes = []
+                    for bbox, t_text, t_conf in easy_results:
+                        if not str(t_text).strip() or t_conf < 0.2:
+                            continue
+                        pts = np.array(bbox, dtype=np.int32)
+                        sec_boxes.append({
+                            "xmin": int(np.min(pts[:, 0])),
+                            "ymin": int(np.min(pts[:, 1])),
+                            "xmax": int(np.max(pts[:, 0])),
+                            "ymax": int(np.max(pts[:, 1])),
+                            "text": str(t_text).strip(),
+                            "conf": float(t_conf),
+                            "polygon": pts.astype(int).tolist(),
+                            "angle": calculate_polygon_angle(pts)
+                        })
+                    raw_boxes = fuse_detected_boxes(raw_boxes, sec_boxes)
+                    if progress_callback:
+                        progress_callback(48, f"双模型找框完成，融合候选框共 {len(raw_boxes)} 个")
+                except Exception as e_ens_det:
+                    print(f"[-] 双模型联合找框异常: {e_ens_det}，保持主模型检测结果")
+
             # If CTD produced candidate boxes, perform smart recognition
             if raw_boxes:
                 is_explicit_english = any(w in str(self.lang).lower() for w in ["en", "eng", "english"])
@@ -233,10 +418,32 @@ class OCREngine:
                         bx2 = max(bx1 + 1, min(box["xmax"], w_img))
                         by2 = max(by1 + 1, min(box["ymax"], h_img))
                         crop = image[by1:by2, bx1:bx2]
-                        txt = self._manga_ocr.recognize_crop(crop, angle=box.get("angle", 0.0))
-                        if txt:
-                            box["text"] = txt
-                            box["conf"] = max(float(box.get("conf", 0.8)), 0.95)
+                        txt_pri = self._manga_ocr.recognize_crop(crop, angle=box.get("angle", 0.0))
+                        conf_pri = max(float(box.get("conf", 0.8)), 0.95) if txt_pri else 0.0
+
+                        if self.enable_ensemble_recognition:
+                            txt_sec = box.get("sec_text", "")
+                            conf_sec = float(box.get("sec_conf", 0.0))
+                            if not txt_sec and crop.size > 0:
+                                try:
+                                    self._init_easyocr()
+                                    rgb_c = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+                                    sec_res = self._easyocr_reader.readtext(rgb_c)
+                                    if sec_res:
+                                        txt_sec = " ".join(t[1].strip() for t in sec_res if t[1].strip())
+                                        conf_sec = float(np.mean([t[2] for t in sec_res]))
+                                except Exception:
+                                    pass
+                            final_t, final_c = ensemble_recognize_text(
+                                txt_pri, conf_pri, txt_sec, conf_sec, target_lang=self.lang
+                            )
+                            if final_t:
+                                box["text"] = final_t
+                                box["conf"] = final_c
+                        else:
+                            if txt_pri:
+                                box["text"] = txt_pri
+                                box["conf"] = conf_pri
 
                 raw_boxes = [b for b in raw_boxes if b.get("text", "").strip()]
             else:
@@ -379,8 +586,8 @@ class OCREngine:
                 except Exception as e_easy:
                     print(f"[-] EasyOCR 回退识别亦发生异常: {e_easy}")
 
-        # Decoupled recognition: Manga-OCR for Paddle Japanese text crops
-        if self.engine_type == "paddle_manga" and any(w in str(self.lang).lower() for w in ["japan", "ja"]):
+        # Decoupled recognition / Recognition ensemble: Manga-OCR for Paddle Japanese text crops
+        if (self.engine_type == "paddle_manga" or (self.engine_type == "paddle" and self.enable_ensemble_recognition)) and any(w in str(self.lang).lower() for w in ["japan", "ja"]):
             try:
                 if self._manga_ocr is None:
                     from app.core.ocr.manga_ocr_wrapper import get_manga_ocr
@@ -394,11 +601,19 @@ class OCREngine:
                     by2 = max(by1 + 1, min(box["ymax"], h_img))
                     crop = image[by1:by2, bx1:bx2]
                     txt = self._manga_ocr.recognize_crop(crop, angle=box.get("angle", 0.0))
-                    if txt:
-                        box["text"] = txt
-                        box["conf"] = max(float(box.get("conf", 0.8)), 0.95)
+                    if self.enable_ensemble_recognition:
+                        paddle_txt = box.get("text", "")
+                        paddle_conf = float(box.get("conf", 0.8))
+                        final_t, final_c = ensemble_recognize_text(txt, 0.95, paddle_txt, paddle_conf, target_lang=self.lang)
+                        if final_t:
+                            box["text"] = final_t
+                            box["conf"] = final_c
+                    else:
+                        if txt:
+                            box["text"] = txt
+                            box["conf"] = max(float(box.get("conf", 0.8)), 0.95)
             except Exception as e:
-                print(f"[-] Manga-OCR decoupled recognition failed, keeping default text: {e}")
+                print(f"[-] Manga-OCR decoupled/ensemble recognition failed, keeping default text: {e}")
 
         # Filter spurious OCR boxes falling inside QR codes
         qr_regions = None

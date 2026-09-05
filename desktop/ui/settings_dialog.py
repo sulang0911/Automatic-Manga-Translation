@@ -233,6 +233,26 @@ class SettingsDialog(QDialog):
         self.ocr_lang_combo.addItems(["日语 (japan - 竖排/横排深度对齐)", "简体中文 (ch)", "英语 (en)", "韩语 (korean)"])
         layout.addWidget(self.ocr_lang_combo)
 
+        # Dual-Model Ensemble & Fusion Settings
+        ens_group = QGroupBox("双模型增强模式 (Ensemble & Fusion)")
+        ens_layout = QVBoxLayout(ens_group)
+
+        self.ensemble_det_cb = QCheckBox("启用双模型联合找框 (CTD + 通用检测器互补，大幅减少漏识)")
+        ens_layout.addWidget(self.ensemble_det_cb)
+        det_tip = QLabel("说明：结合气泡检测模型与通用文本检测器，使用 IoU 覆盖度去重，可大幅召回矩形独白框、背景招牌等文字，降低漏翻率。")
+        det_tip.setStyleSheet("color: #8E8E93; font-size: 11px; margin-left: 20px; margin-bottom: 6px;")
+        det_tip.setWordWrap(True)
+        ens_layout.addWidget(det_tip)
+
+        self.ensemble_rec_cb = QCheckBox("启用双模型交叉验证识字 (Manga-OCR + 通用识别器融合)")
+        ens_layout.addWidget(self.ensemble_rec_cb)
+        rec_tip = QLabel("说明：利用通用识别器辅助纠正日文模型在纯英文人名、年龄数字（如 Friend B (20)、Chris）上的假名幻觉，强强互补。")
+        rec_tip.setStyleSheet("color: #8E8E93; font-size: 11px; margin-left: 20px;")
+        rec_tip.setWordWrap(True)
+        ens_layout.addWidget(rec_tip)
+
+        layout.addWidget(ens_group)
+
         layout.addStretch()
         return page
 
@@ -345,6 +365,12 @@ class SettingsDialog(QDialog):
         else: self.ocr_engine_combo.setCurrentIndex(0)
 
         self.gpu_cb.setChecked(cfg.get("use_gpu", True))
+        lang_map = ["japan", "ch", "en", "korean"]
+        cur_lang = cfg.get("ocr_lang", "japan")
+        if cur_lang in lang_map:
+            self.ocr_lang_combo.setCurrentIndex(lang_map.index(cur_lang))
+        self.ensemble_det_cb.setChecked(bool(cfg.get("ocr_ensemble_detection", False)))
+        self.ensemble_rec_cb.setChecked(bool(cfg.get("ocr_ensemble_recognition", False)))
         
         # Inpaint
         inpaint_eng = cfg.get("inpaint_engine", "auto")
@@ -413,6 +439,8 @@ class SettingsDialog(QDialog):
         ocr_map = ["ctd", "paddle", "paddle_manga", "easyocr", "cpu_paddle"]
         inpaint_map = ["auto", "opencv_telea", "opencv_ns"]
         onoma_map = ["normal", "transparent", "ignore"]
+        lang_map = ["japan", "ch", "en", "korean"]
+        ocr_lang_val = lang_map[self.ocr_lang_combo.currentIndex()] if self.ocr_lang_combo.currentIndex() < len(lang_map) else "japan"
 
         updates = {
             "provider": prov_map[self.llm_provider_combo.currentIndex()],
@@ -421,6 +449,9 @@ class SettingsDialog(QDialog):
             "model": self.model_input.text().strip() or "deepseek-chat",
             "system_prompt": self.sys_prompt_edit.toPlainText().strip() or DEFAULT_SYSTEM_PROMPT,
             "ocr_engine": ocr_map[self.ocr_engine_combo.currentIndex()],
+            "ocr_lang": ocr_lang_val,
+            "ocr_ensemble_detection": self.ensemble_det_cb.isChecked(),
+            "ocr_ensemble_recognition": self.ensemble_rec_cb.isChecked(),
             "use_gpu": self.gpu_cb.isChecked(),
             "inpaint_engine": inpaint_map[self.inpaint_engine_combo.currentIndex()],
             "bubble_dilation": self.bubble_dil_spin.value(),

@@ -118,58 +118,119 @@ class ComicTextDetectorEngine:
             logger.warning(f"CTD inference error: {e}", exc_info=True)
             return [], None
 
+        def _get_line_angle(ln_pts: Any) -> float:
+            ln_arr = np.asarray(ln_pts, dtype=np.float32)
+            if len(ln_arr) < 3:
+                return 0.0
+            return calculate_polygon_angle(ln_arr.astype(int).tolist(), threshold=3.5)
+
+        def _cluster_lines_by_angle(lines_list: List[Any]) -> List[List[Any]]:
+            if len(lines_list) <= 1:
+                return [lines_list]
+            line_angles = [_get_line_angle(ln) for ln in lines_list]
+            clusters: List[List[Any]] = []
+            cluster_angles: List[float] = []
+            for ln, ang in zip(lines_list, line_angles):
+                matched = False
+                for c_idx, c_ang in enumerate(cluster_angles):
+                    diff = abs(ang - c_ang)
+                    if diff > 90.0:
+                        diff = abs(diff - 180.0)
+                    if diff <= 8.0:
+                        clusters[c_idx].append(ln)
+                        matched = True
+                        break
+                if not matched:
+                    clusters.append([ln])
+                    cluster_angles.append(ang)
+            return clusters
+
         raw_boxes = []
         for blk in blk_list:
             xyxy = getattr(blk, "xyxy", None)
             if not xyxy or len(xyxy) < 4:
                 continue
 
-            bx1 = int(round(max(0, min(w_img - 1, xyxy[0]))))
-            by1 = int(round(max(0, min(h_img - 1, xyxy[1]))))
-            bx2 = int(round(max(bx1 + 1, min(w_img, xyxy[2]))))
-            by2 = int(round(max(by1 + 1, min(h_img, xyxy[3]))))
+            conf = float(getattr(blk, "prob", 1.0) or 1.0)
+            blk_angle = float(getattr(blk, "angle", 0.0) or 0.0)
+            lines = getattr(blk, "lines", [])
 
-            if bx2 <= bx1 or by2 <= by1:
+            if len(lines) == 0:
+                bx1 = int(round(max(0, min(w_img - 1, xyxy[0]))))
+                by1 = int(round(max(0, min(h_img - 1, xyxy[1]))))
+                bx2 = int(round(max(bx1 + 1, min(w_img, xyxy[2]))))
+                by2 = int(round(max(by1 + 1, min(h_img, xyxy[3]))))
+                if bx2 <= bx1 or by2 <= by1:
+                    continue
+                eff_angle = round(blk_angle, 1) if abs(blk_angle) >= 3.5 else 0.0
+                poly = [[bx1, by1], [bx2, by1], [bx2, by2], [bx1, by2]]
+                raw_boxes.append({
+                    "xmin": bx1,
+                    "ymin": by1,
+                    "xmax": bx2,
+                    "ymax": by2,
+                    "text": "",
+                    "conf": conf,
+                    "polygon": poly,
+                    "angle": eff_angle,
+                    "lines": [],
+                    "line_count": 1,
+                })
                 continue
 
-            # Angle extraction from CTD block (CTD returns integer degrees)
-            blk_angle = float(getattr(blk, "angle", 0.0) or 0.0)
-            if abs(blk_angle) < 15.0:
-                eff_angle = 0.0
-            else:
-                eff_angle = round(blk_angle, 1)
+            line_clusters = _cluster_lines_by_angle(lines)
+            for cl_lines in line_clusters:
+                cl_line_data = []
+                all_line_pts = []
+                for ln in cl_lines:
+                    ln_arr = np.asarray(ln, dtype=np.int32)
+                    if len(ln_arr) >= 4:
+                        cl_line_data.append(ln_arr.tolist())
+                        all_line_pts.extend(ln_arr.tolist())
 
-            # Polygons and lines extraction
-            lines = getattr(blk, "lines", [])
-            lines_data = []
-            all_line_pts = []
-            for ln in lines:
-                ln_arr = np.asarray(ln, dtype=np.int32)
-                if len(ln_arr) >= 4:
-                    lines_data.append(ln_arr.tolist())
-                    all_line_pts.extend(ln_arr.tolist())
+                if len(line_clusters) == 1:
+                    # Retain original block box if no orientation disparity
+                    bx1 = int(round(max(0, min(w_img - 1, xyxy[0]))))
+                    by1 = int(round(max(0, min(h_img - 1, xyxy[1]))))
+                    bx2 = int(round(max(bx1 + 1, min(w_img, xyxy[2]))))
+                    by2 = int(round(max(by1 + 1, min(h_img, xyxy[3]))))
+                else:
+                    if not all_line_pts:
+                        continue
+                    all_arr = np.asarray(all_line_pts, dtype=np.int32)
+                    bx1 = int(round(max(0, min(w_img - 1, all_arr[:, 0].min()))))
+                    by1 = int(round(max(0, min(h_img - 1, all_arr[:, 1].min()))))
+                    bx2 = int(round(max(bx1 + 1, min(w_img, all_arr[:, 0].max()))))
+                    by2 = int(round(max(by1 + 1, min(h_img, all_arr[:, 1].max()))))
 
-            if abs(eff_angle) >= 15.0 and len(all_line_pts) >= 4:
-                # Compute oriented polygon from points
-                rect = cv2.minAreaRect(np.array(all_line_pts, dtype=np.float32))
-                box_pts = cv2.boxPoints(rect).astype(int).tolist()
-                poly = box_pts
-            else:
-                poly = [[bx1, by1], [bx2, by1], [bx2, by2], [bx1, by2]]
+                if bx2 <= bx1 or by2 <= by1:
+                    continue
 
-            conf = float(getattr(blk, "prob", 1.0) or 1.0)
+                cl_angles = [_get_line_angle(ln) for ln in cl_lines]
+                if len(line_clusters) == 1 and abs(blk_angle) >= 3.5:
+                    eff_angle = round(blk_angle, 1)
+                else:
+                    med = float(np.median(cl_angles))
+                    eff_angle = round(med, 1) if abs(med) >= 3.5 else 0.0
 
-            raw_boxes.append({
-                "xmin": bx1,
-                "ymin": by1,
-                "xmax": bx2,
-                "ymax": by2,
-                "text": "",  # To be filled by recognizer
-                "conf": conf,
-                "polygon": poly,
-                "angle": eff_angle,
-                "lines": lines_data,
-                "line_count": max(1, len(lines_data)),
-            })
+                if abs(eff_angle) >= 3.5 and len(all_line_pts) >= 4:
+                    rect = cv2.minAreaRect(np.array(all_line_pts, dtype=np.float32))
+                    box_pts = cv2.boxPoints(rect).astype(int).tolist()
+                    poly = box_pts
+                else:
+                    poly = [[bx1, by1], [bx2, by1], [bx2, by2], [bx1, by2]]
+
+                raw_boxes.append({
+                    "xmin": bx1,
+                    "ymin": by1,
+                    "xmax": bx2,
+                    "ymax": by2,
+                    "text": "",  # To be filled by recognizer
+                    "conf": conf,
+                    "polygon": poly,
+                    "angle": eff_angle,
+                    "lines": cl_line_data,
+                    "line_count": max(1, len(cl_line_data)),
+                })
 
         return raw_boxes, mask_refined

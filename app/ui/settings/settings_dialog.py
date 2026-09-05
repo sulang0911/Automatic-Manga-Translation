@@ -261,6 +261,28 @@ class SettingsDialog(QDialog):
         self.source_lang_combo.setCurrentText(current_source)
         box_layout.addWidget(self.source_lang_combo)
 
+        # Dual-Model Ensemble & Fusion Settings
+        ens_group = QGroupBox("双模型增强模式 (Ensemble & Fusion)")
+        ens_layout = QVBoxLayout(ens_group)
+
+        self.ensemble_det_cb = QCheckBox("启用双模型联合找框 (CTD + 通用检测器互补，大幅减少漏识)")
+        self.ensemble_det_cb.setChecked(getattr(self.config.ocr, "ensemble_detection", False))
+        ens_layout.addWidget(self.ensemble_det_cb)
+        det_tip = QLabel("说明：结合气泡检测模型与通用文本检测器，使用 IoU 覆盖度去重，可大幅召回矩形独白框、背景招牌等文字，降低漏翻率。")
+        det_tip.setStyleSheet("color: #8E8E93; font-size: 11px; margin-left: 20px; margin-bottom: 6px;")
+        det_tip.setWordWrap(True)
+        ens_layout.addWidget(det_tip)
+
+        self.ensemble_rec_cb = QCheckBox("启用双模型交叉验证识字 (Manga-OCR + 通用识别器融合)")
+        self.ensemble_rec_cb.setChecked(getattr(self.config.ocr, "ensemble_recognition", False))
+        ens_layout.addWidget(self.ensemble_rec_cb)
+        rec_tip = QLabel("说明：利用通用识别器辅助纠正日文模型在纯英文人名、年龄数字（如 Friend B (20)、Chris）上的假名幻觉，强强互补。")
+        rec_tip.setStyleSheet("color: #8E8E93; font-size: 11px; margin-left: 20px;")
+        rec_tip.setWordWrap(True)
+        ens_layout.addWidget(rec_tip)
+
+        box_layout.addWidget(ens_group)
+
         layout.addWidget(box)
         layout.addStretch()
         return widget
@@ -556,6 +578,8 @@ class SettingsDialog(QDialog):
         eng_data = self.ocr_engine_combo.currentData()
         self.config.ocr.engine = eng_data if eng_data is not None else self.ocr_engine_combo.currentText()
         self.config.ocr.force_cpu = not self.gpu_cb.isChecked()
+        self.config.ocr.ensemble_detection = self.ensemble_det_cb.isChecked()
+        self.config.ocr.ensemble_recognition = self.ensemble_rec_cb.isChecked()
         self.config.source_lang = self.source_lang_combo.currentText()
 
         # Inpaint

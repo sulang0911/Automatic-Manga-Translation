@@ -42,6 +42,8 @@ class OCRConfig:
     lang: str = "japan"
     force_cpu: bool = False
     confidence_threshold: float = 0.25
+    ensemble_detection: bool = False
+    ensemble_recognition: bool = False
 
 
 @dataclass
@@ -102,7 +104,8 @@ class AppConfig:
         if "llm" in data and isinstance(data["llm"], dict):
             cfg.llm = LLMConfig(**data["llm"])
         if "ocr" in data and isinstance(data["ocr"], dict):
-            cfg.ocr = OCRConfig(**data["ocr"])
+            ocr_kwargs = {k: v for k, v in data["ocr"].items() if k in OCRConfig.__annotations__}
+            cfg.ocr = OCRConfig(**ocr_kwargs)
         if "inpaint" in data and isinstance(data["inpaint"], dict):
             cfg.inpaint = InpaintConfig(**data["inpaint"])
         if "style" in data and isinstance(data["style"], dict):

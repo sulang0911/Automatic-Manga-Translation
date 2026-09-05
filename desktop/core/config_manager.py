@@ -28,6 +28,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "ocr_engine": "ctd",  # "ctd" (pure PyTorch) | "paddle" | "paddle_manga" | "easyocr" | "cpu_paddle"
     "use_gpu": True,
     "ocr_lang": "japan",  # "japan" | "ch" | "en" | "korean"
+    "ocr_ensemble_detection": False,  # Dual-model detection fusion (CTD + General detector)
+    "ocr_ensemble_recognition": False,  # Dual-model recognition ensemble (Manga-OCR + General recognizer)
 
     # Inpaint Settings
     "inpaint_engine": "auto",  # "auto" | "lama" | "opencv_telea" | "opencv_ns"

@@ -442,6 +442,90 @@ class TestAdaptiveBubbleClustering:
         # Japanese reading flow: right column first, newline, left column second
         assert merged[0]["text"] == "お前は\n選ばれし者だ"
 
+    def test_reject_page_background_connected_component(self):
+        """
+        Tests that an open white page background spanning the image borders is excluded
+        from speech bubble labels (zeroed out), preventing multiple independent bubbles
+        on a white page from falsely sharing a bubble closure label.
+        """
+        h, w = 800, 600
+        canvas = np.full((h, w, 3), 255, dtype=np.uint8)  # Full white page background
+
+        # Bubble 1: (x in [100..400], y in [100..250]) with dark black outline
+        cv2.ellipse(canvas, (250, 175), (140, 70), 0, 0, 360, (255, 255, 255), -1)
+        cv2.ellipse(canvas, (250, 175), (140, 70), 0, 0, 360, (0, 0, 0), 3)
+
+        # Bubble 2: (x in [100..400], y in [450..600]) with dark black outline
+        cv2.ellipse(canvas, (250, 525), (140, 70), 0, 0, 360, (255, 255, 255), -1)
+        cv2.ellipse(canvas, (250, 525), (140, 70), 0, 0, 360, (0, 0, 0), 3)
+
+        labels = compute_bubble_labels(canvas)
+        assert labels is not None
+
+        # The white page background touching borders must be zeroed out
+        assert labels[10, 10] == 0
+        assert labels[h - 10, w - 10] == 0
+
+        # Two boxes in separate bubbles across the page
+        b1 = {"xmin": 160, "ymin": 140, "xmax": 340, "ymax": 200, "text": "Top bubble statement."}
+        b2 = {"xmin": 160, "ymin": 490, "xmax": 340, "ymax": 550, "text": "Bottom bubble reply."}
+
+        can_merge = can_merge_pair(b1, b2, img_w=w, img_h=h, image=canvas, bubble_labels=labels)
+        assert can_merge is False, "Independent bubbles on white background must not merge"
+
+        merged = merge_adjacent_boxes([b1, b2], img_w=w, img_h=h, image=canvas)
+        assert len(merged) == 2, "Must produce 2 separate blocks for independent bubbles on white page"
+
+    def test_background_color_contrast_rejects_merging(self):
+        """
+        Tests that adjacent candidate text boxes with contrasting background colors
+        (e.g. floating text on light background vs inverted white text on black background)
+        are strictly prevented from merging.
+        """
+        h, w = 400, 500
+        canvas = np.full((h, w, 3), 200, dtype=np.uint8)  # Light gray background
+
+        # Box 1: floating laugh text on light background
+        b1 = {"xmin": 200, "ymin": 40, "xmax": 300, "ymax": 70, "text": "Hahaha", "bg_color": "#A6A6A6"}
+
+        # Box 2: black box with white text
+        cv2.rectangle(canvas, (180, 85), (320, 135), (0, 0, 0), -1)
+        b2 = {"xmin": 180, "ymin": 85, "xmax": 320, "ymax": 135, "text": "Friend A (Runner-up)", "bg_color": "#000000"}
+
+        # Direct can_merge_pair call
+        assert can_merge_pair(b1, b2, img_w=w, img_h=h, image=canvas) is False
+
+        # merge_adjacent_boxes
+        merged = merge_adjacent_boxes([b1, b2], img_w=w, img_h=h, image=canvas)
+        assert len(merged) == 2, "Contrasting light and dark background boxes must remain separate"
+        assert merged[0]["text"] == "Hahaha" or merged[1]["text"] == "Hahaha"
+
+    def test_paragraph_line_height_estimation_prevents_tall_box_bridging(self):
+        """
+        Verifies that tall multi-word paragraph boxes whose OCR text lacks explicit newlines
+        have their effective line height realistically estimated (e.g. ~25-30px),
+        preventing an inflated merge threshold from erroneously bridging large gaps.
+        """
+        # Box 1: 120px tall paragraph
+        b1 = {
+            "xmin": 100, "ymin": 100, "xmax": 250, "ymax": 220,
+            "text": "Why the hell do you have this outfit anyway Chris",
+            "conf": 0.95
+        }
+        # Box 2: 50px tall box separated by 80px gap
+        b2 = {
+            "xmin": 100, "ymin": 300, "xmax": 250, "ymax": 350,
+            "text": "It belongs to my sister",
+            "conf": 0.95
+        }
+
+        # Gap is 300 - 220 = 80px. With realistic line_h ~ 24px, max_gap is ~17-52px < 80px.
+        can_merge = can_merge_pair(b1, b2, img_w=1000, img_h=1000)
+        assert can_merge is False, "Paragraph box must not bridge 80px gap based on inflated paragraph height"
+
+        merged = merge_adjacent_boxes([b1, b2], img_w=1000, img_h=1000)
+        assert len(merged) == 2
+
 
 class TestQRFalsePositiveImmunity:
     """Tests ensuring comic panels, giant quadrilaterals, and un-decoded noise are never falsely flagged as QR codes."""
