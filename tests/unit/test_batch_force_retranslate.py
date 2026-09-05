@@ -129,3 +129,86 @@ def test_desktop_queue_panel_has_both_batch_buttons(qapp):
 
     panel.retranslate_all_btn.click()
     assert emitted == ["batch", "retranslate"]
+
+
+def test_clear_caches_for_items_deletes_cache_directories(temp_manga_env):
+    """
+    Verifies that cache_mgr.clear_caches_for_items() removes .amt_cache folders on disk.
+    """
+    tmp_dir, page_paths, _ = temp_manga_env
+    cache_mgr = get_cache_manager()
+
+    # Create dummy cache files for the pages
+    for p in page_paths:
+        cache_mgr.save_page_cache(
+            p,
+            blocks=[{"id": "b1", "original_text": "text"}],
+            erased_img=np.zeros((10, 10, 3), dtype=np.uint8),
+            rendered_img=np.ones((10, 10, 3), dtype=np.uint8)
+        )
+        paths = cache_mgr.get_cache_paths(p)
+        assert os.path.exists(paths["dir"])
+        assert os.path.exists(paths["blocks_json"])
+
+    # Clear cache for all items
+    items = [{"id": str(i), "path": p} for i, p in enumerate(page_paths)]
+    cache_mgr.clear_caches_for_items(items)
+
+    # Verify that .amt_cache directories are completely gone
+    for p in page_paths:
+        paths = cache_mgr.get_cache_paths(p)
+        assert not os.path.exists(paths["dir"])
+
+
+def test_mainwindow_start_batch_force_retranslate_clears_cache_and_state(qapp, temp_manga_env):
+    """
+    Verifies that MainWindow._start_batch(force_retranslate=True) clears disk cache folders
+    and resets in-memory item blocks, erased, and rendered states.
+    """
+    from app.ui.main_window import MainWindow
+    tmp_dir, page_paths, _ = temp_manga_env
+    cache_mgr = get_cache_manager()
+
+    # Pre-populate cache
+    for p in page_paths:
+        cache_mgr.save_page_cache(
+            p,
+            blocks=[{"id": "b1", "original_text": "text"}],
+            erased_img=np.zeros((10, 10, 3), dtype=np.uint8),
+            rendered_img=np.ones((10, 10, 3), dtype=np.uint8)
+        )
+
+    win = MainWindow()
+    items = [
+        {
+            "id": str(i),
+            "path": p,
+            "filename": os.path.basename(p),
+            "blocks": [{"id": "b1"}],
+            "erased_img": np.zeros((10, 10, 3), dtype=np.uint8),
+            "translated_img": np.ones((10, 10, 3), dtype=np.uint8)
+        }
+        for i, p in enumerate(page_paths)
+    ]
+    win.page_list.items_data = items
+    win.current_image_data = items[0]
+
+    # Trigger force retranslate batch
+    win._start_batch(force_retranslate=True)
+
+    # All in-memory states must be cleared
+    for it in items:
+        assert it["blocks"] == []
+        assert it["erased_img"] is None
+        assert it["translated_img"] is None
+
+    # Disk cache folder must have been removed
+    for p in page_paths:
+        paths = cache_mgr.get_cache_paths(p)
+        assert not os.path.exists(paths["dir"])
+
+    if win.active_batch_worker:
+        win.active_batch_worker.cancel()
+        win.active_batch_worker.wait(1000)
+    win.close()
+

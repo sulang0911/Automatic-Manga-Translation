@@ -302,6 +302,34 @@ class MangaCacheManager:
             except Exception as e:
                 logger.warning(f"Failed to delete cache dir {cache_dir}: {e}")
 
+    def clear_caches_for_items(self, items_or_paths: List[Any]) -> None:
+        """
+        Removes all software-generated cache files and .amt_cache folders
+        associated with the given list of items or file paths.
+        """
+        import shutil
+        cache_dirs = set()
+        paths = []
+        for it in items_or_paths:
+            if isinstance(it, dict):
+                p = it.get("path")
+            else:
+                p = str(it)
+            if p:
+                paths.append(p)
+                cdir = self.get_cache_dir(p, create=False)
+                cache_dirs.add(cdir)
+
+        for cdir in cache_dirs:
+            if os.path.exists(cdir):
+                try:
+                    shutil.rmtree(cdir, ignore_errors=True)
+                except Exception as e:
+                    logger.warning(f"Failed to delete cache dir {cdir}: {e}")
+
+        for p in paths:
+            self.clear_cache(p)
+
 
 _GLOBAL_CACHE_MGR: Optional[MangaCacheManager] = None
 

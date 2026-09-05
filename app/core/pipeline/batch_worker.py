@@ -125,6 +125,11 @@ class BatchWorker(QThread):
 
         cache_mgr = get_cache_manager()
 
+        # When force_retranslate is True, first completely clear all software-generated cache files & folders
+        if self.force_retranslate and self.queue_items:
+            self.sig_batch_progress.emit(1, total, "", 0, "正在清理原有缓存文件夹...")
+            cache_mgr.clear_caches_for_items(self.queue_items)
+
         for idx, item in enumerate(self.queue_items):
             if self._is_cancelled:
                 break
@@ -179,7 +184,7 @@ class BatchWorker(QThread):
                 if original_img is None:
                     raise RuntimeError("无法解码图像文件")
 
-                cache_status = cache_mgr.has_cache(img_path)
+                cache_status = {"blocks": False, "erased": False, "rendered": False} if self.force_retranslate else cache_mgr.has_cache(img_path)
 
                 # 3. OCR Stage (Check cache first)
                 if cache_status["blocks"]:

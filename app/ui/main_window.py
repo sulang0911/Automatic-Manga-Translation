@@ -1338,6 +1338,40 @@ class MainWindow(QMainWindow):
         if hasattr(self.page_list, "retranslate_all_btn"):
             self.page_list.retranslate_all_btn.setText("⏹ 取消批处理")
 
+        # When force_retranslate is True (全部重新翻译), clear all software-generated cache files & folders first
+        if force_retranslate:
+            cache_mgr = get_cache_manager()
+            cache_mgr.clear_caches_for_items(items)
+
+            # Reset in-memory state for all queue items
+            for it in items:
+                it["blocks"] = []
+                it["erased_img"] = None
+                it["translated_img"] = None
+                if hasattr(self.page_list, "update_item_status"):
+                    self.page_list.update_item_status(it.get("id"), "queued", "等待中")
+
+            # Reset canvas view to original mode if current page is in list
+            if self.current_image_data:
+                self.current_image_data["blocks"] = []
+                self.current_image_data["erased_img"] = None
+                self.current_image_data["translated_img"] = None
+                if hasattr(self, "canvas_view") and hasattr(self.canvas_view, "original_cv"):
+                    self.canvas_view.set_data(
+                        original_cv=self.canvas_view.original_cv,
+                        translated_cv=None,
+                        erased_cv=None,
+                        blocks=[]
+                    )
+                    self.canvas_view.set_view_mode("original")
+                    if hasattr(self, "_mode_buttons") and "original" in self._mode_buttons:
+                        self._mode_buttons["original"].setChecked(True)
+                if hasattr(self, "inspector_panel"):
+                    self.inspector_panel.set_blocks([])
+
+            self.status_label.setText("已清理旧缓存文件夹，正在启动全量重新翻译...")
+            self.toast.show_message("已清理原有缓存文件夹，开始全量重新翻译...", "info")
+
         # When export_dir is provided (e.g. Batch Export), prepare directory.
         # When export_dir is None (Batch Translate), raster baking is deferred to eliminate GUI freeze & save disk space!
         if export_dir:

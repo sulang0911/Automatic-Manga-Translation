@@ -19,6 +19,7 @@ from .inspector_panel import InspectorPanel
 from .settings_dialog import SettingsDialog
 from .toast import Toast
 from .styles import get_stylesheet
+from app.core.cache.cache_manager import get_cache_manager
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -455,6 +456,14 @@ class MainWindow(QMainWindow):
         if not items:
             self.toast.show_message("队列为空，请先添加漫画图片", "warning")
             return
+
+        if force_retranslate:
+            cache_mgr = get_cache_manager()
+            cache_mgr.clear_caches_for_items(items)
+            for it in items:
+                it["blocks"] = []
+                it["erased_img"] = None
+                it["translated_img"] = None
 
         export_dir = QFileDialog.getExistingDirectory(self, "选择批量导出目录 (取消则仅在内存中处理)")
         self.progress_bar.show()
