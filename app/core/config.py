@@ -25,10 +25,10 @@ DEFAULT_SYSTEM_PROMPT = (
 
 @dataclass
 class LLMConfig:
-    provider: str = "deepseek"
-    api_key: str = ""
-    model: str = "deepseek-chat"
-    endpoint: str = ""
+    provider: str = "openai"
+    api_key: str = "1"
+    model: str = "richardyoung/qwen2.5-7b-instruct-abliterated:Q5_K_M"
+    endpoint: str = "http://127.0.0.1:11434/v1"
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
     temperature: float = 0.2
     timeout_seconds: float = 60.0
@@ -38,12 +38,12 @@ class LLMConfig:
 
 @dataclass
 class OCRConfig:
-    engine: str = "easyocr"  # "easyocr" or "paddle"
+    engine: str = "ctd"  # "ctd", "easyocr" or "paddle"
     lang: str = "japan"
     force_cpu: bool = False
     confidence_threshold: float = 0.25
-    ensemble_detection: bool = False
-    ensemble_recognition: bool = False
+    ensemble_detection: bool = True
+    ensemble_recognition: bool = True
 
 
 @dataclass

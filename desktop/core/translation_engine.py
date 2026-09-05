@@ -15,9 +15,9 @@ DEFAULT_SYSTEM_PROMPT = (
 )
 
 class TranslationEngine:
-    def __init__(self, provider: str = "deepseek", api_key: str = "", model: str = "deepseek-chat",
-                 custom_endpoint: str = "https://api.deepseek.com/v1", target_lang: str = "简体中文",
-                 source_lang: str = "日语", temperature: float = 0.3, system_prompt: str = ""):
+    def __init__(self, provider: str = "openai", api_key: str = "1", model: str = "richardyoung/qwen2.5-7b-instruct-abliterated:Q5_K_M",
+                 custom_endpoint: str = "http://127.0.0.1:11434/v1", target_lang: str = "简体中文",
+                 source_lang: str = "自动识别", temperature: float = 0.2, system_prompt: str = ""):
         self.provider = provider
         self.api_key = api_key
         self.model = model

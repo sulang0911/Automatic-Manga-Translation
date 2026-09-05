@@ -512,9 +512,18 @@ def can_merge_pair(
     min_line_h = min(line_h1, line_h2)
     max_line_h = max(line_h1, line_h2)
 
-    is_horiz_candidate = (not has_cjk) or (h1 <= w1 * 1.50 and h2 <= w2 * 1.50) or (
+    is_multiline_block1 = (b1.get("line_count", 1) > 1 or len(b1.get("lines", [])) > 1 or len(str(b1.get("text", "")).splitlines()) > 1)
+    is_multiline_block2 = (b2.get("line_count", 1) > 1 or len(b2.get("lines", [])) > 1 or len(str(b2.get("text", "")).splitlines()) > 1)
+    is_incompatible_multiline = False
+    if (is_multiline_block1 or is_multiline_block2) and not same_bubble:
+        if is_multiline_block1 and is_multiline_block2 and (min_w / max_w >= 0.75) and abs(x1_min - x2_min) <= max(16, int(0.15 * max_w)):
+            is_incompatible_multiline = False
+        else:
+            is_incompatible_multiline = True
+
+    is_horiz_candidate = ((not has_cjk) or (h1 <= w1 * 1.50 and h2 <= w2 * 1.50) or (
         max(w1, w2) >= max_line_h * 1.5
-    )
+    )) and not is_incompatible_multiline
     if is_horiz_candidate and (min_line_h / max_line_h) >= 0.30:
         if y1_min <= y2_min:
             t_ymin, t_ymax = y1_min, y1_max
@@ -531,6 +540,14 @@ def can_merge_pair(
             if curr_y_gap < 0:
                 y_overlap_len = -curr_y_gap
                 y_gap_ok = y_overlap_len <= max(6, int((0.70 if same_bubble else 0.50) * est_line_h))
+                if not same_bubble:
+                    # Enforce strict paragraph integrity when bounding boxes overlap vertically in Y:
+                    # 1) An already multi-line block cannot swallow an outside box encroaching on its corners
+                    if b1.get("line_count", 1) > 1 or b2.get("line_count", 1) > 1 or len(b1.get("lines", [])) > 1 or len(b2.get("lines", [])) > 1:
+                        y_gap_ok = False
+                    # 2) Reject if horizontally staggered/offset (not aligned in center or edges)
+                    elif abs(mid_x1 - mid_x2) > max_w * 0.25 and abs(x1_min - x2_min) > max_w * 0.20 and abs(x1_max - x2_max) > max_w * 0.20:
+                        y_gap_ok = False
             else:
                 strong_h_align = (x_overlap_ratio >= 0.70 and abs(mid_x1 - mid_x2) <= max_w * 0.25)
                 is_coord_only_default = (image is None and bubble_labels is None and not adaptive_spacing)
@@ -551,7 +568,7 @@ def can_merge_pair(
             if y_gap_ok:
                 x_aligned = (
                     (x_overlap_ratio >= 0.35 and abs(mid_x1 - mid_x2) <= max_w * 0.65)
-                    or (x_overlap > 0 and (x_overlap / max_w >= 0.30))
+                    or (x_overlap > 0 and (x_overlap / max_w >= 0.30) and abs(mid_x1 - mid_x2) <= max_w * 0.40)
                     or (abs(x1_min - x2_min) <= max(12, int(0.20 * max_w)) and x_overlap > 0)
                     or (abs(x1_max - x2_max) <= max(12, int(0.20 * max_w)) and x_overlap > 0)
                     or (abs(mid_x1 - mid_x2) <= max(12, int(0.20 * max_w)) and x_overlap > 0)
@@ -569,10 +586,20 @@ def can_merge_pair(
         min_col_w = min(col_w1, col_w2)
         max_col_w = max(col_w1, col_w2)
 
+        is_multicolumn1 = (len(str(b1.get("text", "")).splitlines()) > 1 or len(b1.get("lines", [])) > 1)
+        is_multicolumn2 = (len(str(b2.get("text", "")).splitlines()) > 1 or len(b2.get("lines", [])) > 1)
+        is_incompatible_multicolumn = False
+        if (is_multicolumn1 or is_multicolumn2) and not same_bubble:
+            if is_multicolumn1 and is_multicolumn2 and (min_h / max_h >= 0.75) and abs(y1_min - y2_min) <= max(16, int(0.15 * max_h)):
+                is_incompatible_multicolumn = False
+            else:
+                is_incompatible_multicolumn = True
+
         is_vert_candidate = (
             not (w1 >= h1 * 1.50 and w2 >= h2 * 1.50)
             and (min_col_w / max_col_w) >= 0.30
             and max(h1, h2) >= max_col_w * 0.8
+            and not is_incompatible_multicolumn
         )
         if is_vert_candidate:
             if x1_min >= x2_min:
@@ -822,7 +849,35 @@ def merge_adjacent_boxes(
             row_texts = []
             for row in rows:
                 row_sorted = sorted(row, key=lambda b: min(b["xmin"], b["xmax"]))
-                row_text = _join_line_texts([str(b.get("text", "")).strip() for b in row_sorted])
+                # Deduplicate identical or heavily overlapping boxes within the same row
+                deduped_row = []
+                for b in row_sorted:
+                    t_curr = str(b.get("text", "")).strip()
+                    is_dup = False
+                    for prev_b in deduped_row:
+                        t_prev = str(prev_b.get("text", "")).strip()
+                        ov_x = max(0, min(b["xmax"], prev_b["xmax"]) - max(b["xmin"], prev_b["xmin"]))
+                        min_w_b = min(b["xmax"] - b["xmin"], prev_b["xmax"] - prev_b["xmin"])
+                        if min_w_b > 0 and (ov_x / float(min_w_b)) >= 0.60:
+                            if t_curr == t_prev or not t_curr:
+                                is_dup = True
+                                break
+                            elif not t_prev:
+                                prev_b["text"] = t_curr
+                                is_dup = True
+                                break
+                            elif float(b.get("conf", 0.0) or 0.0) > float(prev_b.get("conf", 0.0) or 0.0):
+                                prev_b["text"] = t_curr
+                                prev_b["conf"] = b.get("conf")
+                                is_dup = True
+                                break
+                            else:
+                                is_dup = True
+                                break
+                    if not is_dup and t_curr:
+                        deduped_row.append(b)
+
+                row_text = _join_line_texts([str(b.get("text", "")).strip() for b in deduped_row])
                 if row_text:
                     row_texts.append(row_text)
 

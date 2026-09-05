@@ -186,6 +186,36 @@ def get_background_color_hex(crop: np.ndarray) -> str:
     b, g, r = median_color[0], median_color[1], median_color[2]
     return f"#{int(r):02x}{int(g):02x}{int(b):02x}".upper()
 
+
+def mask_crop_with_lines(crop: np.ndarray, box: Dict[str, Any], bx1: int, by1: int) -> np.ndarray:
+    """
+    Masks out pixels outside the segmented CTD text lines with the background color.
+    Prevents recognition bleed where axis-aligned bounding box corners contain neighboring text.
+    """
+    if crop is None or crop.size == 0:
+        return crop
+    lines = box.get("lines")
+    if not lines or len(lines) == 0:
+        return crop
+    try:
+        masked_crop = crop.copy()
+        mask = np.zeros(crop.shape[:2], dtype=np.uint8)
+        for ln in lines:
+            pts = np.asarray(ln, dtype=np.int32) - np.array([bx1, by1], dtype=np.int32)
+            cv2.fillPoly(mask, [pts], 255)
+        mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_RECT, (6, 6)))
+        bg_hex = box.get("bg_color") or get_background_color_hex(crop)
+        c_str = bg_hex.lstrip("#")
+        if len(c_str) == 6:
+            r_c, g_c, b_c = int(c_str[0:2], 16), int(c_str[2:4], 16), int(c_str[4:6], 16)
+        else:
+            r_c, g_c, b_c = 255, 255, 255
+        masked_crop[mask == 0] = [b_c, g_c, r_c]
+        return masked_crop
+    except Exception:
+        return crop
+
+
 class OCREngine:
     def __init__(
         self,
@@ -401,6 +431,7 @@ class OCREngine:
                         bx2, by2 = box["xmax"], box["ymax"]
                         crop = image[by1:by2, bx1:bx2]
                         if crop.size > 0:
+                            crop = mask_crop_with_lines(crop, box, bx1, by1)
                             rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
                             res = self._easyocr_reader.readtext(rgb)
                             if res:
@@ -418,6 +449,8 @@ class OCREngine:
                         bx2 = max(bx1 + 1, min(box["xmax"], w_img))
                         by2 = max(by1 + 1, min(box["ymax"], h_img))
                         crop = image[by1:by2, bx1:bx2]
+                        if crop.size > 0:
+                            crop = mask_crop_with_lines(crop, box, bx1, by1)
                         txt_pri = self._manga_ocr.recognize_crop(crop, angle=box.get("angle", 0.0))
                         conf_pri = max(float(box.get("conf", 0.8)), 0.95) if txt_pri else 0.0
 

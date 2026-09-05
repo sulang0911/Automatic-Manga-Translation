@@ -15,7 +15,9 @@
     "engine": "ctd",
     "lang": "japan",
     "force_cpu": false,
-    "confidence_threshold": 0.25
+    "confidence_threshold": 0.25,
+    "ensemble_detection": true,
+    "ensemble_recognition": true
   },
   "inpaint": {
     "engine": "lama",
@@ -44,7 +46,7 @@
     "stroke_width": 2.0,
     "font_bold": false,
     "font_italic": false,
-    "onomatopoeia_mode": "transparent",
+    "onomatopoeia_mode": "normal",
     "reading_direction": "manga_rtl",
     "export_compressed": false
   },

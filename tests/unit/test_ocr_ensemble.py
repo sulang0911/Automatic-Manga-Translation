@@ -142,8 +142,8 @@ class TestEnsembleConfigIntegration:
     def test_default_config_has_ensemble_keys(self):
         assert "ocr_ensemble_detection" in DEFAULT_CONFIG
         assert "ocr_ensemble_recognition" in DEFAULT_CONFIG
-        assert DEFAULT_CONFIG["ocr_ensemble_detection"] is False
-        assert DEFAULT_CONFIG["ocr_ensemble_recognition"] is False
+        assert DEFAULT_CONFIG["ocr_ensemble_detection"] is True
+        assert DEFAULT_CONFIG["ocr_ensemble_recognition"] is True
 
     def test_app_config_serialization(self):
         cfg = AppConfig()

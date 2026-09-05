@@ -15,21 +15,21 @@ DEFAULT_SYSTEM_PROMPT = (
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     # Translation LLM Provider Settings
-    "provider": "deepseek",  # "deepseek" | "openai" | "gemini" | "custom"
-    "api_key": "",
-    "model": "deepseek-chat",
-    "custom_endpoint": "https://api.deepseek.com/v1",
+    "provider": "openai",  # "deepseek" | "openai" | "gemini" | "custom"
+    "api_key": "1",
+    "model": "richardyoung/qwen2.5-7b-instruct-abliterated:Q5_K_M",
+    "custom_endpoint": "http://127.0.0.1:11434/v1",
     "target_lang": "简体中文",
-    "source_lang": "日语",
-    "temperature": 0.3,
+    "source_lang": "自动识别",
+    "temperature": 0.2,
     "system_prompt": DEFAULT_SYSTEM_PROMPT,
 
     # OCR Settings
     "ocr_engine": "ctd",  # "ctd" (pure PyTorch) | "paddle" | "paddle_manga" | "easyocr" | "cpu_paddle"
     "use_gpu": True,
     "ocr_lang": "japan",  # "japan" | "ch" | "en" | "korean"
-    "ocr_ensemble_detection": False,  # Dual-model detection fusion (CTD + General detector)
-    "ocr_ensemble_recognition": False,  # Dual-model recognition ensemble (Manga-OCR + General recognizer)
+    "ocr_ensemble_detection": True,  # Dual-model detection fusion (CTD + General detector)
+    "ocr_ensemble_recognition": True,  # Dual-model recognition ensemble (Manga-OCR + General recognizer)
 
     # Inpaint Settings
     "inpaint_engine": "auto",  # "auto" | "lama" | "opencv_telea" | "opencv_ns"
@@ -44,7 +44,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "font_bold": False,
     "font_italic": False,
     "text_color": "#000000",
-    "text_color_mode": "custom",  # "custom" | "original"
+    "text_color_mode": "original",  # "custom" | "original"
     "bg_color": "#FFFFFF",
     "bg_color_mode": "original",  # "original" | "custom" | "none"
     "bg_opacity": 0.95,
