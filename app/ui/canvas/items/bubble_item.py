@@ -84,6 +84,12 @@ class BubbleItem(QGraphicsRectItem):
         self.setTransformOriginPoint(self.rect().center())
         self.setRotation(angle)
 
+    def update_block_data(self, block_data: Dict[str, Any]):
+        """Dynamically updates block data, geometry, and rotation in real-time."""
+        self.block_data = block_data
+        self._update_geometry_from_data()
+        self.update()
+
     def boundingRect(self) -> QRectF:
         """Expands bounding rect so mouse hit-testing catches handles outside the inner rect."""
         pad = HANDLE_SIZE + 6.0

@@ -10,7 +10,12 @@ import numpy as np
 import torch
 
 from app.core.models import TranslationBlock, BlockType, TextDirection
-from app.core.ocr.base import BaseOCREngine, is_solid_color_page, merge_adjacent_boxes
+from app.core.ocr.base import (
+    BaseOCREngine,
+    is_solid_color_page,
+    merge_adjacent_boxes,
+    calculate_polygon_angle
+)
 from app.core.ocr.reading_order import sort_reading_order
 from app.core.inpaint.color_analyzer import get_background_color_hex, analyze_text_color
 
@@ -78,19 +83,33 @@ class EasyOCREngine(BaseOCREngine):
             if not clean_text or conf < 0.20:
                 continue
             pts = np.array(bbox, dtype=np.int32)
+            angle = calculate_polygon_angle(pts)
             raw_boxes.append({
                 "xmin": int(np.min(pts[:, 0])),
                 "ymin": int(np.min(pts[:, 1])),
                 "xmax": int(np.max(pts[:, 0])),
                 "ymax": int(np.max(pts[:, 1])),
                 "text": clean_text,
-                "conf": float(conf)
+                "conf": float(conf),
+                "polygon": pts.astype(int).tolist(),
+                "angle": angle
             })
+
+        # Filter spurious OCR boxes falling inside QR codes
+        qr_regions = None
+        try:
+            from app.core.ocr.qr_filter import QRCodeFilter
+            qr_filter = QRCodeFilter()
+            qr_regions = qr_filter.detect_regions(image)
+            if qr_regions:
+                raw_boxes = qr_filter.filter_spurious_ocr_boxes(raw_boxes, qr_regions)
+        except Exception:
+            qr_regions = None
 
         if progress_callback:
             progress_callback(70, "正在合并临近对话段落...")
 
-        merged_boxes = merge_adjacent_boxes(raw_boxes, w_img, h_img)
+        merged_boxes = merge_adjacent_boxes(raw_boxes, w_img, h_img, image=image, qr_regions=qr_regions)
 
         blocks: List[TranslationBlock] = []
         for b in merged_boxes:
@@ -135,7 +154,9 @@ class EasyOCREngine(BaseOCREngine):
                 confidence=b["conf"],
                 line_count=b.get("line_count", 1),
                 type=BlockType.BUBBLE.value if is_bubble else BlockType.ONOMATOPOEIA.value,
-                direction=ocr_direction
+                direction=ocr_direction,
+                polygon=b.get("polygon"),
+                angle=float(b.get("angle", 0.0) or 0.0)
             )
             blocks.append(block)
 

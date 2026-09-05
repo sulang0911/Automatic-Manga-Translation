@@ -13,7 +13,12 @@ import cv2
 import torch
 
 from app.core.models import TranslationBlock, BlockType, TextDirection
-from app.core.ocr.base import BaseOCREngine, is_solid_color_page, merge_adjacent_boxes
+from app.core.ocr.base import (
+    BaseOCREngine,
+    is_solid_color_page,
+    merge_adjacent_boxes,
+    calculate_polygon_angle
+)
 from app.core.ocr.reading_order import sort_reading_order
 from app.core.hardware import is_legacy_pascal_or_maxwell_gpu
 from app.core.inpaint.color_analyzer import get_background_color_hex, analyze_text_color
@@ -26,12 +31,15 @@ class PaddleOCREngine(BaseOCREngine):
         self,
         lang: str = "japan",
         force_cpu: bool = False,
-        fallback_to_easyocr: bool = True
+        fallback_to_easyocr: bool = True,
+        use_manga_ocr: bool = False
     ):
         self.lang = lang
         self.force_cpu = force_cpu
         self.fallback_to_easyocr = fallback_to_easyocr
+        self.use_manga_ocr = use_manga_ocr
         self._ocr = None
+        self._manga_ocr = None
         self._is_old_gpu = is_legacy_pascal_or_maxwell_gpu()
 
     def _get_ocr(self):
@@ -154,21 +162,27 @@ class PaddleOCREngine(BaseOCREngine):
                     poly = rec_polys[i] if (rec_polys is not None and i < len(rec_polys)) else None
                     if poly is not None and len(poly) >= 4:
                         pts = np.array(poly, dtype=np.int32)
+                        angle = calculate_polygon_angle(pts)
                         raw_boxes.append({
                             "xmin": int(np.min(pts[:, 0])),
                             "ymin": int(np.min(pts[:, 1])),
                             "xmax": int(np.max(pts[:, 0])),
                             "ymax": int(np.max(pts[:, 1])),
                             "text": text,
-                            "conf": conf
+                            "conf": conf,
+                            "polygon": pts.astype(int).tolist(),
+                            "angle": angle
                         })
                     elif 'rec_boxes' in res_dict and i < len(res_dict['rec_boxes']):
                         box = res_dict['rec_boxes'][i]
+                        bx1, by1, bx2, by2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
                         raw_boxes.append({
-                            "xmin": int(box[0]), "ymin": int(box[1]),
-                            "xmax": int(box[2]), "ymax": int(box[3]),
+                            "xmin": bx1, "ymin": by1,
+                            "xmax": bx2, "ymax": by2,
                             "text": text,
-                            "conf": conf
+                            "conf": conf,
+                            "polygon": [[bx1, by1], [bx2, by1], [bx2, by2], [bx1, by2]],
+                            "angle": 0.0
                         })
             # Handle PaddleOCR 2.x list format
             elif isinstance(results[0], list):
@@ -180,21 +194,56 @@ class PaddleOCREngine(BaseOCREngine):
                         conf = float(text_info[1])
                         if not text or conf < 0.20:
                             continue
+                        angle = calculate_polygon_angle(pts)
                         raw_boxes.append({
                             "xmin": int(np.min(pts[:, 0])),
                             "ymin": int(np.min(pts[:, 1])),
                             "xmax": int(np.max(pts[:, 0])),
                             "ymax": int(np.max(pts[:, 1])),
                             "text": text,
-                            "conf": conf
+                            "conf": conf,
+                            "polygon": pts.astype(int).tolist(),
+                            "angle": angle
                         })
                     except Exception:
                         continue
 
+        # Decoupled recognition: Manga-OCR for Japanese text crops
+        if self.use_manga_ocr and (self.lang == "japan" or target_lang in ("japan", "ja")):
+            try:
+                from app.core.ocr.manga_ocr_wrapper import get_manga_ocr
+                if self._manga_ocr is None:
+                    self._manga_ocr = get_manga_ocr(force_cpu=self.force_cpu)
+                if progress_callback:
+                    progress_callback(55, "正在使用 Manga-OCR 高精度识别日文...")
+                for box in raw_boxes:
+                    bx1 = max(0, min(box["xmin"], w_img - 1))
+                    by1 = max(0, min(box["ymin"], h_img - 1))
+                    bx2 = max(bx1 + 1, min(box["xmax"], w_img))
+                    by2 = max(by1 + 1, min(box["ymax"], h_img))
+                    crop = image[by1:by2, bx1:bx2]
+                    txt = self._manga_ocr.recognize_crop(crop, angle=box.get("angle", 0.0))
+                    if txt:
+                        box["text"] = txt
+                        box["conf"] = max(float(box.get("conf", 0.8)), 0.95)
+            except Exception as e:
+                logger.warning(f"Manga-OCR decoupled recognition failed, keeping PaddleOCR text: {e}")
+
+        # Filter spurious OCR boxes falling inside QR codes
+        qr_regions = None
+        try:
+            from app.core.ocr.qr_filter import QRCodeFilter
+            qr_filter = QRCodeFilter()
+            qr_regions = qr_filter.detect_regions(image)
+            if qr_regions:
+                raw_boxes = qr_filter.filter_spurious_ocr_boxes(raw_boxes, qr_regions)
+        except Exception:
+            qr_regions = None
+
         if progress_callback:
             progress_callback(70, "正在进行气泡聚类与文本段落合并...")
 
-        merged_boxes = merge_adjacent_boxes(raw_boxes, w_img, h_img)
+        merged_boxes = merge_adjacent_boxes(raw_boxes, w_img, h_img, image=image, qr_regions=qr_regions)
 
         blocks: List[TranslationBlock] = []
         for b in merged_boxes:
@@ -227,7 +276,9 @@ class PaddleOCREngine(BaseOCREngine):
                 confidence=b["conf"],
                 line_count=b.get("line_count", 1),
                 type=BlockType.BUBBLE.value if is_bubble else BlockType.ONOMATOPOEIA.value,
-                direction=TextDirection.VERTICAL.value if is_vertical else TextDirection.HORIZONTAL.value
+                direction=TextDirection.VERTICAL.value if is_vertical else TextDirection.HORIZONTAL.value,
+                polygon=b.get("polygon"),
+                angle=float(b.get("angle", 0.0) or 0.0)
             )
             blocks.append(block)
 

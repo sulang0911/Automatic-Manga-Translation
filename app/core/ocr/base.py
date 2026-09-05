@@ -2,6 +2,8 @@
 app/core/ocr/base.py
 Abstract base class and utility functions for OCR detection and recognition engines.
 """
+import math
+import cv2
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional, Callable
 import numpy as np
@@ -78,19 +80,165 @@ def _join_line_texts(texts: List[str]) -> str:
     return res
 
 
+def calculate_polygon_angle(pts: Any, threshold: float = 15.0) -> float:
+    """
+    Calculates text line orientation angle in degrees in [-90.0, +90.0].
+    Uses baseline vector arctan2 for 4-point quadrilaterals and
+    oriented cv2.minAreaRect fallback for general polygons.
+    Applies deadband threshold (|deg| < threshold returns 0.0, default 15.0).
+    """
+    if pts is None:
+        return 0.0
+    pts_arr = np.asarray(pts, dtype=np.float32)
+    if len(pts_arr) < 2:
+        return 0.0
+
+    if len(pts_arr) == 4:
+        v_top = pts_arr[1] - pts_arr[0]
+        v_bot = pts_arr[2] - pts_arr[3]
+        dx = float(v_top[0] + v_bot[0]) / 2.0
+        dy = float(v_top[1] + v_bot[1]) / 2.0
+    else:
+        rect = cv2.minAreaRect(pts_arr)
+        box = cv2.boxPoints(rect)
+        e1 = box[1] - box[0]
+        e2 = box[2] - box[1]
+        long_e = e1 if np.linalg.norm(e1) >= np.linalg.norm(e2) else e2
+        if long_e[0] < 0:
+            long_e = -long_e
+        dx, dy = float(long_e[0]), float(long_e[1])
+
+    if abs(dx) < 1e-4 and abs(dy) < 1e-4:
+        return 0.0
+
+    deg = math.degrees(math.atan2(dy, dx))
+    while deg > 90.0:
+        deg -= 180.0
+    while deg < -90.0:
+        deg += 180.0
+
+    return round(deg, 1) if abs(deg) >= threshold else 0.0
+
+
+def order_polygon_vertices(pts: Any, angle_deg: float) -> List[List[int]]:
+    """
+    Canonically orders 4 vertices [TL, TR, BR, BL] aligned with angle_deg:
+    - TL -> TR: baseline vector along angle_deg (reading direction)
+    - TR -> BR: height vector downwards (angle_deg + 90 deg)
+    - BR -> BL: baseline vector reversed
+    - BL -> TL: height vector upwards
+    """
+    if pts is None:
+        return []
+    pts_arr = np.asarray(pts, dtype=np.float32)
+    if len(pts_arr) != 4:
+        return [[int(round(p[0])), int(round(p[1]))] for p in pts_arr]
+
+    center = np.mean(pts_arr, axis=0)
+    rad = math.radians(angle_deg)
+    cos_a, sin_a = math.cos(rad), math.sin(rad)
+    u = np.array([cos_a, sin_a], dtype=np.float32)
+    v = np.array([-sin_a, cos_a], dtype=np.float32)
+
+    rel = pts_arr - center
+    proj_u = rel @ u
+    proj_v = rel @ v
+
+    tl_idx = int(np.argmin(proj_u + proj_v))
+    tr_idx = int(np.argmax(proj_u - proj_v))
+    br_idx = int(np.argmax(proj_u + proj_v))
+    bl_idx = int(np.argmin(proj_u - proj_v))
+
+    indices = [tl_idx, tr_idx, br_idx, bl_idx]
+    if len(set(indices)) == 4:
+        ordered = pts_arr[indices]
+    else:
+        tl = int(min(range(4), key=lambda i: (proj_u[i] + proj_v[i])))
+        br = int(max(range(4), key=lambda i: (proj_u[i] + proj_v[i])))
+        rem = [i for i in range(4) if i not in (tl, br)]
+        if proj_u[rem[0]] - proj_v[rem[0]] > proj_u[rem[1]] - proj_v[rem[1]]:
+            tr, bl = rem[0], rem[1]
+        else:
+            tr, bl = rem[1], rem[0]
+        ordered = pts_arr[[tl, tr, br, bl]]
+
+    return [[int(round(p[0])), int(round(p[1]))] for p in ordered]
+
+
+def compute_bubble_labels(image: Optional[np.ndarray]) -> Optional[np.ndarray]:
+    """
+    Computes connected-component labels for continuous light speech bubble closures.
+    Uses adaptive binary thresholding, morphological ellipse closing, and cv2.connectedComponents.
+    Returns an integer label matrix of shape (H, W), or None if image is None or invalid.
+    """
+    if image is None or not hasattr(image, "size") or image.size == 0:
+        return None
+    try:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+        # In manga, dialogue bubbles typically have white/light interior (>= 215)
+        # surrounded by dark outlines.
+        _, binary = cv2.threshold(gray, 215, 255, cv2.THRESH_BINARY)
+        # Morphological closing with ellipse kernel bridges text strokes inside the bubble
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+        closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+        _, labels = cv2.connectedComponents(closed)
+        return labels
+    except Exception:
+        return None
+
+
 def can_merge_pair(
     b1: Dict[str, Any],
     b2: Dict[str, Any],
     img_w: int,
     img_h: int,
     v_thresh_ratio: float = 0.025,
-    h_thresh_ratio: float = 0.035
+    h_thresh_ratio: float = 0.035,
+    image: Optional[np.ndarray] = None,
+    bubble_labels: Optional[np.ndarray] = None,
+    adaptive_spacing: bool = False,
+    qr_regions: Optional[List[Any]] = None
 ) -> bool:
     """
     Evaluates whether two detected text boxes belong to the same dialogue bubble / text region.
-    Prevents merging adjacent independent speech bubbles while correctly aggregating multi-line text
-    and same-line / same-column fragments.
+    Prevents merging adjacent independent speech bubbles or cross-QR bridges while correctly
+    aggregating multi-line text and same-line / same-column fragments with adaptive spacing.
     """
+    # Angle compatibility guard: if both b1 and b2 have an angle specified, reject if |a1 - a2| > 10.0 degrees
+    if "angle" in b1 and "angle" in b2 and b1["angle"] is not None and b2["angle"] is not None:
+        try:
+            a1 = float(b1["angle"])
+            a2 = float(b2["angle"])
+            ang_diff = abs(a1 - a2)
+            if ang_diff > 90.0:
+                ang_diff = abs(ang_diff - 180.0)
+            if ang_diff > 10.0:
+                return False
+        except (ValueError, TypeError):
+            pass
+
+    # Visual background color difference guard: reject if high contrast between candidate boxes
+    c1 = b1.get("bg_color")
+    c2 = b2.get("bg_color")
+    if c1 and c2:
+        try:
+            def _parse_color(c):
+                if isinstance(c, str):
+                    c = c.lstrip("#")
+                    if len(c) == 6:
+                        return tuple(int(c[k:k+2], 16) for k in (0, 2, 4))
+                elif isinstance(c, (list, tuple)) and len(c) >= 3:
+                    return tuple(int(x) for x in c[:3])
+                return None
+            rgb1 = _parse_color(c1)
+            rgb2 = _parse_color(c2)
+            if rgb1 and rgb2:
+                dist = math.sqrt(sum((x - y) ** 2 for x, y in zip(rgb1, rgb2)))
+                if dist > 60.0:
+                    return False
+        except Exception:
+            pass
+
     x1_min = int(round(min(b1["xmin"], b1["xmax"])))
     x1_max = int(round(max(b1["xmin"], b1["xmax"])))
     y1_min = int(round(min(b1["ymin"], b1["ymax"])))
@@ -121,6 +269,95 @@ def can_merge_pair(
     mid_y1 = (y1_min + y1_max) / 2.0
     mid_y2 = (y2_min + y2_max) / 2.0
 
+    # QR Barrier Guard: reject if combined bounding box spans or intersects any QR code
+    if qr_regions is None and image is not None:
+        try:
+            from app.core.ocr.qr_filter import QRCodeFilter
+            qr_regions = QRCodeFilter().detect_regions(image)
+        except Exception:
+            qr_regions = None
+
+    if qr_regions:
+        is_norm = (max(x1_max, x2_max) <= 100.0 and max(y1_max, y2_max) <= 100.0 and img_w > 100)
+        if is_norm:
+            c_xmin_px = (min(x1_min, x2_min) / 100.0) * img_w
+            c_ymin_px = (min(y1_min, y2_min) / 100.0) * img_h
+            c_xmax_px = (max(x1_max, x2_max) / 100.0) * img_w
+            c_ymax_px = (max(y1_max, y2_max) / 100.0) * img_h
+        else:
+            c_xmin_px = min(x1_min, x2_min)
+            c_ymin_px = min(y1_min, y2_min)
+            c_xmax_px = max(x1_max, x2_max)
+            c_ymax_px = max(y1_max, y2_max)
+
+        for reg in qr_regions:
+            if hasattr(reg, "bbox"):
+                qx1, qy1, qx2, qy2 = reg.bbox
+            elif isinstance(reg, dict) and "bbox" in reg:
+                qx1, qy1, qx2, qy2 = reg["bbox"]
+            elif isinstance(reg, dict) and "xmin" in reg:
+                qx1, qy1, qx2, qy2 = reg["xmin"], reg["ymin"], reg["xmax"], reg["ymax"]
+            elif isinstance(reg, (tuple, list)) and len(reg) == 4:
+                qx1, qy1, qx2, qy2 = reg
+            else:
+                continue
+
+            pad = 8
+            inter_w = max(0, min(c_xmax_px, qx2 + pad) - max(c_xmin_px, qx1 - pad))
+            inter_h = max(0, min(c_ymax_px, qy2 + pad) - max(c_ymin_px, qy1 - pad))
+            if inter_w > 0 and inter_h > 0:
+                return False
+
+    # Connected component / Bubble Closure Awareness
+    if bubble_labels is None and image is not None:
+        bubble_labels = compute_bubble_labels(image)
+
+    same_bubble = False
+    if bubble_labels is not None:
+        H_lbl, W_lbl = bubble_labels.shape[:2]
+        is_norm = (max(x1_max, x2_max) <= 100.0 and max(y1_max, y2_max) <= 100.0 and img_w > 100)
+
+        def _sample_label(xmin_c, ymin_c, xmax_c, ymax_c, mid_x_c, mid_y_c):
+            if is_norm:
+                px_x = int(round((mid_x_c / 100.0) * W_lbl))
+                px_y = int(round((mid_y_c / 100.0) * H_lbl))
+                x1_p = int(round((xmin_c / 100.0) * W_lbl))
+                y1_p = int(round((ymin_c / 100.0) * H_lbl))
+                x2_p = int(round((xmax_c / 100.0) * W_lbl))
+                y2_p = int(round((ymax_c / 100.0) * H_lbl))
+            else:
+                px_x = int(round(mid_x_c))
+                px_y = int(round(mid_y_c))
+                x1_p = int(round(xmin_c))
+                y1_p = int(round(ymin_c))
+                x2_p = int(round(xmax_c))
+                y2_p = int(round(ymax_c))
+
+            px_x = max(0, min(W_lbl - 1, px_x))
+            px_y = max(0, min(H_lbl - 1, px_y))
+            lbl = int(bubble_labels[px_y, px_x])
+            if lbl == 0:
+                # Text stroke fallback: sample non-zero mode inside box interior
+                x1_cl = max(0, min(W_lbl - 1, x1_p))
+                y1_cl = max(0, min(H_lbl - 1, y1_p))
+                x2_cl = max(x1_cl + 1, min(W_lbl, x2_p))
+                y2_cl = max(y1_cl + 1, min(H_lbl, y2_p))
+                patch = bubble_labels[y1_cl:y2_cl, x1_cl:x2_cl]
+                pos = patch[patch > 0]
+                if pos.size > 0:
+                    lbl = int(np.bincount(pos).argmax())
+            return lbl
+
+        lbl1 = _sample_label(x1_min, y1_min, x1_max, y1_max, mid_x1, mid_y1)
+        lbl2 = _sample_label(x2_min, y2_min, x2_max, y2_max, mid_x2, mid_y2)
+
+        if lbl1 > 0 and lbl2 > 0:
+            if lbl1 == lbl2:
+                same_bubble = True
+            else:
+                # Distinct bubbles separated by borders: strictly reject merging
+                return False
+
     # Sensitivity scales derived from threshold ratios
     v_scale = max(0.2, float(v_thresh_ratio) / 0.025)
     h_scale = max(0.2, float(h_thresh_ratio) / 0.035)
@@ -136,22 +373,35 @@ def can_merge_pair(
     # Criterion 2: Same-line fragments (horizontal text collinear fragments / words)
     is_not_vert_columns = not (has_cjk and h1 >= w1 * 1.20 and h2 >= w2 * 1.20)
     if is_not_vert_columns:
-        if (y_overlap_ratio >= 0.45 or abs(mid_y1 - mid_y2) <= max_h * 0.40) and (min_h / max_h) >= 0.40:
-            max_word_gap = max(8, int(0.75 * max_h * h_scale))
-            if x_gap <= max_word_gap:
+        a1 = float(b1.get("angle", 0.0) or 0.0)
+        a2 = float(b2.get("angle", 0.0) or 0.0)
+        eff_ang = a1 if abs(a1) >= 15.0 else a2
+        if abs(eff_ang) >= 15.0:
+            # Slanted collinearity check along slant line
+            dx_mid = mid_x2 - mid_x1
+            expected_y_diff = dx_mid * math.tan(math.radians(eff_ang))
+            actual_y_diff = mid_y2 - mid_y1
+            y_deviation = abs(actual_y_diff - expected_y_diff)
+            slant_gap = math.hypot(x_gap, y_gap)
+            max_word_gap = max(10, int(1.2 * max_h * h_scale))
+            if y_deviation <= max_h * 0.50 and (slant_gap <= max_word_gap or x_gap <= max_word_gap):
                 return True
+        else:
+            if (y_overlap_ratio >= 0.45 or abs(mid_y1 - mid_y2) <= max_h * 0.40) and (min_h / max_h) >= 0.40:
+                max_word_gap = max(8, int((1.20 if same_bubble else 0.75) * max_h * h_scale))
+                if x_gap <= max_word_gap:
+                    return True
 
     # Criterion 3: Same-column fragments (vertical text collinear fragments, CJK only)
     if has_cjk:
         is_not_horiz_lines = not (w1 >= h1 * 1.35 and w2 >= h2 * 1.35)
         if is_not_horiz_lines and (min_w / max_w) >= 0.40:
             if (x_overlap_ratio >= 0.45 or abs(mid_x1 - mid_x2) <= max_w * 0.40):
-                max_char_gap = max(8, int(0.85 * max_w * v_scale))
+                max_char_gap = max(8, int((1.20 if same_bubble else 0.85) * max_w * v_scale))
                 if y_gap <= max_char_gap:
                     return True
 
     # Criterion 4: Horizontal multi-line text (lines stacked vertically within bubble/dialogue block)
-    # Estimate single line height of each box to evaluate font size compatibility
     lines1 = max(1, len(str(b1.get("text", "")).splitlines()))
     lines2 = max(1, len(str(b2.get("text", "")).splitlines()))
     line_h1 = h1 / float(lines1)
@@ -177,9 +427,22 @@ def can_merge_pair(
             est_line_h = (t_line_h + b_line_h) / 2.0
             if curr_y_gap < 0:
                 y_overlap_len = -curr_y_gap
-                y_gap_ok = y_overlap_len <= max(6, int(0.50 * est_line_h))
+                y_gap_ok = y_overlap_len <= max(6, int((0.70 if same_bubble else 0.50) * est_line_h))
             else:
-                max_line_gap = max(4, int(0.70 * min_line_h * v_scale))
+                strong_h_align = (x_overlap_ratio >= 0.70 and abs(mid_x1 - mid_x2) <= max_w * 0.25)
+                is_coord_only_default = (image is None and bubble_labels is None and not adaptive_spacing)
+
+                if not is_coord_only_default:
+                    if same_bubble:
+                        gap_mult = 2.2
+                    elif adaptive_spacing:
+                        gap_mult = 2.2 if strong_h_align else 1.8
+                    else:
+                        gap_mult = 0.70
+                else:
+                    gap_mult = 0.70
+
+                max_line_gap = max(4, int(gap_mult * min_line_h * v_scale))
                 y_gap_ok = curr_y_gap <= max_line_gap
 
             if y_gap_ok:
@@ -189,6 +452,7 @@ def can_merge_pair(
                     or (abs(x1_min - x2_min) <= max(12, int(0.20 * max_w)) and x_overlap > 0)
                     or (abs(x1_max - x2_max) <= max(12, int(0.20 * max_w)) and x_overlap > 0)
                     or (abs(mid_x1 - mid_x2) <= max(12, int(0.20 * max_w)) and x_overlap > 0)
+                    or (same_bubble and (x_overlap > 0 or abs(mid_x1 - mid_x2) <= max_w * 0.50))
                 )
                 if x_aligned:
                     return True
@@ -222,9 +486,20 @@ def can_merge_pair(
                 est_col_w = (r_col_w + l_col_w) / 2.0
                 if curr_x_gap < 0:
                     x_overlap_len = -curr_x_gap
-                    x_gap_ok = x_overlap_len <= max(6, int(0.50 * est_col_w))
+                    x_gap_ok = x_overlap_len <= max(6, int((0.70 if same_bubble else 0.50) * est_col_w))
                 else:
-                    max_col_gap = max(4, int(0.70 * min_col_w * h_scale))
+                    is_coord_only_default = (image is None and bubble_labels is None and not adaptive_spacing)
+                    if not is_coord_only_default:
+                        if same_bubble:
+                            col_gap_mult = 2.0
+                        elif adaptive_spacing:
+                            col_gap_mult = 1.9
+                        else:
+                            col_gap_mult = 0.70
+                    else:
+                        col_gap_mult = 0.70
+
+                    max_col_gap = max(4, int(col_gap_mult * min_col_w * h_scale))
                     x_gap_ok = curr_x_gap <= max_col_gap
 
                 if x_gap_ok:
@@ -234,6 +509,7 @@ def can_merge_pair(
                         or (y_overlap > 0 and abs(y1_min - y2_min) <= max_w * 2.0)
                         or (abs(y1_min - y2_min) <= max(12, int(0.20 * max_h)) and y_overlap > 0)
                         or (abs(y1_max - y2_max) <= max(12, int(0.20 * max_h)) and y_overlap > 0)
+                        or (same_bubble and (y_overlap > 0 or abs(mid_y1 - mid_y2) <= max_h * 0.60))
                     )
                     if y_aligned:
                         return True
@@ -246,12 +522,15 @@ def merge_adjacent_boxes(
     img_w: int,
     img_h: int,
     v_thresh_ratio: float = 0.025,
-    h_thresh_ratio: float = 0.035
+    h_thresh_ratio: float = 0.035,
+    image: Optional[np.ndarray] = None,
+    adaptive_spacing: bool = False,
+    qr_regions: Optional[List[Any]] = None
 ) -> List[Dict[str, Any]]:
     """
     Merges closely adjacent or overlapping text lines within speech bubbles.
-    Effectively prevents merging adjacent independent dialogue bubbles while preserving
-    multi-line text aggregation for both horizontal and vertical text layouts.
+    Effectively prevents merging adjacent independent dialogue bubbles or cross-QR bridges
+    while preserving multi-line text aggregation for both horizontal and vertical text layouts.
     """
     if not raw_boxes:
         return []
@@ -259,24 +538,55 @@ def merge_adjacent_boxes(
     img_w = max(1, int(img_w))
     img_h = max(1, int(img_h))
 
+    bubble_labels = None
+    if image is not None:
+        bubble_labels = compute_bubble_labels(image)
+        if qr_regions is None:
+            try:
+                from app.core.ocr.qr_filter import QRCodeFilter
+                qr_regions = QRCodeFilter().detect_regions(image)
+            except Exception:
+                qr_regions = None
+
     n = len(raw_boxes)
     if n == 1:
         b = raw_boxes[0]
+        ang = float(b.get("angle", 0.0) or 0.0)
+        bx1 = int(round(min(b["xmin"], b["xmax"])))
+        by1 = int(round(min(b["ymin"], b["ymax"])))
+        bx2 = int(round(max(b["xmin"], b["xmax"])))
+        by2 = int(round(max(b["ymin"], b["ymax"])))
+        poly = b.get("polygon")
+        if poly is None:
+            poly = [[bx1, by1], [bx2, by1], [bx2, by2], [bx1, by2]]
         return [{
-            "xmin": int(round(min(b["xmin"], b["xmax"]))),
-            "ymin": int(round(min(b["ymin"], b["ymax"]))),
-            "xmax": int(round(max(b["xmin"], b["xmax"]))),
-            "ymax": int(round(max(b["ymin"], b["ymax"]))),
+            "xmin": bx1,
+            "ymin": by1,
+            "xmax": bx2,
+            "ymax": by2,
             "text": str(b.get("text", "")).strip(),
             "conf": float(b.get("conf", 1.0) if b.get("conf") is not None else 1.0),
-            "line_count": 1
+            "line_count": 1,
+            "angle": ang,
+            "polygon": poly
         }]
 
     # Build adjacency graph based on precise pairing criteria
     adj = [[] for _ in range(n)]
     for i in range(n):
         for j in range(i + 1, n):
-            if can_merge_pair(raw_boxes[i], raw_boxes[j], img_w, img_h, v_thresh_ratio, h_thresh_ratio):
+            if can_merge_pair(
+                raw_boxes[i],
+                raw_boxes[j],
+                img_w,
+                img_h,
+                v_thresh_ratio=v_thresh_ratio,
+                h_thresh_ratio=h_thresh_ratio,
+                image=image,
+                bubble_labels=bubble_labels,
+                adaptive_spacing=adaptive_spacing,
+                qr_regions=qr_regions
+            ):
                 adj[i].append(j)
                 adj[j].append(i)
 
@@ -355,6 +665,9 @@ def merge_adjacent_boxes(
                 else:
                     columns.append([b])
 
+            # Ensure columns are ordered strictly from Right to Left
+            columns.sort(key=lambda col: -max(max(b["xmin"], b["xmax"]) for b in col))
+
             column_texts = []
             for col in columns:
                 col_sorted = sorted(col, key=lambda b: min(b["ymin"], b["ymax"]))
@@ -389,6 +702,9 @@ def merge_adjacent_boxes(
                 else:
                     rows.append([b])
 
+            # Ensure rows are ordered strictly from Top to Bottom
+            rows.sort(key=lambda row: min(min(b["ymin"], b["ymax"]) for b in row))
+
             row_texts = []
             for row in rows:
                 row_sorted = sorted(row, key=lambda b: min(b["xmin"], b["xmax"]))
@@ -399,8 +715,49 @@ def merge_adjacent_boxes(
             final_text = "\n".join(row_texts)
             line_count = len(row_texts) if row_texts else 1
 
-        angles = [float(b.get("angle", 0.0)) for b in comp_boxes if "angle" in b]
+        angles = [float(b.get("angle", 0.0)) for b in comp_boxes if "angle" in b and b.get("angle") is not None]
         avg_angle = float(np.median(angles)) if angles else 0.0
+
+        all_pts = []
+        for b in comp_boxes:
+            if b.get("polygon"):
+                all_pts.extend(b["polygon"])
+            else:
+                bx1 = int(round(min(b["xmin"], b["xmax"])))
+                by1 = int(round(min(b["ymin"], b["ymax"])))
+                bx2 = int(round(max(b["xmin"], b["xmax"])))
+                by2 = int(round(max(b["ymin"], b["ymax"])))
+                all_pts.extend([[bx1, by1], [bx2, by1], [bx2, by2], [bx1, by2]])
+
+        if len(comp_boxes) == 1 and comp_boxes[0].get("polygon"):
+            single_poly = comp_boxes[0]["polygon"]
+            merged_poly = order_polygon_vertices(single_poly, avg_angle) if abs(avg_angle) >= 2.5 and len(single_poly) == 4 else single_poly
+        elif abs(avg_angle) >= 2.5 and len(all_pts) >= 3:
+            pts_arr = np.asarray(all_pts, dtype=np.float32)
+            rad = math.radians(avg_angle)
+            cos_a, sin_a = math.cos(rad), math.sin(rad)
+            u = np.array([cos_a, sin_a], dtype=np.float32)
+            v = np.array([-sin_a, cos_a], dtype=np.float32)
+            proj_u = pts_arr @ u
+            proj_v = pts_arr @ v
+            u_min, u_max = float(np.min(proj_u)), float(np.max(proj_u))
+            v_min, v_max = float(np.min(proj_v)), float(np.max(proj_v))
+            tl = u_min * u + v_min * v
+            tr = u_max * u + v_min * v
+            br = u_max * u + v_max * v
+            bl = u_min * u + v_max * v
+            merged_poly = [[int(round(p[0])), int(round(p[1]))] for p in [tl, tr, br, bl]]
+            c_xmin = min(c_xmin, min(p[0] for p in merged_poly))
+            c_ymin = min(c_ymin, min(p[1] for p in merged_poly))
+            c_xmax = max(c_xmax, max(p[0] for p in merged_poly))
+            c_ymax = max(c_ymax, max(p[1] for p in merged_poly))
+        else:
+            merged_poly = [
+                [int(round(c_xmin)), int(round(c_ymin))],
+                [int(round(c_xmax)), int(round(c_ymin))],
+                [int(round(c_xmax)), int(round(c_ymax))],
+                [int(round(c_xmin)), int(round(c_ymax))]
+            ]
 
         merged.append({
             "xmin": int(round(c_xmin)),
@@ -410,7 +767,8 @@ def merge_adjacent_boxes(
             "text": final_text,
             "conf": float(np.mean(confs)) if confs else 1.0,
             "line_count": line_count,
-            "angle": avg_angle
+            "angle": avg_angle,
+            "polygon": merged_poly
         })
 
     return merged

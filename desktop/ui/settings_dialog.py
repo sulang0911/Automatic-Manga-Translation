@@ -215,7 +215,8 @@ class SettingsDialog(QDialog):
         layout.addWidget(QLabel("OCR 引擎核心:"))
         self.ocr_engine_combo = QComboBox()
         self.ocr_engine_combo.addItems([
-            "PaddleOCR 3.x (高精度，推荐)",
+            "PaddleOCR 3.x (通用高精度)",
+            "PaddleOCR + Manga-OCR (漫画解耦高精度，强烈推荐)",
             "EasyOCR (PyTorch 通用 GPU 兼容)",
             "PaddleOCR 强制 CPU 模式"
         ])
@@ -335,8 +336,9 @@ class SettingsDialog(QDialog):
 
         # OCR
         ocr_eng = cfg.get("ocr_engine", "paddle")
-        if ocr_eng == "easyocr": self.ocr_engine_combo.setCurrentIndex(1)
-        elif ocr_eng == "cpu_paddle": self.ocr_engine_combo.setCurrentIndex(2)
+        if ocr_eng == "manga_ocr": self.ocr_engine_combo.setCurrentIndex(1)
+        elif ocr_eng == "easyocr": self.ocr_engine_combo.setCurrentIndex(2)
+        elif ocr_eng == "cpu_paddle": self.ocr_engine_combo.setCurrentIndex(3)
         else: self.ocr_engine_combo.setCurrentIndex(0)
 
         self.gpu_cb.setChecked(cfg.get("use_gpu", True))
@@ -405,7 +407,7 @@ class SettingsDialog(QDialog):
 
     def _save_and_close(self):
         prov_map = ["deepseek", "openai", "gemini", "custom"]
-        ocr_map = ["paddle", "easyocr", "cpu_paddle"]
+        ocr_map = ["paddle", "manga_ocr", "easyocr", "cpu_paddle"]
         inpaint_map = ["auto", "opencv_telea", "opencv_ns"]
         onoma_map = ["normal", "transparent", "ignore"]
 

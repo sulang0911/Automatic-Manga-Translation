@@ -8,32 +8,16 @@ import cv2
 from typing import List, Dict, Any, Optional
 
 try:
-    from app.core.ocr.base import merge_adjacent_boxes
+    from app.core.ocr.base import merge_adjacent_boxes, calculate_polygon_angle
     from app.core.ocr.reading_order import sort_reading_order
     from app.core.models import TranslationBlock, ReadingOrderMode
 except ImportError:
     _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     if _root not in sys.path:
         sys.path.insert(0, _root)
-    from app.core.ocr.base import merge_adjacent_boxes
+    from app.core.ocr.base import merge_adjacent_boxes, calculate_polygon_angle
     from app.core.ocr.reading_order import sort_reading_order
     from app.core.models import TranslationBlock, ReadingOrderMode
-
-
-def calculate_polygon_angle(pts: np.ndarray) -> float:
-    """Calculates text line orientation angle in degrees in [-90, 90]."""
-    if pts is None or len(pts) < 2:
-        return 0.0
-    dx = float(pts[1][0] - pts[0][0])
-    dy = float(pts[1][1] - pts[0][1])
-    if abs(dx) < 1e-4 and abs(dy) < 1e-4:
-        return 0.0
-    deg = math.degrees(math.atan2(dy, dx))
-    while deg > 90.0:
-        deg -= 180.0
-    while deg < -90.0:
-        deg += 180.0
-    return round(deg, 1) if abs(deg) >= 3.0 else 0.0
 
 
 def get_background_color_hex(crop: np.ndarray) -> str:
@@ -67,6 +51,7 @@ class OCREngine:
         self.reading_direction = reading_direction
         self._paddle_ocr = None
         self._easyocr_reader = None
+        self._manga_ocr = None
 
     def _init_paddle(self):
         if self._paddle_ocr is None:
@@ -198,7 +183,9 @@ class OCREngine:
                     ymax = int(np.max(pts[:, 1]))
                     raw_boxes.append({
                         "xmin": xmin, "ymin": ymin, "xmax": xmax, "ymax": ymax,
-                        "text": text.strip(), "conf": float(conf)
+                        "text": text.strip(), "conf": float(conf),
+                        "polygon": pts.astype(int).tolist(),
+                        "angle": calculate_polygon_angle(pts)
                     })
             except Exception as e:
                 print(f"[-] EasyOCR error: {e}")
@@ -236,14 +223,17 @@ class OCREngine:
                                 raw_boxes.append({
                                     "xmin": xmin, "ymin": ymin, "xmax": xmax, "ymax": ymax,
                                     "text": text, "conf": conf,
+                                    "polygon": pts.astype(int).tolist(),
                                     "angle": calculate_polygon_angle(pts)
                                 })
                             elif 'rec_boxes' in res_dict and i < len(res_dict['rec_boxes']):
                                 box = res_dict['rec_boxes'][i]
+                                bx1, by1, bx2, by2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
                                 raw_boxes.append({
-                                    "xmin": int(box[0]), "ymin": int(box[1]),
-                                    "xmax": int(box[2]), "ymax": int(box[3]),
+                                    "xmin": bx1, "ymin": by1,
+                                    "xmax": bx2, "ymax": by2,
                                     "text": text, "conf": conf,
+                                    "polygon": [[bx1, by1], [bx2, by1], [bx2, by2], [bx1, by2]],
                                     "angle": 0.0
                                 })
                     elif isinstance(results[0], list):
@@ -263,6 +253,7 @@ class OCREngine:
                                 raw_boxes.append({
                                     "xmin": xmin, "ymin": ymin, "xmax": xmax, "ymax": ymax,
                                     "text": text.strip(), "conf": conf,
+                                    "polygon": pts.astype(int).tolist(),
                                     "angle": calculate_polygon_angle(pts)
                                 })
                             except Exception:
@@ -285,16 +276,49 @@ class OCREngine:
                         raw_boxes.append({
                             "xmin": xmin, "ymin": ymin, "xmax": xmax, "ymax": ymax,
                             "text": text.strip(), "conf": float(conf),
+                            "polygon": pts.astype(int).tolist(),
                             "angle": calculate_polygon_angle(pts)
                         })
                 except Exception as e_easy:
                     print(f"[-] EasyOCR 回退识别亦发生异常: {e_easy}")
 
+        # Decoupled recognition: Manga-OCR for Japanese text crops
+        if self.engine_type in ("manga_ocr", "paddle_manga") and any(w in str(self.lang).lower() for w in ["japan", "ja"]):
+            try:
+                if self._manga_ocr is None:
+                    from app.core.ocr.manga_ocr_wrapper import get_manga_ocr
+                    self._manga_ocr = get_manga_ocr(force_cpu=not self.use_gpu)
+                if progress_callback:
+                    progress_callback(55, "正在使用 Manga-OCR 高精度识别日文...")
+                for box in raw_boxes:
+                    bx1 = max(0, min(box["xmin"], w_img - 1))
+                    by1 = max(0, min(box["ymin"], h_img - 1))
+                    bx2 = max(bx1 + 1, min(box["xmax"], w_img))
+                    by2 = max(by1 + 1, min(box["ymax"], h_img))
+                    crop = image[by1:by2, bx1:bx2]
+                    txt = self._manga_ocr.recognize_crop(crop, angle=box.get("angle", 0.0))
+                    if txt:
+                        box["text"] = txt
+                        box["conf"] = max(float(box.get("conf", 0.8)), 0.95)
+            except Exception as e:
+                print(f"[-] Manga-OCR decoupled recognition failed, keeping default text: {e}")
+
+        # Filter spurious OCR boxes falling inside QR codes
+        qr_regions = None
+        try:
+            from app.core.ocr.qr_filter import QRCodeFilter
+            qr_filter = QRCodeFilter()
+            qr_regions = qr_filter.detect_regions(image)
+            if qr_regions:
+                raw_boxes = qr_filter.filter_spurious_ocr_boxes(raw_boxes, qr_regions)
+        except Exception:
+            qr_regions = None
+
         if progress_callback:
             progress_callback(70, "正在智能聚合气泡与段落排版...")
 
         # 2. Merge overlapping / closely adjacent text lines in speech bubbles
-        merged_boxes = self._merge_adjacent_boxes(raw_boxes, w_img, h_img)
+        merged_boxes = self._merge_adjacent_boxes(raw_boxes, w_img, h_img, image=image, qr_regions=qr_regions)
 
         # 3. Convert to TranslationBlock objects for high-precision sorting & coordinate normalization
         tb_blocks: List[TranslationBlock] = []
@@ -333,12 +357,13 @@ class OCREngine:
                 ymin=round((ymin / h_img) * 100.0, 2),
                 xmax=round((xmax / w_img) * 100.0, 2),
                 ymax=round((ymax / h_img) * 100.0, 2),
+                polygon=box.get("polygon"),
                 bg_color=bg_color,
                 text_color=detected_text_color,
                 type="bubble" if is_bubble else "onomatopoeia",
                 confidence=float(box.get("conf", 1.0)),
                 line_count=int(box.get("line_count", 1)),
-                angle=float(box.get("angle", 0.0))
+                angle=float(box.get("angle", 0.0) or 0.0)
             )
             tb_blocks.append(tb)
 
@@ -361,8 +386,15 @@ class OCREngine:
 
         return blocks
 
-    def _merge_adjacent_boxes(self, boxes: List[Dict[str, Any]], w_img: int, h_img: int) -> List[Dict[str, Any]]:
-        return merge_adjacent_boxes(boxes, w_img, h_img)
+    def _merge_adjacent_boxes(
+        self,
+        boxes: List[Dict[str, Any]],
+        w_img: int,
+        h_img: int,
+        image: Optional[np.ndarray] = None,
+        qr_regions: Optional[List[Any]] = None
+    ) -> List[Dict[str, Any]]:
+        return merge_adjacent_boxes(boxes, w_img, h_img, image=image, qr_regions=qr_regions)
 
     def _sort_manga_reading_order(self, boxes: List[Dict[str, Any]], w_img: int) -> List[Dict[str, Any]]:
         """

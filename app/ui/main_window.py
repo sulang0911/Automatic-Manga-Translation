@@ -32,7 +32,7 @@ from app.ui.widgets.card import CardWidget
 from app.ui.widgets.segmented_control import SegmentedControl
 from app.ui.widgets.progress_pill import ProgressPill
 from app.ui.widgets.toast import Toast
-from app.ui.canvas.view import MangaCanvasView
+from app.ui.canvas.canvas_view import MangaCanvasView
 from app.ui.sidebar.nav_rail import NavRail
 from app.ui.sidebar.page_list import PageListWidget
 from app.ui.sidebar.drop_zone import DropZoneWidget
@@ -744,6 +744,7 @@ class MainWindow(QMainWindow):
                         if hasattr(b, k):
                             setattr(b, k, v)
                 break
+        self.canvas_view.update_bubble_item(block_data)
         self._schedule_rerender()
 
     def _on_block_deleted(self, block_id: str):

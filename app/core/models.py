@@ -4,6 +4,7 @@ Domain models for Manga/Webtoon Translation System.
 """
 from __future__ import annotations
 import uuid
+import math
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import List, Dict, Any, Optional, Tuple
@@ -106,6 +107,27 @@ class TranslationBlock:
             self.type = self.type.value
         if isinstance(self.direction, Enum):
             self.direction = self.direction.value
+        if self.angle is None:
+            self.angle = 0.0
+        else:
+            try:
+                self.angle = float(self.angle)
+            except (ValueError, TypeError):
+                self.angle = 0.0
+        if self.angle_override is not None:
+            try:
+                self.angle_override = float(self.angle_override)
+            except (ValueError, TypeError):
+                self.angle_override = None
+        if self.polygon is not None:
+            try:
+                self.polygon = [[int(round(p[0])), int(round(p[1]))] for p in self.polygon]
+            except Exception:
+                pass
+
+    def get_effective_angle(self) -> float:
+        """Returns user override angle if present, otherwise auto-detected angle."""
+        return float(self.angle_override if self.angle_override is not None else (self.angle or 0.0))
 
     def to_pixel_rect(self, img_width: int, img_height: int) -> Tuple[int, int, int, int]:
         """Returns integer (x, y, width, height) in pixel coordinates."""
@@ -126,6 +148,46 @@ class TranslationBlock:
         x, y, w, h = self.to_pixel_rect(img_width, img_height)
         return (x, y, x + w, y + h)
 
+    def to_pixel_polygon(self, img_w: int, img_h: int) -> Optional[List[List[int]]]:
+        """
+        Returns polygon vertices in pixel coordinates.
+        If self.polygon is already defined and valid, returns it.
+        Otherwise synthesizes an oriented or axis-aligned 4-point rectangle from normalized coordinates.
+        Returns None if image dimensions are invalid.
+        """
+        if self.polygon and len(self.polygon) >= 3:
+            return [[int(round(p[0])), int(round(p[1]))] for p in self.polygon]
+
+        if img_w <= 0 or img_h <= 0:
+            return None
+
+        xmin, ymin, xmax, ymax = self.to_pixel_box(img_w, img_h)
+        eff_angle = self.get_effective_angle()
+        if abs(eff_angle) < 2.5:
+            return [[xmin, ymin], [xmax, ymin], [xmax, ymax], [xmin, ymax]]
+
+        # Synthesize rotated rectangle around center with canonical [TL, TR, BR, BL] vertex ordering
+        try:
+            cx, cy = (xmin + xmax) / 2.0, (ymin + ymax) / 2.0
+            w, h = float(max(1, xmax - xmin)), float(max(1, ymax - ymin))
+            rad = math.radians(eff_angle)
+            cos_a = math.cos(rad)
+            sin_a = math.sin(rad)
+            # Unit vector along text baseline (left to right)
+            u_x, u_y = cos_a, sin_a
+            # Unit vector along line height (top to bottom, orthogonal to baseline)
+            v_x, v_y = -sin_a, cos_a
+
+            hw, hh = w / 2.0, h / 2.0
+            tl = [cx - hw * u_x - hh * v_x, cy - hw * u_y - hh * v_y]
+            tr = [cx + hw * u_x - hh * v_x, cy + hw * u_y - hh * v_y]
+            br = [cx + hw * u_x + hh * v_x, cy + hw * u_y + hh * v_y]
+            bl = [cx - hw * u_x + hh * v_x, cy - hw * u_y + hh * v_y]
+
+            return [[int(round(p[0])), int(round(p[1]))] for p in [tl, tr, br, bl]]
+        except Exception:
+            return [[xmin, ymin], [xmax, ymin], [xmax, ymax], [xmin, ymax]]
+
     @classmethod
     def from_pixel_box(
         cls,
@@ -135,6 +197,8 @@ class TranslationBlock:
         ymax: int,
         img_width: int,
         img_height: int,
+        polygon: Optional[List[List[int]]] = None,
+        angle: float = 0.0,
         **kwargs
     ) -> TranslationBlock:
         """Factory creating a TranslationBlock from pixel coordinates."""
@@ -144,7 +208,15 @@ class TranslationBlock:
         norm_ymin = round((float(ymin) / img_height) * 100.0, 2)
         norm_xmax = round((float(xmax) / img_width) * 100.0, 2)
         norm_ymax = round((float(ymax) / img_height) * 100.0, 2)
-        return cls(xmin=norm_xmin, ymin=norm_ymin, xmax=norm_xmax, ymax=norm_ymax, **kwargs)
+        return cls(
+            xmin=norm_xmin,
+            ymin=norm_ymin,
+            xmax=norm_xmax,
+            ymax=norm_ymax,
+            polygon=polygon,
+            angle=angle,
+            **kwargs
+        )
 
     def center_normalized(self) -> Tuple[float, float]:
         """Returns (center_x, center_y) in normalized [0, 100] coordinates."""

@@ -5,6 +5,7 @@ vertical RTL layout, and stroke rendering onto manga pages.
 """
 import os
 import sys
+import math
 import logging
 from typing import List, Dict, Any, Optional, Tuple, Callable
 import numpy as np
@@ -261,6 +262,15 @@ class TypographyEngine:
         cfg = style_config or StyleConfig()
         h_img, w_img = erased_image.shape[:2]
 
+        # QR code detection to avoid drawing text over QR codes
+        qr_regions = []
+        try:
+            from app.core.ocr.qr_filter import QRCodeFilter
+            filt = QRCodeFilter()
+            qr_regions = filt.detect_regions(erased_image)
+        except Exception:
+            qr_regions = []
+
         # Convert to PIL RGBA image for high-quality antialiased text drawing
         rgb_img = cv2.cvtColor(erased_image, cv2.COLOR_BGR2RGB)
         pil_img = Image.fromarray(rgb_img).convert("RGBA")
@@ -282,6 +292,70 @@ class TypographyEngine:
             if w <= 4 or h <= 4:
                 continue
 
+            # Prevent drawing text over detected QR code boundaries
+            if qr_regions:
+                cx_check = x + w / 2.0
+                cy_check = y + h / 2.0
+                is_over_qr = False
+                for qreg in qr_regions:
+                    qx1, qy1, qx2, qy2 = qreg.bbox
+                    if qx1 <= cx_check <= qx2 and qy1 <= cy_check <= qy2:
+                        is_over_qr = True
+                        break
+                    # Area overlap check
+                    ix1 = max(x, qx1)
+                    iy1 = max(y, qy1)
+                    ix2 = min(x + w, qx2)
+                    iy2 = min(y + h, qy2)
+                    if ix2 > ix1 and iy2 > iy1:
+                        inter_area = (ix2 - ix1) * (iy2 - iy1)
+                        if (inter_area / float(w * h)) > 0.60:
+                            is_over_qr = True
+                            break
+                if is_over_qr:
+                    continue
+
+            # Check rotation angle
+            effective_angle = block.get_effective_angle() if hasattr(block, "get_effective_angle") else (
+                block.angle_override if block.angle_override is not None else getattr(block, "angle", 0.0)
+            )
+            effective_angle = float(effective_angle or 0.0)
+            is_rotated = abs(effective_angle) >= 15.0
+
+            cx = x + w / 2.0
+            cy = y + h / 2.0
+
+            # Compute oriented baseline dimensions (L, H)
+            poly = block.to_pixel_polygon(w_img, h_img) if hasattr(block, "to_pixel_polygon") else None
+            if is_rotated and poly and len(poly) >= 4:
+                pts = np.array(poly, dtype=np.float32)
+                s1 = float(np.linalg.norm(pts[1] - pts[0]))
+                s2 = float(np.linalg.norm(pts[3] - pts[0]))
+                if block.direction == TextDirection.HORIZONTAL.value or (block.direction != TextDirection.VERTICAL.value and w >= h):
+                    L = max(s1, s2)
+                    H = min(s1, s2)
+                elif block.direction == TextDirection.VERTICAL.value or (block.direction != TextDirection.HORIZONTAL.value and h > w * 1.5):
+                    L = min(s1, s2)
+                    H = max(s1, s2)
+                else:
+                    L, H = s1, s2
+                cx = float(np.mean(pts[:, 0]))
+                cy = float(np.mean(pts[:, 1]))
+                if L < 4 or H < 4:
+                    L, H = float(w), float(h)
+            elif is_rotated:
+                rad = math.radians(abs(effective_angle))
+                cos_a, sin_a = math.cos(rad), math.sin(rad)
+                denom = max(0.1, cos_a * cos_a - sin_a * sin_a)
+                if abs(denom) > 0.15:
+                    L = max(10.0, (w * cos_a - h * sin_a) / denom)
+                    H = max(10.0, (h * cos_a - w * sin_a) / denom)
+                else:
+                    L = max(10.0, math.sqrt(w * w + h * h) * 0.85)
+                    H = max(10.0, float(min(w, h)))
+            else:
+                L, H = float(w), float(h)
+
             # Determine text direction
             # Key fix: OCR records direction from ORIGINAL (Japanese/source) text layout.
             # When rendering translated Chinese text, we re-evaluate based on the rendered
@@ -289,7 +363,7 @@ class TypographyEngine:
             # A box is only treated as vertical if it is clearly taller than wide (ratio > 1.5)
             # AND the translated text is CJK. Landscape bubbles always use horizontal layout.
             text_is_cjk = LineBreaker.is_cjk(text)
-            box_is_tall = (h > w * 1.5)
+            box_is_tall = (H > L * 1.5) if is_rotated else (h > w * 1.5)
             if block.direction == TextDirection.VERTICAL.value:
                 # Override: if the box is landscape or text is not CJK, switch to horizontal
                 is_vertical = box_is_tall and text_is_cjk
@@ -298,6 +372,10 @@ class TypographyEngine:
             else:
                 # AUTO: conservative vertical only when box is clearly portrait + CJK text
                 is_vertical = box_is_tall and text_is_cjk
+
+            # Orientation-aware dimension for layout and auto-fit:
+            box_w_eff = L if not is_vertical else H
+            box_h_eff = H if not is_vertical else L
 
             # Reflow fix: for horizontal CJK bubbles, strip source-language newlines.
             # LLM translations often echo the original text's line-break structure
@@ -318,21 +396,21 @@ class TypographyEngine:
 
             evaluator = TypographyLayoutEvaluator(font_loader, self.line_breaker, self.vertical_layout, is_bold=is_bold)
 
-            # Font size calculation
+            # Font size calculation along oriented baseline dimensions
             if block.font_size_override is not None:
                 font_size = float(block.font_size_override)
             elif cfg.auto_fit_font_size:
                 fit_res = self.auto_fit_engine.fit_text(
                     text=render_text,
-                    box_w=float(w),
-                    box_h=float(h),
+                    box_w=float(box_w_eff),
+                    box_h=float(box_h_eff),
                     is_vertical=is_vertical,
                     evaluator=evaluator,
                     font_scale=cfg.font_size_scale
                 )
                 font_size = fit_res.optimal_font_size
             else:
-                base_dim = min(w, h)
+                base_dim = min(box_w_eff, box_h_eff)
                 font_size = max(float(cfg.min_font_size), min(float(cfg.max_font_size), base_dim * 0.22 * cfg.font_size_scale))
 
             font = self.get_font(font_family, font_size)
@@ -402,20 +480,18 @@ class TypographyEngine:
             # Drop shadow
             shadow = StrokeRenderer.get_drop_shadow_params(font_size, enabled=cfg.text_shadow)
 
-            # Check rotation angle
-            effective_angle = block.angle_override if block.angle_override is not None else getattr(block, "angle", 0.0)
-            effective_angle = float(effective_angle or 0.0)
-            is_rotated = abs(effective_angle) >= 2.5
-
             if is_rotated:
-                # Render onto local transparent canvas and rotate
-                canvas_w = max(10, int(w))
-                canvas_h = max(10, int(h))
+                # Render onto local transparent canvas with padding margin
+                pad_margin = int(font_size * 0.5) + 12
+                canvas_w = int(math.ceil(box_w_eff)) + 2 * pad_margin
+                canvas_h = int(math.ceil(box_h_eff)) + 2 * pad_margin
                 draw_target = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
-                rel_x, rel_y = 0.0, 0.0
+                rel_x, rel_y = float(pad_margin), float(pad_margin)
+                draw_box_w, draw_box_h = float(box_w_eff), float(box_h_eff)
             else:
                 draw_target = pil_img
                 rel_x, rel_y = float(x), float(y)
+                draw_box_w, draw_box_h = float(w), float(h)
 
             # Draw onto PIL Image / draw_target
             if is_vertical:
@@ -424,8 +500,8 @@ class TypographyEngine:
                     font_size=font_size,
                     box_x=rel_x,
                     box_y=rel_y,
-                    box_w=float(w),
-                    box_h=float(h)
+                    box_w=draw_box_w,
+                    box_h=draw_box_h
                 )
                 for col in cols:
                     for glyph in col.glyphs:
@@ -445,16 +521,16 @@ class TypographyEngine:
                         )
             else:
                 measurer = PilTextMeasurer(font_loader, is_bold=is_bold)
-                px, py = self.auto_fit_engine.calculate_padding(w, h)
-                avail_w = max(4.0, w - 2 * px)
+                px, py = self.auto_fit_engine.calculate_padding(draw_box_w, draw_box_h)
+                avail_w = max(4.0, draw_box_w - 2 * px)
                 lines = self.line_breaker.wrap_text(render_text, avail_w, font_size, measurer)
                 line_h = font_size * cfg.line_spacing
                 tot_h = len(lines) * line_h
-                start_y = rel_y + (h - tot_h) / 2.0
+                start_y = rel_y + (draw_box_h - tot_h) / 2.0
 
                 for i, line in enumerate(lines):
                     line_w = measurer.measure_width(line, font_size)
-                    line_x = rel_x + (w - line_w) / 2.0
+                    line_x = rel_x + (draw_box_w - line_w) / 2.0
                     line_y = start_y + i * line_h
                     StrokeRenderer.render_text_pil(
                         target_image=draw_target,
@@ -470,9 +546,11 @@ class TypographyEngine:
 
             if is_rotated:
                 # Rotate by -effective_angle (clockwise in image coords) and paste centered
-                rotated_layer = draw_target.rotate(-effective_angle, resample=Image.Resampling.BICUBIC, expand=True)
-                cx = x + w / 2.0
-                cy = y + h / 2.0
+                rotated_layer = draw_target.rotate(
+                    -effective_angle,
+                    resample=Image.Resampling.BICUBIC,
+                    expand=True
+                )
                 paste_x = int(round(cx - rotated_layer.width / 2.0))
                 paste_y = int(round(cy - rotated_layer.height / 2.0))
                 pil_img.paste(rotated_layer, (paste_x, paste_y), rotated_layer)

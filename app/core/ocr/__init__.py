@@ -5,6 +5,7 @@ from .base import BaseOCREngine, is_solid_color_page, merge_adjacent_boxes
 from .reading_order import sort_reading_order
 from .easyocr_engine import EasyOCREngine
 from .paddle_engine import PaddleOCREngine
+from .manga_ocr_wrapper import MangaOCRRecognizer, get_manga_ocr
 
 __all__ = [
     "BaseOCREngine",
@@ -13,4 +14,6 @@ __all__ = [
     "sort_reading_order",
     "EasyOCREngine",
     "PaddleOCREngine",
+    "MangaOCRRecognizer",
+    "get_manga_ocr",
 ]

@@ -521,7 +521,8 @@ class InspectorPanel(QFrame):
             block.get("font_size_override") is not None or
             block.get("font_bold_override") is not None or
             block.get("stroke_mode_override") is not None or
-            block.get("text_color_override") is not None
+            block.get("text_color_override") is not None or
+            block.get("angle_override") is not None
         )
 
         self.block_style_override_cb.blockSignals(True)
@@ -921,8 +922,10 @@ class InspectorPanel(QFrame):
 
     def _on_block_angle_changed(self, val: int):
         self.block_angle_lbl.setText(f"{val:+.1f}°" if val != 0 else "0.0°")
-        if not self.selected_block or not self.block_style_override_cb.isChecked():
+        if not self.selected_block:
             return
+        if not self.block_style_override_cb.isChecked():
+            self.block_style_override_cb.setChecked(True)
         self.selected_block["angle_override"] = float(val)
         self.sig_block_updated.emit(self.selected_block)
         self.sig_re_render_requested.emit()

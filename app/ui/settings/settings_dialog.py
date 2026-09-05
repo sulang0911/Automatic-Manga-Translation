@@ -230,9 +230,22 @@ class SettingsDialog(QDialog):
 
         box_layout.addWidget(QLabel("OCR 引擎后端:"))
         self.ocr_engine_combo = QComboBox()
-        self.ocr_engine_combo.addItems(["easyocr", "paddle"])
-        self.ocr_engine_combo.setCurrentText(getattr(self.config.ocr, "engine", "easyocr"))
+        self.ocr_engine_combo.addItem("PaddleOCR + Manga-OCR (日漫专用解耦，手写/假名强烈推荐)", "manga_ocr")
+        self.ocr_engine_combo.addItem("PaddleOCR 3.x (通用中/日/英，国漫推荐)", "paddle")
+        self.ocr_engine_combo.addItem("EasyOCR (英文/欧美漫推荐)", "easyocr")
+        
+        current_eng = getattr(self.config.ocr, "engine", "manga_ocr")
+        found_idx = self.ocr_engine_combo.findData(current_eng)
+        if found_idx >= 0:
+            self.ocr_engine_combo.setCurrentIndex(found_idx)
+        else:
+            self.ocr_engine_combo.setCurrentText(current_eng)
         box_layout.addWidget(self.ocr_engine_combo)
+
+        hint_label = QLabel("💡 提示：Manga-OCR 针对日漫手写体与注音假名深度微调；若源语言为英文或中文，系统会自动切回通用引擎识别以避免乱码。")
+        hint_label.setWordWrap(True)
+        hint_label.setStyleSheet("color: #8E8E93; font-size: 11px; margin-top: 2px; margin-bottom: 6px;")
+        box_layout.addWidget(hint_label)
 
         self.gpu_cb = QCheckBox("启用 GPU 硬件加速 (CUDA / MPS)")
         self.gpu_cb.setChecked(not getattr(self.config.ocr, "force_cpu", False))
@@ -537,7 +550,8 @@ class SettingsDialog(QDialog):
         self.config.llm.system_prompt = self.sys_prompt_edit.toPlainText().strip() or DEFAULT_SYSTEM_PROMPT
 
         # OCR
-        self.config.ocr.engine = self.ocr_engine_combo.currentText()
+        eng_data = self.ocr_engine_combo.currentData()
+        self.config.ocr.engine = eng_data if eng_data is not None else self.ocr_engine_combo.currentText()
         self.config.ocr.force_cpu = not self.gpu_cb.isChecked()
         self.config.source_lang = self.source_lang_combo.currentText()
 

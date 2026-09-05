@@ -65,40 +65,90 @@ class InpaintEngine:
 
     def inpaint(self, image: np.ndarray, blocks: List[Dict[str, Any]], 
                 bubble_dilation: int = 3, onomatopoeia_dilation: int = 6, 
-                feather_radius: int = 4, progress_callback=None) -> np.ndarray:
+                feather_radius: int = 4, progress_callback=None,
+                qr_mask: Optional[np.ndarray] = None) -> np.ndarray:
         if image is None or image.size == 0 or not blocks:
             return image.copy() if image is not None else None
 
         h_img, w_img = image.shape[:2]
+
+        # Detect or use QR protection mask
+        if qr_mask is None:
+            try:
+                from app.core.ocr.qr_filter import QRCodeFilter
+                filt = QRCodeFilter()
+                qr_regs = filt.detect_regions(image)
+                qr_mask = filt.get_protection_mask((h_img, w_img), qr_regs)
+            except Exception:
+                qr_mask = np.zeros((h_img, w_img), dtype=np.uint8)
+
         erased_img = image.copy()
         inpaint_mask = np.zeros((h_img, w_img), dtype=np.uint8)
 
         base_dim = max(h_img, w_img)
-        dyn_bubble_dil = max(1, int(base_dim * 0.002)) if bubble_dilation <= 0 else bubble_dilation
-        dyn_onoma_dil = max(2, int(base_dim * 0.004)) if onomatopoeia_dilation <= 0 else onomatopoeia_dilation
 
         total_blocks = len(blocks)
         for idx, block in enumerate(blocks):
             if progress_callback:
                 progress_callback(int((idx / max(1, total_blocks)) * 40), f"正在分析第 {idx+1}/{total_blocks} 个气泡区域背景...")
 
-            xmin = int((block.get("xmin", 0) / 100.0) * w_img)
-            ymin = int((block.get("ymin", 0) / 100.0) * h_img)
-            xmax = int((block.get("xmax", 0) / 100.0) * w_img)
-            ymax = int((block.get("ymax", 0) / 100.0) * h_img)
+            poly = None
+            if hasattr(block, "to_pixel_polygon"):
+                poly = block.to_pixel_polygon(w_img, h_img)
+            elif isinstance(block, dict):
+                if block.get("polygon") and len(block["polygon"]) >= 3:
+                    poly = [[int(round(p[0])), int(round(p[1]))] for p in block["polygon"]]
+                else:
+                    bx1 = int((block.get("xmin", 0) / 100.0) * w_img)
+                    by1 = int((block.get("ymin", 0) / 100.0) * h_img)
+                    bx2 = int((block.get("xmax", 0) / 100.0) * w_img)
+                    by2 = int((block.get("ymax", 0) / 100.0) * h_img)
+                    eff_angle = float(block.get("angle_override") if block.get("angle_override") is not None else block.get("angle", 0.0) or 0.0)
+                    if abs(eff_angle) < 2.5:
+                        poly = [[bx1, by1], [bx2, by1], [bx2, by2], [bx1, by2]]
+                    else:
+                        cx, cy = (bx1 + bx2) / 2.0, (by1 + by2) / 2.0
+                        bw, bh = max(1, bx2 - bx1), max(1, by2 - by1)
+                        rect = ((cx, cy), (bw, bh), eff_angle)
+                        box = cv2.boxPoints(rect)
+                        poly = [[int(round(p[0])), int(round(p[1]))] for p in box]
 
-            xmin = max(0, min(xmin, w_img - 1))
-            ymin = max(0, min(ymin, h_img - 1))
-            xmax = max(0, min(xmax, w_img))
-            ymax = max(0, min(ymax, h_img))
-
-            if xmax <= xmin or ymax <= ymin:
+            if poly is None:
                 continue
 
-            block_type = block.get("type", "bubble")
-            crop = erased_img[ymin:ymax, xmin:xmax]
+            poly_pts = np.array(poly, dtype=np.int32)
+            px_min = max(0, int(np.min(poly_pts[:, 0])))
+            py_min = max(0, int(np.min(poly_pts[:, 1])))
+            px_max = min(w_img, int(np.max(poly_pts[:, 0])))
+            py_max = min(h_img, int(np.max(poly_pts[:, 1])))
+
+            if px_max <= px_min or py_max <= py_min:
+                continue
+
+            w = px_max - px_min
+            h = py_max - py_min
+
+            crop = erased_img[py_min:py_max, px_min:px_max]
             bg_color = get_background_color_rgb(crop)
             text_mask = get_text_mask(crop, bg_color)
+
+            # Local polygon mask
+            local_poly = poly_pts - np.array([px_min, py_min], dtype=np.int32)
+            poly_mask = np.zeros((h, w), dtype=np.uint8)
+            cv2.fillPoly(poly_mask, [local_poly], 255)
+
+            # Adaptive morphological dilation based on polygon minor axis (min_dim * 0.08, clamped [2, 8]px)
+            if len(poly_pts) >= 4:
+                side1 = float(np.linalg.norm(poly_pts[1] - poly_pts[0]))
+                side2 = float(np.linalg.norm(poly_pts[3] - poly_pts[0]))
+                min_dim = min(side1, side2)
+                if min_dim < 1.0:
+                    min_dim = min(w, h)
+            else:
+                min_dim = min(w, h)
+            adaptive_dil = max(2, min(8, int(round(min_dim * 0.08))))
+
+            text_mask = cv2.bitwise_and(text_mask, poly_mask)
 
             # Check background uniformity
             h_c, w_c = crop.shape[:2]
@@ -115,13 +165,25 @@ class InpaintEngine:
                 border_gray = 0.299 * border_pixels[:, 2] + 0.587 * border_pixels[:, 1] + 0.114 * border_pixels[:, 0]
                 is_uniform = np.std(border_gray) < 16.0
 
+            qr_mask_crop = qr_mask[py_min:py_max, px_min:px_max]
+
+            block_type = block.get("type", "bubble") if isinstance(block, dict) else getattr(block, "type", "bubble")
             if block_type == "bubble" and is_uniform:
-                dilated = dilate_mask(text_mask, dyn_bubble_dil)
-                crop[dilated == 255] = bg_color
-                erased_img[ymin:ymax, xmin:xmax] = crop
+                dilated = dilate_mask(text_mask, adaptive_dil)
+                crop[(dilated == 255) & (qr_mask_crop == 0)] = bg_color
+                erased_img[py_min:py_max, px_min:px_max] = crop
             else:
-                dilated = dilate_mask(text_mask, dyn_onoma_dil)
-                inpaint_mask[ymin:ymax, xmin:xmax] = cv2.bitwise_or(inpaint_mask[ymin:ymax, xmin:xmax], dilated)
+                dilated = dilate_mask(text_mask, adaptive_dil)
+                if np.sum(text_mask) == 0:
+                    dilated = dilate_mask(poly_mask, adaptive_dil)
+                inpaint_mask[py_min:py_max, px_min:px_max] = cv2.bitwise_or(
+                    inpaint_mask[py_min:py_max, px_min:px_max], dilated
+                )
+
+        # Explicitly zero out QR code regions from inpaint_mask
+        inpaint_mask[qr_mask > 0] = 0
+        # Re-ensure any flat-fill never touched QR regions
+        erased_img[qr_mask > 0] = image[qr_mask > 0]
 
         if np.sum(inpaint_mask) > 0:
             if progress_callback:
@@ -150,6 +212,8 @@ class InpaintEngine:
             inpainted_filtered = cv2.bilateralFilter(inpainted, 5, 50, 50)
             dyn_feather = max(2, int(base_dim * 0.003)) if feather_radius <= 0 else feather_radius
             erased_img = blend_inpainted_image(erased_img, inpainted_filtered, inpaint_mask, dyn_feather)
+            # Guarantee zero-pixel modification on QR code areas
+            erased_img[qr_mask > 0] = image[qr_mask > 0]
 
         if progress_callback:
             progress_callback(100, "图像背景修复完成")

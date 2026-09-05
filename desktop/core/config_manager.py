@@ -25,7 +25,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "system_prompt": DEFAULT_SYSTEM_PROMPT,
 
     # OCR Settings
-    "ocr_engine": "paddle",  # "paddle" | "easyocr" | "cpu_paddle"
+    "ocr_engine": "paddle",  # "paddle" | "easyocr" | "cpu_paddle" | "manga_ocr"
     "use_gpu": True,
     "ocr_lang": "japan",  # "japan" | "ch" | "en" | "korean"
 
