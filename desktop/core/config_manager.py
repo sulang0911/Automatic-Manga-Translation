@@ -25,7 +25,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "system_prompt": DEFAULT_SYSTEM_PROMPT,
 
     # OCR Settings
-    "ocr_engine": "paddle",  # "paddle" | "easyocr" | "cpu_paddle" | "manga_ocr"
+    "ocr_engine": "ctd",  # "ctd" (pure PyTorch) | "paddle" | "paddle_manga" | "easyocr" | "cpu_paddle"
     "use_gpu": True,
     "ocr_lang": "japan",  # "japan" | "ch" | "en" | "korean"
 

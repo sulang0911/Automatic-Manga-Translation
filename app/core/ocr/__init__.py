@@ -6,6 +6,7 @@ from .reading_order import sort_reading_order
 from .easyocr_engine import EasyOCREngine
 from .paddle_engine import PaddleOCREngine
 from .manga_ocr_wrapper import MangaOCRRecognizer, get_manga_ocr
+from .ctd_engine import ComicTextDetectorEngine
 
 __all__ = [
     "BaseOCREngine",
@@ -16,4 +17,5 @@ __all__ = [
     "PaddleOCREngine",
     "MangaOCRRecognizer",
     "get_manga_ocr",
+    "ComicTextDetectorEngine",
 ]

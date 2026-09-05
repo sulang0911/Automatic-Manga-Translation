@@ -152,6 +152,39 @@ class QRCodeFilter:
         xmax = max(xmin + 1, min(xmax, w_img))
         ymax = max(ymin + 1, min(ymax, h_img))
 
+        w = xmax - xmin
+        h = ymax - ymin
+        if w < 16 or h < 16:
+            return None
+
+        # QR code & Barcode dimensional sanity guards
+        has_decoded_text = bool(text and str(text).strip())
+
+        if kind == "qrcode":
+            aspect = w / float(max(1, h))
+            # QR codes must be approximately square
+            if aspect < 0.65 or aspect > 1.50:
+                return None
+            # QR codes in manga pages are small promotional badges or links, never spanning
+            # half the page dimensions or more than 12% of the canvas area
+            if w > int(w_img * 0.45) or h > int(h_img * 0.45):
+                return None
+            if (w * h) > int(0.12 * w_img * h_img):
+                return None
+            # If the QR code could not be decoded (text is empty), require strict squareness & compact size
+            if not has_decoded_text:
+                if aspect < 0.75 or aspect > 1.33:
+                    return None
+                if w > int(w_img * 0.30) or h > int(h_img * 0.30):
+                    return None
+                if (w * h) > int(0.06 * w_img * h_img):
+                    return None
+        elif kind == "barcode":
+            if w > int(w_img * 0.60) or h > int(h_img * 0.30):
+                return None
+            if (w * h) > int(0.08 * w_img * h_img):
+                return None
+
         pad_pts = [
             [xmin, ymin], [xmax, ymin], [xmax, ymax], [xmin, ymax]
         ]
@@ -198,26 +231,31 @@ class QRCodeFilter:
                             finder_boxes.append((x, y, w, h))
 
         if len(finder_boxes) >= 3:
-            pts = np.array([[fb[0], fb[1]] for fb in finder_boxes] +
-                           [[fb[0] + fb[2], fb[1] + fb[3]] for fb in finder_boxes])
-            xmin, ymin = pts.min(axis=0)
-            xmax, ymax = pts.max(axis=0)
-            w = xmax - xmin
-            h = ymax - ymin
-            aspect = w / float(max(1, h))
-            if 0.75 <= aspect <= 1.30 and 40 <= w <= 500:
-                crop_thresh = thresh[ymin:ymax, xmin:xmax]
-                transitions = np.sum(np.diff(crop_thresh.astype(int), axis=1) != 0)
-                if transitions > 25:
-                    reg = self._build_region(
-                        "qrcode",
-                        np.array([[xmin, ymin], [xmax, ymin], [xmax, ymax], [xmin, ymax]]),
-                        w_img,
-                        h_img,
-                        ""
-                    )
-                    if reg:
-                        return [reg]
+            from itertools import combinations
+            candidate_triples = [finder_boxes] if len(finder_boxes) == 3 else list(combinations(finder_boxes, 3))[:20]
+            for triple in candidate_triples:
+                pts = np.array([[fb[0], fb[1]] for fb in triple] +
+                               [[fb[0] + fb[2], fb[1] + fb[3]] for fb in triple])
+                xmin, ymin = pts.min(axis=0)
+                xmax, ymax = pts.max(axis=0)
+                w = xmax - xmin
+                h = ymax - ymin
+                aspect = w / float(max(1, h))
+                max_pattern_dim = max(max(fb[2], fb[3]) for fb in triple)
+                # A QR code width is roughly 4 to 8 times the size of a finder pattern
+                if 0.75 <= aspect <= 1.30 and 40 <= w <= min(500, max_pattern_dim * 8) and 40 <= h <= min(500, max_pattern_dim * 8):
+                    crop_thresh = thresh[ymin:ymax, xmin:xmax]
+                    transitions = np.sum(np.diff(crop_thresh.astype(int), axis=1) != 0)
+                    if transitions > 25:
+                        reg = self._build_region(
+                            "qrcode",
+                            np.array([[xmin, ymin], [xmax, ymin], [xmax, ymax], [xmin, ymax]]),
+                            w_img,
+                            h_img,
+                            ""
+                        )
+                        if reg:
+                            return [reg]
         return []
 
     def filter_spurious_ocr_boxes(

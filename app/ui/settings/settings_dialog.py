@@ -230,19 +230,22 @@ class SettingsDialog(QDialog):
 
         box_layout.addWidget(QLabel("OCR 引擎后端:"))
         self.ocr_engine_combo = QComboBox()
-        self.ocr_engine_combo.addItem("PaddleOCR + Manga-OCR (日漫专用解耦，手写/假名强烈推荐)", "manga_ocr")
+        self.ocr_engine_combo.addItem("Comic-Text-Detector + Manga-OCR (纯 PyTorch 漫画专属，强烈推荐)", "ctd")
         self.ocr_engine_combo.addItem("PaddleOCR 3.x (通用中/日/英，国漫推荐)", "paddle")
+        self.ocr_engine_combo.addItem("PaddleOCR + Manga-OCR (解耦模式)", "paddle_manga")
         self.ocr_engine_combo.addItem("EasyOCR (英文/欧美漫推荐)", "easyocr")
         
-        current_eng = getattr(self.config.ocr, "engine", "manga_ocr")
+        current_eng = getattr(self.config.ocr, "engine", "ctd")
         found_idx = self.ocr_engine_combo.findData(current_eng)
         if found_idx >= 0:
             self.ocr_engine_combo.setCurrentIndex(found_idx)
+        elif current_eng == "manga_ocr":
+            self.ocr_engine_combo.setCurrentIndex(0)
         else:
             self.ocr_engine_combo.setCurrentText(current_eng)
         box_layout.addWidget(self.ocr_engine_combo)
 
-        hint_label = QLabel("💡 提示：Manga-OCR 针对日漫手写体与注音假名深度微调；若源语言为英文或中文，系统会自动切回通用引擎识别以避免乱码。")
+        hint_label = QLabel("💡 提示：纯 PyTorch 模式结合了专为漫画气泡训练的 CTD 检测器与高精日文 Manga-OCR，对白包含英文时自动无缝识别，且不占用 PaddlePaddle 额外显存。")
         hint_label.setWordWrap(True)
         hint_label.setStyleSheet("color: #8E8E93; font-size: 11px; margin-top: 2px; margin-bottom: 6px;")
         box_layout.addWidget(hint_label)

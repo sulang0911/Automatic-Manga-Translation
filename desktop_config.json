@@ -12,7 +12,7 @@
     "proxy_url": ""
   },
   "ocr": {
-    "engine": "easyocr",
+    "engine": "ctd",
     "lang": "japan",
     "force_cpu": false,
     "confidence_threshold": 0.25

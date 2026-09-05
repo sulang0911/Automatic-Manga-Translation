@@ -1,0 +1,146 @@
+"""
+tests/unit/test_ctd_pure_pytorch.py
+Unit tests for Pure PyTorch Comic-Text-Detector (CTD) and smart language routing pipeline.
+"""
+import pytest
+import numpy as np
+from unittest.mock import MagicMock, patch
+
+from app.core.ocr.ctd_engine import ComicTextDetectorEngine
+from desktop.core.ocr_engine import OCREngine
+
+
+class TestComicTextDetectorEngine:
+    def test_availability(self):
+        # Should return boolean without raising
+        avail = ComicTextDetectorEngine.is_available()
+        assert isinstance(avail, bool)
+
+    def test_empty_image_handling(self):
+        engine = ComicTextDetectorEngine(use_gpu=False)
+        boxes, mask = engine.detect(None)
+        assert boxes == []
+        assert mask is None
+
+        empty_img = np.zeros((0, 0, 3), dtype=np.uint8)
+        boxes, mask = engine.detect(empty_img)
+        assert boxes == []
+        assert mask is None
+
+    def test_detection_and_angle_extraction(self):
+        engine = ComicTextDetectorEngine(use_gpu=False)
+
+        # Mock internal TextDetector
+        mock_detector = MagicMock()
+        dummy_block_normal = MagicMock()
+        dummy_block_normal.xyxy = [10, 20, 100, 80]
+        dummy_block_normal.angle = 3  # < 15 deg -> should clamp to 0.0
+        dummy_block_normal.prob = 0.95
+        dummy_block_normal.lines = [[[10, 20], [100, 20], [100, 45], [10, 45]]]
+
+        dummy_block_tilted = MagicMock()
+        dummy_block_tilted.xyxy = [120, 30, 200, 150]
+        dummy_block_tilted.angle = -18.5  # >= 15 deg -> preserve -18.5
+        dummy_block_tilted.prob = 0.92
+        dummy_block_tilted.lines = [[[120, 30], [200, 50], [180, 150], [100, 130]]]
+
+        mock_detector.return_value = (None, None, [dummy_block_normal, dummy_block_tilted])
+        engine._detector = mock_detector
+
+        img = np.full((300, 300, 3), 255, dtype=np.uint8)
+        boxes, _ = engine.detect(img)
+
+        assert len(boxes) == 2
+        # First box clamped to 0.0
+        assert boxes[0]["angle"] == 0.0
+        assert boxes[0]["xmin"] == 10
+        assert boxes[0]["ymin"] == 20
+        assert boxes[0]["xmax"] == 100
+        assert boxes[0]["ymax"] == 80
+
+        # Second box tilted at -18.5
+        assert boxes[1]["angle"] == -18.5
+        assert boxes[1]["xmin"] == 120
+        assert boxes[1]["ymin"] == 30
+
+
+class TestPurePyTorchOCREngine:
+    def test_ctd_engine_init(self):
+        eng = OCREngine(engine_type="ctd", use_gpu=False, lang="japan")
+        assert eng.engine_type == "ctd"
+        assert not eng.use_gpu
+
+    def test_english_comic_auto_routes_to_easyocr(self):
+        """
+        Critical test: Verifies that when an English comic is loaded,
+        the system automatically switches to EasyOCR and extracts clean English,
+        preventing Manga-OCR from turning English into Japanese kana gibberish.
+        """
+        eng = OCREngine(engine_type="ctd", use_gpu=False, lang="japan")
+
+        # Mock CTD detector returning 1 dialogue bubble
+        mock_ctd = MagicMock()
+        mock_ctd.detect.return_value = ([{
+            "xmin": 30, "ymin": 40, "xmax": 180, "ymax": 120,
+            "text": "", "conf": 0.98, "angle": 0.0,
+            "polygon": [[30, 40], [180, 40], [180, 120], [30, 120]],
+            "line_count": 3
+        }], None)
+        eng._ctd_detector = mock_ctd
+
+        # Mock EasyOCR returning English text
+        mock_easy = MagicMock()
+        mock_easy.readtext.return_value = [
+            ([[0, 0], [100, 0], [100, 20], [0, 20]], "Wait, don't go!", 0.95),
+            ([[0, 25], [100, 25], [100, 45], [0, 45]], "It is dangerous.", 0.96)
+        ]
+        eng._easyocr_reader = mock_easy
+
+        # Mock MangaOCR - should NOT be called for English
+        mock_mocr = MagicMock()
+        eng._manga_ocr = mock_mocr
+
+        dummy_img = np.full((300, 300, 3), 255, dtype=np.uint8)
+        results = eng.detect_and_recognize(dummy_img)
+
+        assert len(results) == 1
+        assert "Wait, don't go!" in results[0]["original_text"]
+        assert "It is dangerous." in results[0]["original_text"]
+        # Manga-OCR should NOT have been called
+        assert not mock_mocr.recognize_crop.called
+
+    def test_japanese_comic_routes_to_manga_ocr(self):
+        """
+        Verifies that when Japanese dialogue is detected,
+        Manga-OCR is invoked to provide high precision Japanese text.
+        """
+        eng = OCREngine(engine_type="ctd", use_gpu=False, lang="japan")
+
+        # Mock CTD detector returning 1 dialogue bubble
+        mock_ctd = MagicMock()
+        mock_ctd.detect.return_value = ([{
+            "xmin": 30, "ymin": 40, "xmax": 180, "ymax": 120,
+            "text": "", "conf": 0.98, "angle": 0.0,
+            "polygon": [[30, 40], [180, 40], [180, 120], [30, 120]],
+            "line_count": 3
+        }], None)
+        eng._ctd_detector = mock_ctd
+
+        # Mock EasyOCR probe returning Japanese kana (0 english words >= 3 letters)
+        mock_easy = MagicMock()
+        mock_easy.readtext.return_value = [
+            ([[0, 0], [100, 0], [100, 20], [0, 20]], "こんにちは", 0.95)
+        ]
+        eng._easyocr_reader = mock_easy
+
+        # Mock MangaOCR returning high-precision Japanese
+        mock_mocr = MagicMock()
+        mock_mocr.recognize_crop.return_value = "こんにちは、世界！"
+        eng._manga_ocr = mock_mocr
+
+        dummy_img = np.full((300, 300, 3), 255, dtype=np.uint8)
+        results = eng.detect_and_recognize(dummy_img)
+
+        assert len(results) == 1
+        assert results[0]["original_text"] == "こんにちは、世界！"
+        assert mock_mocr.recognize_crop.called

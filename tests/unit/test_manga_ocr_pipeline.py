@@ -65,7 +65,7 @@ class TestDecoupledOCREngine:
         assert not eng.use_gpu
 
     def test_decoupled_flow_japanese(self):
-        eng = OCREngine(engine_type="manga_ocr", use_gpu=False, lang="japan")
+        eng = OCREngine(engine_type="paddle_manga", use_gpu=False, lang="japan")
 
         # Mock Paddle detector to return 1 box with placeholder text
         mock_paddle = MagicMock()
@@ -89,7 +89,7 @@ class TestDecoupledOCREngine:
 
     def test_decoupled_fallback_non_japanese(self):
         # When language is English, Manga-OCR should NOT overwrite native detector's text
-        eng = OCREngine(engine_type="manga_ocr", use_gpu=False, lang="en")
+        eng = OCREngine(engine_type="paddle_manga", use_gpu=False, lang="en")
 
         mock_paddle = MagicMock()
         mock_paddle.ocr.return_value = [[

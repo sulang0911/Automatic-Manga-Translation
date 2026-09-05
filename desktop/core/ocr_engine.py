@@ -52,6 +52,12 @@ class OCREngine:
         self._paddle_ocr = None
         self._easyocr_reader = None
         self._manga_ocr = None
+        self._ctd_detector = None
+
+    def _init_ctd(self):
+        if self._ctd_detector is None:
+            from app.core.ocr.ctd_engine import ComicTextDetectorEngine
+            self._ctd_detector = ComicTextDetectorEngine(use_gpu=self.use_gpu)
 
     def _init_paddle(self):
         if self._paddle_ocr is None:
@@ -166,7 +172,98 @@ class OCREngine:
             progress_callback(10, "正在加载 OCR 识别引擎...")
 
         # 1. Run detection
-        if self.engine_type == "easyocr":
+        if self.engine_type in ("ctd", "pure_pytorch", "manga_ocr"):
+            try:
+                self._init_ctd()
+                if progress_callback:
+                    progress_callback(30, "正在使用 Comic-Text-Detector 提取漫画气泡 (纯 PyTorch)...")
+                raw_boxes, _ = self._ctd_detector.detect(image)
+            except Exception as e_ctd:
+                print(f"[-] Comic-Text-Detector 未能运行: {e_ctd}，自动回退到 EasyOCR...")
+                raw_boxes = []
+
+            # If CTD produced candidate boxes, perform smart recognition
+            if raw_boxes:
+                is_explicit_english = any(w in str(self.lang).lower() for w in ["en", "eng", "english"])
+
+                # Check if page is actually an English comic
+                page_is_english = is_explicit_english
+                if not is_explicit_english:
+                    first_crop = None
+                    for b in raw_boxes:
+                        w_b = b["xmax"] - b["xmin"]
+                        h_b = b["ymax"] - b["ymin"]
+                        if w_b > 40 and h_b > 30:
+                            first_crop = image[b["ymin"]:b["ymax"], b["xmin"]:b["xmax"]]
+                            break
+                    if first_crop is not None and first_crop.size > 0:
+                        try:
+                            self._init_easyocr()
+                            t_check = self._easyocr_reader.readtext(cv2.cvtColor(first_crop, cv2.COLOR_BGR2RGB))
+                            combined_t = " ".join(t[1] for t in t_check)
+                            import re
+                            if len(re.findall(r'[a-zA-Z]{3,}', combined_t)) >= 2:
+                                page_is_english = True
+                        except Exception:
+                            page_is_english = False
+
+                if page_is_english:
+                    if progress_callback:
+                        progress_callback(55, "探知为英文漫画，自动切换 EasyOCR 准确提取英文...")
+                    self._init_easyocr()
+                    for box in raw_boxes:
+                        bx1, by1 = box["xmin"], box["ymin"]
+                        bx2, by2 = box["xmax"], box["ymax"]
+                        crop = image[by1:by2, bx1:bx2]
+                        if crop.size > 0:
+                            rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+                            res = self._easyocr_reader.readtext(rgb)
+                            if res:
+                                box["text"] = " ".join(t[1].strip() for t in res if t[1].strip())
+                                box["conf"] = float(np.mean([t[2] for t in res]))
+                else:
+                    if self._manga_ocr is None:
+                        from app.core.ocr.manga_ocr_wrapper import get_manga_ocr
+                        self._manga_ocr = get_manga_ocr(force_cpu=not self.use_gpu)
+                    if progress_callback:
+                        progress_callback(55, "正在使用 Manga-OCR 高精度识别日文...")
+                    for box in raw_boxes:
+                        bx1 = max(0, min(box["xmin"], w_img - 1))
+                        by1 = max(0, min(box["ymin"], h_img - 1))
+                        bx2 = max(bx1 + 1, min(box["xmax"], w_img))
+                        by2 = max(by1 + 1, min(box["ymax"], h_img))
+                        crop = image[by1:by2, bx1:bx2]
+                        txt = self._manga_ocr.recognize_crop(crop, angle=box.get("angle", 0.0))
+                        if txt:
+                            box["text"] = txt
+                            box["conf"] = max(float(box.get("conf", 0.8)), 0.95)
+
+                raw_boxes = [b for b in raw_boxes if b.get("text", "").strip()]
+            else:
+                # Fallback to EasyOCR
+                try:
+                    self._init_easyocr()
+                    if progress_callback:
+                        progress_callback(30, "正在使用 EasyOCR 回退分析图像文字...")
+                    rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                    results = self._easyocr_reader.readtext(rgb)
+                    for bbox, text, conf in results:
+                        if not text.strip() or conf < 0.2:
+                            continue
+                        pts = np.array(bbox, dtype=np.int32)
+                        xmin = int(np.min(pts[:, 0]))
+                        ymin = int(np.min(pts[:, 1]))
+                        xmax = int(np.max(pts[:, 0]))
+                        ymax = int(np.max(pts[:, 1]))
+                        raw_boxes.append({
+                            "xmin": xmin, "ymin": ymin, "xmax": xmax, "ymax": ymax,
+                            "text": text.strip(), "conf": float(conf),
+                            "polygon": pts.astype(int).tolist(),
+                            "angle": calculate_polygon_angle(pts)
+                        })
+                except Exception as e_easy:
+                    print(f"[-] EasyOCR 回退识别亦发生异常: {e_easy}")
+        elif self.engine_type == "easyocr":
             try:
                 self._init_easyocr()
                 if progress_callback:
@@ -282,8 +379,8 @@ class OCREngine:
                 except Exception as e_easy:
                     print(f"[-] EasyOCR 回退识别亦发生异常: {e_easy}")
 
-        # Decoupled recognition: Manga-OCR for Japanese text crops
-        if self.engine_type in ("manga_ocr", "paddle_manga") and any(w in str(self.lang).lower() for w in ["japan", "ja"]):
+        # Decoupled recognition: Manga-OCR for Paddle Japanese text crops
+        if self.engine_type == "paddle_manga" and any(w in str(self.lang).lower() for w in ["japan", "ja"]):
             try:
                 if self._manga_ocr is None:
                     from app.core.ocr.manga_ocr_wrapper import get_manga_ocr

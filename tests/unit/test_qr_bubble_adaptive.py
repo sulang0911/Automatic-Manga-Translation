@@ -441,3 +441,34 @@ class TestAdaptiveBubbleClustering:
         assert merged[0]["line_count"] == 2
         # Japanese reading flow: right column first, newline, left column second
         assert merged[0]["text"] == "お前は\n選ばれし者だ"
+
+
+class TestQRFalsePositiveImmunity:
+    """Tests ensuring comic panels, giant quadrilaterals, and un-decoded noise are never falsely flagged as QR codes."""
+
+    def test_reject_giant_non_square_phantom_quadrilateral(self):
+        from app.core.ocr.qr_filter import QRCodeFilter
+        qf = QRCodeFilter()
+        # Simulated false-positive from OpenCV detectAndDecode on 1600x1600 comic
+        phantom_pts = np.array([[53.0, 53.0], [1012.0, 867.0], [953.0, 1548.0], [505.0, 1548.0]])
+        reg = qf._build_region("qrcode", phantom_pts, 1600, 1600, text="")
+        assert reg is None, "Giant non-square quadrilateral must be rejected as false-positive QR code"
+
+    def test_reject_oversized_undecoded_regions(self):
+        from app.core.ocr.qr_filter import QRCodeFilter
+        qf = QRCodeFilter()
+        # 600x600 square on 1000x1000 image (occupies 36% of canvas, undecoded)
+        large_square = np.array([[100, 100], [700, 100], [700, 700], [100, 700]])
+        reg = qf._build_region("qrcode", large_square, 1000, 1000, text="")
+        assert reg is None, "Undecoded oversized square (>30% dimension) must be rejected"
+
+    def test_accept_legitimate_compact_qr(self):
+        from app.core.ocr.qr_filter import QRCodeFilter
+        qf = QRCodeFilter()
+        # 120x120 square on 1600x1600 image with valid decoded payload
+        valid_pts = np.array([[50, 50], [170, 50], [170, 170], [50, 170]])
+        reg = qf._build_region("qrcode", valid_pts, 1600, 1600, text="https://pixiv.net")
+        assert reg is not None
+        assert reg.kind == "qrcode"
+        assert reg.bbox == (46, 46, 174, 174)
+
