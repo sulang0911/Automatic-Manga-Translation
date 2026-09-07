@@ -110,7 +110,7 @@ class MainWindow(QMainWindow):
         self.canvas_view.sig_bubble_created.connect(self._on_bubble_created)
         self.canvas_view.sig_bubble_ocr_requested.connect(self._on_bubble_ocr_requested)
         self.canvas_view.sig_clear_cache_requested.connect(self._on_canvas_clear_cache_requested)
-        self.canvas_view.sig_retranslate_requested.connect(lambda: self._start_pipeline_for_page(mode="full"))
+        self.canvas_view.sig_retranslate_requested.connect(self._on_canvas_retranslate_requested)
         self.canvas_view.sig_open_style_requested.connect(self._open_current_page_style_dialog)
         self.canvas_view.sig_undo_requested.connect(self._undo)
         self.canvas_view.sig_redo_requested.connect(self._redo)
@@ -1166,6 +1166,13 @@ class MainWindow(QMainWindow):
 
     def _on_translate_page_from_list(self, item_data: Dict[str, Any]):
         """Translates the specific page requested from the context menu."""
+        path = item_data.get("path")
+        if path:
+            from app.core.cache.cache_manager import get_cache_manager
+            if not get_cache_manager().has_cache(path)["blocks"]:
+                item_data["blocks"] = []
+                item_data["erased_img"] = None
+                item_data["translated_img"] = None
         self._on_page_selected(item_data)
         self._start_pipeline_for_page(mode="full")
 
@@ -1276,6 +1283,46 @@ class MainWindow(QMainWindow):
         filename = os.path.basename(path)
         self.status_label.setText(f"已清除【{filename}】本地缓存，已重置为原图！")
         self.toast.show_message(f"🧹 已清除【{filename}】缓存，重置为原图", "success")
+
+    def _on_canvas_retranslate_requested(self):
+        """Called when user right-clicks on the canvas image to re-translate the current page."""
+        if not self.current_image_data:
+            return
+        path = self.current_image_data.get("path", "")
+        page_id = self.current_image_data.get("id", "")
+        if path:
+            from app.core.cache.cache_manager import get_cache_manager
+            get_cache_manager().clear_cache(path)
+        self.current_image_data["blocks"] = []
+        self.current_image_data["erased_img"] = None
+        self.current_image_data["translated_img"] = None
+        if page_id and hasattr(self.page_list, "update_item_status"):
+            self.page_list.update_item_status(page_id, "queued", "等待中")
+            if hasattr(self.page_list, "_item_widgets"):
+                item_widget = self.page_list._item_widgets.get(page_id)
+                if item_widget:
+                    item_widget.reload_thumbnail()
+
+        original_cv = self.current_image_data.get("original_cv") or self.current_image_data.get("img")
+        if original_cv is None and path and os.path.exists(path):
+            import cv2
+            original_cv = cv2.imread(path)
+            if original_cv is not None:
+                self.current_image_data["original_cv"] = original_cv
+                self.current_image_data["img"] = original_cv
+
+        self.canvas_view.set_data(
+            original_cv=original_cv,
+            translated_cv=None,
+            erased_cv=None,
+            blocks=[]
+        )
+        self.canvas_view.set_view_mode("original")
+        if "original" in self._mode_buttons:
+            self._mode_buttons["original"].setChecked(True)
+        self.inspector_panel.set_blocks([])
+
+        self._start_pipeline_for_page(mode="full")
 
     def toggle_theme(self):
         """Toggles between dark and light themes."""
@@ -1509,6 +1556,9 @@ class MainWindow(QMainWindow):
         if self.active_worker and self.active_worker.isRunning():
             self.active_worker.cancel()
             self.status_label.setText("正在取消任务...")
+            page_id = getattr(self.active_worker, "page_id", None) or getattr(self, "_active_page_id", None)
+            if page_id and hasattr(self.page_list, "update_item_status"):
+                self.page_list.update_item_status(page_id, "queued", "等待中")
             self.run_btn.setText("开始翻译")
             self.run_btn.setIcon(get_icon("play", color="#FFFFFF", size=16))
             return
@@ -1531,6 +1581,11 @@ class MainWindow(QMainWindow):
             self.toast.show_message(f"图片路径不存在: {path}", "error")
             return
 
+        page_id = self.current_image_data.get("id")
+        self._active_page_id = page_id
+        if page_id and hasattr(self.page_list, "update_item_status"):
+            self.page_list.update_item_status(page_id, "processing", "处理中")
+
         self.run_btn.setText("取消任务")
         self.run_btn.setIcon(get_icon("trash", color="#FFFFFF", size=16))
         self.progress_bar.show()
@@ -1547,6 +1602,7 @@ class MainWindow(QMainWindow):
             mode=mode,
             parent=self
         )
+        self.active_worker.page_id = page_id
         self.active_worker.sig_progress.connect(self._on_pipeline_progress)
         self.active_worker.sig_step_done.connect(self._on_pipeline_step_done)
         self.active_worker.sig_finished.connect(self._on_pipeline_finished)
@@ -1583,7 +1639,21 @@ class MainWindow(QMainWindow):
 
         self._push_undo_snapshot("整页翻译")
 
-        if self.current_image_data is not None:
+        page_id = getattr(self.active_worker, "page_id", None) or getattr(self, "_active_page_id", None) or (self.current_image_data.get("id") if self.current_image_data else None)
+        if page_id and hasattr(self.page_list, "update_item_status"):
+            self.page_list.update_item_status(page_id, "completed", "已完成")
+            if hasattr(self.page_list, "_item_widgets"):
+                item_widget = self.page_list._item_widgets.get(page_id)
+                if item_widget:
+                    item_widget.reload_thumbnail()
+
+        if hasattr(self.page_list, "items_data"):
+            for item in self.page_list.items_data:
+                if item.get("id") == page_id:
+                    item.update(result)
+                    break
+
+        if self.current_image_data is not None and (not page_id or self.current_image_data.get("id") == page_id):
             self.current_image_data.update(result)
             self.canvas_view.set_data(
                 original_cv=result.get("original_img"),
@@ -1601,6 +1671,10 @@ class MainWindow(QMainWindow):
         self.run_btn.setIcon(get_icon("play", color="#FFFFFF", size=16))
         self.progress_bar.hide()
         self.status_label.setText(f"错误: {err_msg}")
+        page_id = getattr(self.active_worker, "page_id", None) or getattr(self, "_active_page_id", None) or (self.current_image_data.get("id") if self.current_image_data else None)
+        if page_id and hasattr(self.page_list, "update_item_status"):
+            short_err = err_msg.strip().split("\n")[-1][:20]
+            self.page_list.update_item_status(page_id, "failed", f"失败: {short_err}")
         self.toast.show_message(err_msg, "error")
 
     def _start_batch(self, queue_items: Optional[List[Dict[str, Any]]] = None, force_retranslate: bool = False, export_dir: Optional[str] = None):

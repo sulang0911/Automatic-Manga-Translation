@@ -105,10 +105,20 @@ class InpaintEngine:
 
         base_dim = max(h_img, w_img)
 
+        from app.core.inpaint.unboxed_text_eraser import is_unboxed_text_block, erase_unboxed_text_block
+
         total_blocks = len(blocks)
         for idx, block in enumerate(blocks):
             if progress_callback:
                 progress_callback(int((idx / max(1, total_blocks)) * 40), f"正在分析第 {idx+1}/{total_blocks} 个气泡区域背景...")
+
+            if is_unboxed_text_block(block, erased_img):
+                erased_img, unboxed_mask = erase_unboxed_text_block(
+                    erased_img, block, qr_mask=qr_mask, min_dilation=max(3, onomatopoeia_dilation)
+                )
+                if unboxed_mask is not None and np.sum(unboxed_mask) > 0:
+                    inpaint_mask = cv2.bitwise_or(inpaint_mask, unboxed_mask)
+                continue
 
             poly = None
             if hasattr(block, "to_pixel_polygon"):

@@ -133,6 +133,15 @@ class LaMaInpainter(BaseInpainter):
             if block.type == "onomatopoeia" and style_config and style_config.onomatopoeia_mode == OnomatopoeiaMode.IGNORE.value:
                 continue
 
+            from app.core.inpaint.unboxed_text_eraser import is_unboxed_text_block, erase_unboxed_text_block
+            if is_unboxed_text_block(block, erased_img):
+                erased_img, unboxed_mask = erase_unboxed_text_block(
+                    erased_img, block, qr_mask=qr_mask, min_dilation=3
+                )
+                if unboxed_mask is not None and np.sum(unboxed_mask) > 0:
+                    inpaint_mask = cv2.bitwise_or(inpaint_mask, unboxed_mask)
+                continue
+
             poly = block.to_pixel_polygon(w_img, h_img) if hasattr(block, "to_pixel_polygon") else None
             if poly is None:
                 x, y, w, h = block.to_pixel_rect(w_img, h_img)

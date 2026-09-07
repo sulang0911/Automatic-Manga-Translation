@@ -514,15 +514,14 @@ class PageListWidget(QWidget):
                 "pending": "等待中",
             }
             message = status_map.get(status.lower(), status)
+        for item in self.items_data:
+            if item.get("id") == item_id:
+                item["status"] = status
+                item["status_text"] = message
+                break
         widget = self._item_widgets.get(item_id)
         if widget:
             widget.update_status(status, message)
-        else:
-            for item in self.items_data:
-                if item["id"] == item_id:
-                    item["status"] = status
-                    item["status_text"] = message
-                    break
 
     def _update_count(self):
         count = len(self.items_data)
@@ -545,6 +544,7 @@ class PageListWidget(QWidget):
         row = self.list_widget.row(item)
         if not (0 <= row < len(self.items_data)):
             return
+        self.list_widget.setCurrentItem(item)
         data = self.items_data[row]
         path = data.get("path", "")
 
@@ -570,7 +570,13 @@ class PageListWidget(QWidget):
         elif chosen == act_retranslate_this:
             if path:
                 get_cache_manager().clear_cache(path)
-                self.update_item_status(data["id"], "queued", "等待中")
+            data["blocks"] = []
+            data["erased_img"] = None
+            data["translated_img"] = None
+            self.update_item_status(data["id"], "queued", "等待中")
+            item_widget = self._item_widgets.get(data["id"])
+            if item_widget:
+                item_widget.reload_thumbnail()
             self.sig_translate_page.emit(data)
         elif chosen == act_retranslate_all:
             self.sig_start_retranslate_all.emit()
