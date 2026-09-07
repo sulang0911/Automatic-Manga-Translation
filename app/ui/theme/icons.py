@@ -153,6 +153,39 @@ SVG_TEMPLATES: Dict[str, str] = {
         <line x1="18" y1="6" x2="6" y2="18" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
         <line x1="6" y1="6" x2="18" y2="18" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
     """,
+    "keyboard": """
+        <rect x="2" y="4" width="20" height="16" rx="2" stroke="{color}" stroke-width="2" fill="none"/>
+        <line x1="6" y1="8" x2="6.01" y2="8" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+        <line x1="10" y1="8" x2="10.01" y2="8" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+        <line x1="14" y1="8" x2="14.01" y2="8" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+        <line x1="18" y1="8" x2="18.01" y2="8" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+        <line x1="6" y1="12" x2="6.01" y2="12" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+        <line x1="18" y1="12" x2="18.01" y2="12" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+        <line x1="7" y1="16" x2="17" y2="16" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+    """,
+    "help": """
+        <circle cx="12" cy="12" r="10" stroke="{color}" stroke-width="2" fill="none"/>
+        <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+        <line x1="12" y1="17" x2="12.01" y2="17" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+    """,
+    "direction_vertical": """
+        <line x1="12" y1="3" x2="12" y2="21" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+        <polyline points="7 16 12 21 17 16" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <rect x="15" y="4" width="4" height="4" rx="1" stroke="{color}" stroke-width="1.5" fill="none"/>
+        <rect x="15" y="10" width="4" height="4" rx="1" stroke="{color}" stroke-width="1.5" fill="none"/>
+    """,
+    "direction_horizontal": """
+        <line x1="3" y1="12" x2="21" y2="12" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+        <polyline points="16 7 21 12 16 17" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <rect x="4" y="5" width="4" height="4" rx="1" stroke="{color}" stroke-width="1.5" fill="none"/>
+        <rect x="10" y="5" width="4" height="4" rx="1" stroke="{color}" stroke-width="1.5" fill="none"/>
+    """,
+    "upload_cloud": """
+        <path d="M16 16l-4-4-4 4" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M12 12v9" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M16 16l-4-4-4 4" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    """,
 }
 
 

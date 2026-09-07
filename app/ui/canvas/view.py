@@ -4,7 +4,7 @@ app/ui/canvas/view.py
 QOpenGLWidget acceleration with software QWidget fallback, comparison modes,
 interactive manual bubble creation, and floating Apple HIG zoom HUD.
 """
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Dict
 import uuid
 import numpy as np
 import cv2
@@ -22,6 +22,8 @@ from PyQt6.QtGui import (
 from app.ui.canvas.scene import MangaCanvasScene
 from app.ui.canvas.items.bubble_item import BubbleItem
 from app.ui.theme.icons import get_icon
+from app.ui.widgets.in_place_editor import InPlaceBubbleEditor, ContextualTypographyBar
+from app.ui.widgets.empty_state import EmptyStateWidget
 
 
 def cvimg_to_qpixmap(cv_img: Optional[np.ndarray]) -> QPixmap:
@@ -49,7 +51,7 @@ def cvimg_to_qpixmap(cv_img: Optional[np.ndarray]) -> QPixmap:
 class CanvasZoomHud(QFrame):
     """
     Floating HUD capsule widget anchored in the canvas bottom-right corner.
-    Integrates zoom in/out, 100%, fit view, and Draw Bubble tool.
+    Integrates zoom in/out, 100%, fit view, Draw Bubble tool, and page navigation controls.
     """
     sig_zoom_in = pyqtSignal()
     sig_zoom_out = pyqtSignal()
@@ -57,6 +59,8 @@ class CanvasZoomHud(QFrame):
     sig_zoom_fit = pyqtSignal()
     sig_tool_draw_toggled = pyqtSignal(bool)
     sig_tool_ocr_draw_toggled = pyqtSignal(bool)
+    sig_prev_page = pyqtSignal()
+    sig_next_page = pyqtSignal()
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -163,6 +167,43 @@ class CanvasZoomHud(QFrame):
         self.btn_reset.clicked.connect(self.sig_zoom_reset.emit)
         layout.addWidget(self.btn_reset)
 
+        # Separator line for pager
+        sep_page = QFrame(self)
+        sep_page.setFrameShape(QFrame.Shape.VLine)
+        sep_page.setStyleSheet("color: rgba(255, 255, 255, 0.15);")
+        layout.addWidget(sep_page)
+
+        # Page navigation controls
+        self.btn_prev_page = QToolButton(self)
+        self.btn_prev_page.setIcon(get_icon("chevron_left", color="#A1A1AA", size=12))
+        self.btn_prev_page.setToolTip("上一页 (快捷键: A / PageUp)")
+        self.btn_prev_page.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_prev_page.clicked.connect(self.sig_prev_page.emit)
+        layout.addWidget(self.btn_prev_page)
+
+        self.lbl_page = QLabel("-- / --", self)
+        self.lbl_page.setStyleSheet("min-width: 46px; text-align: center;")
+        self.lbl_page.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.lbl_page)
+
+        self.btn_next_page = QToolButton(self)
+        self.btn_next_page.setIcon(get_icon("chevron_right", color="#A1A1AA", size=12))
+        self.btn_next_page.setToolTip("下一页 (快捷键: D / PageDown)")
+        self.btn_next_page.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_next_page.clicked.connect(self.sig_next_page.emit)
+        layout.addWidget(self.btn_next_page)
+
+    def set_page_info(self, current: int, total: int):
+        """Updates pager badge and button enabled state."""
+        if total > 0:
+            self.lbl_page.setText(f"{current:02d} / {total:02d}")
+            self.btn_prev_page.setEnabled(current > 1)
+            self.btn_next_page.setEnabled(current < total)
+        else:
+            self.lbl_page.setText("-- / --")
+            self.btn_prev_page.setEnabled(False)
+            self.btn_next_page.setEnabled(False)
+
 
 class MangaCanvasView(QGraphicsView):
     """
@@ -190,6 +231,12 @@ class MangaCanvasView(QGraphicsView):
     sig_open_style_requested = pyqtSignal()
     sig_undo_requested = pyqtSignal()
     sig_redo_requested = pyqtSignal()
+    sig_prev_page = pyqtSignal()
+    sig_next_page = pyqtSignal()
+    sig_shortcuts_requested = pyqtSignal()
+    sig_commit_bubble_text = pyqtSignal(dict, str)
+    sig_open_folder_requested = pyqtSignal()
+    sig_open_files_requested = pyqtSignal()
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -248,6 +295,25 @@ class MangaCanvasView(QGraphicsView):
         self.hud.sig_zoom_fit.connect(self.fit_in_view)
         self.hud.sig_tool_draw_toggled.connect(self._on_hud_draw_toggled)
         self.hud.sig_tool_ocr_draw_toggled.connect(self._on_hud_ocr_draw_toggled)
+        self.hud.sig_prev_page.connect(self.sig_prev_page.emit)
+        self.hud.sig_next_page.connect(self.sig_next_page.emit)
+
+        # In-Place Bubble Editor & Typography Floating Bar
+        self.in_place_editor = InPlaceBubbleEditor(self)
+        self.in_place_editor.sig_commit_and_next.connect(self._on_in_place_commit_and_next)
+        self.in_place_editor.sig_retranslate_block.connect(self.sig_bubble_ocr_requested.emit)
+
+        self.typography_bar = ContextualTypographyBar(self)
+        self.typography_bar.sig_orientation_toggled.connect(self._on_typography_orientation_toggled)
+        self.typography_bar.sig_font_size_changed.connect(self._on_typography_font_size_changed)
+        self.typography_bar.sig_font_family_changed.connect(self._on_typography_font_family_changed)
+        self.typography_bar.sig_rerender_requested.connect(self.sig_bubble_changed.emit)
+
+        # Empty State Welcome Placeholder
+        self.empty_state = EmptyStateWidget(self)
+        self.empty_state.sig_open_folder_clicked.connect(self.sig_open_folder_requested.emit)
+        self.empty_state.sig_open_files_clicked.connect(self.sig_open_files_requested.emit)
+        self.empty_state.sig_open_shortcuts_clicked.connect(self.sig_shortcuts_requested.emit)
 
     def _init_viewport(self):
         """Initializes QOpenGLWidget viewport with graceful software fallback."""
@@ -274,10 +340,14 @@ class MangaCanvasView(QGraphicsView):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._update_hud_position()
+        if hasattr(self, "empty_state") and self.empty_state:
+            self.empty_state.setGeometry(0, 0, self.viewport().width(), self.viewport().height())
 
     def showEvent(self, event):
         super().showEvent(event)
         self._update_hud_position()
+        if hasattr(self, "empty_state") and self.empty_state:
+            self.empty_state.setGeometry(0, 0, self.viewport().width(), self.viewport().height())
 
     def _update_hud_position(self):
         if hasattr(self, "hud") and self.hud:
@@ -327,6 +397,10 @@ class MangaCanvasView(QGraphicsView):
             except RuntimeError:
                 pass
         self.bubble_items.clear()
+        if hasattr(self, "in_place_editor"):
+            self.in_place_editor.hide()
+        if hasattr(self, "typography_bar"):
+            self.typography_bar.hide()
 
     def _rebuild_bubbles(self):
         """Recreates interactive BubbleItems based on current blocks and visibility."""
@@ -343,7 +417,8 @@ class MangaCanvasView(QGraphicsView):
         for b in self.blocks:
             b_dict = b if isinstance(b, dict) else (b.to_dict() if hasattr(b, "to_dict") else vars(b))
             item = BubbleItem(b_dict, img_w, img_h)
-            item.signals.clicked.connect(self.sig_bubble_selected.emit)
+            item.signals.clicked.connect(self._on_bubble_clicked)
+            item.signals.double_clicked.connect(self._on_bubble_double_clicked)
             item.signals.changed.connect(self.sig_bubble_changed.emit)
             item.signals.geometry_start.connect(self.sig_bubble_geometry_start.emit)
             item.signals.geometry_commit.connect(self.sig_bubble_commit.emit)
@@ -354,6 +429,96 @@ class MangaCanvasView(QGraphicsView):
             item.signals.delete_requested.connect(self.sig_bubble_delete.emit)
             self._scene.addItem(item)
             self.bubble_items.append(item)
+
+    def _on_bubble_clicked(self, block_data: Dict[str, Any]):
+        self.sig_bubble_selected.emit(block_data)
+        if not hasattr(self, "typography_bar"):
+            return
+        target_item = None
+        for it in self.bubble_items:
+            if it.block_data.get("id") == block_data.get("id"):
+                target_item = it
+                break
+        if target_item:
+            rect = target_item.sceneBoundingRect()
+            top_pt = self.mapFromScene(QPointF(rect.center().x(), rect.top()))
+            x = int(top_pt.x() - self.typography_bar.width() / 2)
+            y = int(top_pt.y() - self.typography_bar.height() - 8)
+            x = max(10, min(x, self.viewport().width() - self.typography_bar.width() - 10))
+            y = max(10, min(y, self.viewport().height() - self.typography_bar.height() - 10))
+            self.typography_bar.attach_block(block_data)
+            self.typography_bar.move(x, y)
+            self.typography_bar.show()
+            self.typography_bar.raise_()
+
+    def _on_bubble_double_clicked(self, block_data: Dict[str, Any]):
+        self.sig_bubble_selected.emit(block_data)
+        if not hasattr(self, "in_place_editor"):
+            return
+        target_item = None
+        block_idx = 1
+        for idx, it in enumerate(self.bubble_items):
+            if it.block_data.get("id") == block_data.get("id"):
+                target_item = it
+                block_idx = idx + 1
+                break
+        if target_item:
+            rect = target_item.sceneBoundingRect()
+            bottom_pt = self.mapFromScene(QPointF(rect.center().x(), rect.bottom()))
+            x = int(bottom_pt.x() - self.in_place_editor.width() / 2)
+            y = int(bottom_pt.y() + 8)
+            x = max(10, min(x, self.viewport().width() - self.in_place_editor.width() - 10))
+            y = max(10, min(y, self.viewport().height() - self.in_place_editor.height() - 10))
+            self.in_place_editor.attach_block(block_data, block_idx)
+            self.in_place_editor.move(x, y)
+            self.in_place_editor.show()
+            self.in_place_editor.raise_()
+
+    def _on_in_place_commit_and_next(self, block_data: Dict[str, Any], new_text: str):
+        self.sig_commit_bubble_text.emit(block_data, new_text)
+        if not self.bubble_items:
+            self.in_place_editor.close_editor()
+            return
+        curr_idx = -1
+        for idx, it in enumerate(self.bubble_items):
+            if it.block_data.get("id") == block_data.get("id"):
+                curr_idx = idx
+                break
+        if curr_idx >= 0 and len(self.bubble_items) > 1:
+            next_idx = (curr_idx + 1) % len(self.bubble_items)
+            next_item = self.bubble_items[next_idx]
+            for it in self.bubble_items:
+                it.setSelected(it == next_item)
+            self._on_bubble_double_clicked(next_item.block_data)
+        else:
+            self.in_place_editor.close_editor()
+
+    def _select_next_bubble(self, forward: bool = True):
+        if not self.bubble_items:
+            return
+        sel_idx = -1
+        for idx, it in enumerate(self.bubble_items):
+            if it.isSelected():
+                sel_idx = idx
+                break
+        if sel_idx == -1:
+            next_idx = 0 if forward else (len(self.bubble_items) - 1)
+        else:
+            step = 1 if forward else -1
+            next_idx = (sel_idx + step) % len(self.bubble_items)
+        target_item = self.bubble_items[next_idx]
+        for it in self.bubble_items:
+            it.setSelected(it == target_item)
+        self._on_bubble_clicked(target_item.block_data)
+
+    def _on_typography_orientation_toggled(self, block_data: Dict[str, Any], direction: str):
+        self.sig_bubble_changed.emit(block_data)
+
+    def _on_typography_font_size_changed(self, block_data: Dict[str, Any], size: int):
+        self.sig_bubble_changed.emit(block_data)
+
+    def _on_typography_font_family_changed(self, block_data: Dict[str, Any], family: str):
+        self.sig_bubble_changed.emit(block_data)
 
     def set_show_bubbles(self, show: bool):
         """Toggles speech bubble overlay bounding box visibility."""
@@ -373,6 +538,13 @@ class MangaCanvasView(QGraphicsView):
         self.translated_cv = translated_cv
         self.erased_cv = erased_cv
         self.blocks = blocks if blocks is not None else []
+
+        if original_cv is not None and original_cv.size > 0:
+            if hasattr(self, "empty_state"):
+                self.empty_state.hide()
+        else:
+            if hasattr(self, "empty_state"):
+                self.empty_state.show()
 
         orig_pix = cvimg_to_qpixmap(original_cv)
         trans_pix = cvimg_to_qpixmap(translated_cv)
@@ -435,25 +607,40 @@ class MangaCanvasView(QGraphicsView):
         self.sig_zoom_changed.emit(self.zoom_factor)
 
     def wheelEvent(self, event: QWheelEvent):
-        """Smooth, cursor-centered zoom engine clamped from 0.05 to 10.0."""
-        delta = event.angleDelta().y()
-        if delta == 0:
+        """Smooth, cursor-centered zoom engine or continuous page scroll boundary navigation."""
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta == 0:
+                super().wheelEvent(event)
+                return
+
+            factor = 1.15 if delta > 0 else (1.0 / 1.15)
+            new_zoom = self.zoom_factor * factor
+
+            if new_zoom < 0.05:
+                factor = 0.05 / self.zoom_factor
+                new_zoom = 0.05
+            elif new_zoom > 10.0:
+                factor = 10.0 / self.zoom_factor
+                new_zoom = 10.0
+
+            self.scale(factor, factor)
+            self._update_zoom_state(new_zoom)
+            event.accept()
+        else:
+            # Detect scroll boundary for continuous page navigation
+            v_bar = self.verticalScrollBar()
+            delta = event.angleDelta().y()
+            if v_bar and not v_bar.isHidden() and v_bar.maximum() > 0:
+                if delta < 0 and v_bar.value() >= v_bar.maximum():
+                    self.sig_next_page.emit()
+                    event.accept()
+                    return
+                elif delta > 0 and v_bar.value() <= v_bar.minimum():
+                    self.sig_prev_page.emit()
+                    event.accept()
+                    return
             super().wheelEvent(event)
-            return
-
-        factor = 1.15 if delta > 0 else (1.0 / 1.15)
-        new_zoom = self.zoom_factor * factor
-
-        if new_zoom < 0.05:
-            factor = 0.05 / self.zoom_factor
-            new_zoom = 0.05
-        elif new_zoom > 10.0:
-            factor = 10.0 / self.zoom_factor
-            new_zoom = 10.0
-
-        self.scale(factor, factor)
-        self._update_zoom_state(new_zoom)
-        event.accept()
 
     def zoom_in(self):
         """Steps zoom in by 1.25x."""
@@ -495,6 +682,41 @@ class MangaCanvasView(QGraphicsView):
             self._space_held = True
             if not self.is_panning:
                 self.setCursor(Qt.CursorShape.OpenHandCursor)
+        elif event.key() in (Qt.Key.Key_A, Qt.Key.Key_PageUp):
+            self.sig_prev_page.emit()
+            event.accept()
+            return
+        elif event.key() in (Qt.Key.Key_D, Qt.Key.Key_PageDown):
+            self.sig_next_page.emit()
+            event.accept()
+            return
+        elif event.key() == Qt.Key.Key_BracketLeft:
+            if hasattr(self, "typography_bar") and self.typography_bar.isVisible():
+                self.typography_bar._step_font_size(-1)
+                event.accept()
+                return
+        elif event.key() == Qt.Key.Key_BracketRight:
+            if hasattr(self, "typography_bar") and self.typography_bar.isVisible():
+                self.typography_bar._step_font_size(1)
+                event.accept()
+                return
+        elif event.key() == Qt.Key.Key_V:
+            if hasattr(self, "typography_bar") and self.typography_bar.isVisible():
+                self.typography_bar._on_toggle_orientation()
+                event.accept()
+                return
+        elif event.key() == Qt.Key.Key_Tab:
+            self._select_next_bubble(forward=True)
+            event.accept()
+            return
+        elif event.key() == Qt.Key.Key_Backtab:
+            self._select_next_bubble(forward=False)
+            event.accept()
+            return
+        elif event.key() in (Qt.Key.Key_Question, Qt.Key.Key_F1):
+            self.sig_shortcuts_requested.emit()
+            event.accept()
+            return
         elif event.key() == Qt.Key.Key_O:
             self.toggle_ocr_draw_tool()
             event.accept()
@@ -504,6 +726,14 @@ class MangaCanvasView(QGraphicsView):
             event.accept()
             return
         elif event.key() == Qt.Key.Key_Escape:
+            if hasattr(self, "in_place_editor") and self.in_place_editor.isVisible():
+                self.in_place_editor.close_editor()
+                event.accept()
+                return
+            if hasattr(self, "typography_bar") and self.typography_bar.isVisible():
+                self.typography_bar.hide()
+                event.accept()
+                return
             self.set_tool_mode("select")
             event.accept()
             return
@@ -520,6 +750,14 @@ class MangaCanvasView(QGraphicsView):
         super().keyReleaseEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent):
+        # Hide floating editors when clicking empty background
+        item = self.itemAt(event.pos())
+        if not isinstance(item, BubbleItem):
+            if hasattr(self, "typography_bar"):
+                self.typography_bar.hide()
+            if hasattr(self, "in_place_editor") and not self.in_place_editor.geometry().contains(event.pos()):
+                self.in_place_editor.close_editor()
+
         # Draw tool active: start drawing rubber band rectangle
         if self.tool_mode in ("draw", "draw_ocr") and event.button() == Qt.MouseButton.LeftButton:
             self._is_drawing_rect = True

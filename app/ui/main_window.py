@@ -32,6 +32,9 @@ from app.ui.widgets.card import CardWidget
 from app.ui.widgets.segmented_control import SegmentedControl
 from app.ui.widgets.progress_pill import ProgressPill
 from app.ui.widgets.toast import Toast
+from app.ui.widgets.drag_overlay import DragDropOverlay
+from app.ui.widgets.shortcuts_dialog import ShortcutsDialog
+from app.ui.widgets.batch_progress_pill import BatchProgressPill
 from app.ui.canvas.canvas_view import MangaCanvasView
 from app.ui.sidebar.nav_rail import NavRail
 from app.ui.sidebar.page_list import PageListWidget
@@ -80,6 +83,9 @@ class MainWindow(QMainWindow):
         self._init_ui()
         self._init_shortcuts()
         self.toast = Toast(self)
+        self.drag_overlay = DragDropOverlay(self)
+        self.batch_pill = BatchProgressPill(self)
+        self.batch_pill.sig_cancel_requested.connect(self._cancel_batch)
 
     def _init_ui(self):
         central_widget = QWidget(self)
@@ -108,6 +114,12 @@ class MainWindow(QMainWindow):
         self.canvas_view.sig_open_style_requested.connect(self._open_current_page_style_dialog)
         self.canvas_view.sig_undo_requested.connect(self._undo)
         self.canvas_view.sig_redo_requested.connect(self._redo)
+        self.canvas_view.sig_prev_page.connect(lambda: self._navigate_page(-1))
+        self.canvas_view.sig_next_page.connect(lambda: self._navigate_page(1))
+        self.canvas_view.sig_shortcuts_requested.connect(self._open_shortcuts_dialog)
+        self.canvas_view.sig_commit_bubble_text.connect(self._on_canvas_commit_bubble_text)
+        self.canvas_view.sig_open_folder_requested.connect(self._open_folder_dialog)
+        self.canvas_view.sig_open_files_requested.connect(self._open_file_dialog)
 
         # 2. Action Toolbar
         self.toolbar_widget = self._create_toolbar()
@@ -204,6 +216,7 @@ class MainWindow(QMainWindow):
         # Page List
         self.page_list = PageListWidget(self.sidebar_drawer)
         self.page_list.sig_page_selected.connect(self._on_page_selected)
+        self.page_list.sig_page_removed.connect(self._on_page_removed)
         self.page_list.sig_start_batch.connect(lambda: self._start_batch(force_retranslate=False))
         self.page_list.sig_start_retranslate_all.connect(lambda: self._start_batch(force_retranslate=True))
         self.page_list.sig_clear_requested.connect(self._on_page_list_cleared)
@@ -386,6 +399,15 @@ class MainWindow(QMainWindow):
         self.settings_btn.clicked.connect(self._open_settings_dialog)
         layout.addWidget(self.settings_btn)
 
+        # Shortcuts Cheat Sheet Button
+        self.help_btn = QToolButton(toolbar)
+        self.help_btn.setProperty("class", "icon-action-btn")
+        self.help_btn.setIcon(get_icon("help", color="#A1A1AA", size=14))
+        self.help_btn.setToolTip("键盘快捷键速查 (?)")
+        self.help_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.help_btn.clicked.connect(self._open_shortcuts_dialog)
+        layout.addWidget(self.help_btn)
+
         layout.addSpacing(4)
 
         # Primary Action Button: Translate Active Page
@@ -462,6 +484,12 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+Z"), self, self._handle_undo_shortcut)
         QShortcut(QKeySequence("Ctrl+Y"), self, self._handle_redo_shortcut)
         QShortcut(QKeySequence("Ctrl+Shift+Z"), self, self._handle_redo_shortcut)
+        QShortcut(QKeySequence("?"), self, self._open_shortcuts_dialog)
+        QShortcut(QKeySequence("F1"), self, self._open_shortcuts_dialog)
+        QShortcut(QKeySequence("A"), self, lambda: self._navigate_page(-1))
+        QShortcut(QKeySequence("D"), self, lambda: self._navigate_page(1))
+        QShortcut(QKeySequence(Qt.Key.Key_PageUp), self, lambda: self._navigate_page(-1))
+        QShortcut(QKeySequence(Qt.Key.Key_PageDown), self, lambda: self._navigate_page(1))
 
     # -------------------------------------------------------------------------
     # Event Handlers & View Synchronization
@@ -501,8 +529,19 @@ class MainWindow(QMainWindow):
         pct = int(zoom_factor * 100)
         self.status_label.setText(f"就绪 | 缩放 {pct}%")
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "drag_overlay") and self.drag_overlay:
+            self.drag_overlay.setGeometry(self.rect())
+        if hasattr(self, "batch_pill") and self.batch_pill:
+            x = (self.width() - self.batch_pill.width()) // 2
+            y = self.toolbar_widget.height() + 8
+            self.batch_pill.move(max(10, x), y)
+
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
+            if hasattr(self, "drag_overlay"):
+                self.drag_overlay.show_overlay()
             event.acceptProposedAction()
         else:
             event.ignore()
@@ -513,7 +552,14 @@ class MainWindow(QMainWindow):
         else:
             event.ignore()
 
+    def dragLeaveEvent(self, event):
+        if hasattr(self, "drag_overlay"):
+            self.drag_overlay.hide_overlay()
+        super().dragLeaveEvent(event)
+
     def dropEvent(self, event: QDropEvent):
+        if hasattr(self, "drag_overlay"):
+            self.drag_overlay.hide_overlay()
         urls = event.mimeData().urls()
         paths: List[str] = []
         for url in urls:
@@ -531,8 +577,87 @@ class MainWindow(QMainWindow):
             self.drop_zone.set_compact(True)
         if new_count > 0:
             self.toast.show_message(f"已成功载入 {new_count} 个漫画页面！", "success")
+            if self.current_image_data is None and self.page_list.items_data:
+                self.page_list.list_widget.setCurrentRow(0)
+                self._on_page_selected(self.page_list.items_data[0])
         elif paths:
             self.toast.show_message("所选路径已全部在列表中或未检测到支持的漫画图片。", "info")
+
+    def _on_page_removed(self, page_id: str):
+        total = len(self.page_list.items_data)
+        if total == 0:
+            self._on_page_list_cleared()
+        elif self.current_image_data and self.current_image_data.get("id") == page_id:
+            self._navigate_page(0)
+        else:
+            if hasattr(self.canvas_view, "hud"):
+                curr_path = self.current_image_data.get("path") if self.current_image_data else None
+                curr_idx = -1
+                if curr_path:
+                    for idx, it in enumerate(self.page_list.items_data):
+                        if it.get("path") == curr_path:
+                            curr_idx = idx
+                            break
+                if curr_idx >= 0:
+                    self.canvas_view.hud.set_page_info(curr_idx + 1, total)
+                else:
+                    self.canvas_view.hud.set_page_info(0, total)
+
+    def _navigate_page(self, delta: int):
+        """Navigates to previous or next page in the chapter list."""
+        if not self.page_list.items_data:
+            return
+        curr_idx = -1
+        curr_path = self.current_image_data.get("path") if self.current_image_data else None
+        if curr_path:
+            for idx, it in enumerate(self.page_list.items_data):
+                if it.get("path") == curr_path:
+                    curr_idx = idx
+                    break
+        if curr_idx == -1:
+            new_idx = 0
+        else:
+            new_idx = max(0, min(len(self.page_list.items_data) - 1, curr_idx + delta))
+
+        if new_idx != curr_idx or curr_idx == -1:
+            self.page_list.list_widget.setCurrentRow(new_idx)
+            self._on_page_selected(self.page_list.items_data[new_idx])
+
+    def _open_shortcuts_dialog(self):
+        """Opens keyboard shortcuts cheat sheet modal."""
+        dlg = ShortcutsDialog(self)
+        dlg.exec()
+
+    def _open_folder_dialog(self):
+        """Opens directory selection dialog."""
+        folder = QFileDialog.getExistingDirectory(self, "选择漫画章节文件夹")
+        if folder:
+            self._on_paths_dropped([folder])
+
+    def _open_file_dialog(self):
+        """Opens multiple files selection dialog."""
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "选择漫画图片文件", "",
+            "漫画图片与压缩包 (*.jpg *.jpeg *.png *.webp *.zip);;所有文件 (*.*)"
+        )
+        if files:
+            self._on_paths_dropped(files)
+
+    def _on_canvas_commit_bubble_text(self, block_data: Dict[str, Any], new_text: str):
+        """Called when committing translation from the floating canvas in-place editor."""
+        block_data["translation"] = new_text
+        self._on_block_updated_from_inspector(block_data)
+        self._re_render_current_page()
+        self.toast.show_message("气泡译文已更新并即时重绘", "success", duration_ms=1200)
+
+    def _cancel_batch(self):
+        """Cancels running batch worker and dismisses batch pill."""
+        if self.active_batch_worker and self.active_batch_worker.isRunning():
+            self.active_batch_worker.cancel()
+        if hasattr(self, "batch_pill"):
+            self.batch_pill.hide()
+        self.status_label.setText("批处理已取消")
+        self.toast.show_message("批处理任务已取消", "info")
 
     def _on_page_selected(self, item_data: Dict[str, Any]):
         path = item_data.get("path")
@@ -585,6 +710,18 @@ class MainWindow(QMainWindow):
                     self.status_page_label.setText(f"PAGE: {fname}")
                 if hasattr(self, "status_bubble_label"):
                     self.status_bubble_label.setText(f"{len(blocks)} BUBBLES")
+
+                # Update HUD pager info
+                if hasattr(self, "page_list") and self.page_list.items_data and hasattr(self.canvas_view, "hud"):
+                    curr_idx = -1
+                    for idx, it in enumerate(self.page_list.items_data):
+                        if it.get("path") == path:
+                            curr_idx = idx
+                            break
+                    if curr_idx >= 0:
+                        self.canvas_view.hud.set_page_info(curr_idx + 1, len(self.page_list.items_data))
+                    else:
+                        self.canvas_view.hud.set_page_info(0, len(self.page_list.items_data))
 
     def _on_zoom_changed(self, zoom: float):
         """Updates zoom percentage chip on status bar and status label."""
@@ -1050,6 +1187,8 @@ class MainWindow(QMainWindow):
         self.drop_zone.set_compact(False)
         self.current_image_data = None
         self.canvas_view.set_data(None)
+        if hasattr(self.canvas_view, "hud"):
+            self.canvas_view.hud.set_page_info(0, 0)
         self.inspector_panel.set_blocks([])
         self.status_label.setText("就绪 | 页面队列已清空")
 
@@ -1468,6 +1607,8 @@ class MainWindow(QMainWindow):
         """Launches BatchWorker QThread for chapter queue."""
         if self.active_batch_worker and self.active_batch_worker.isRunning():
             self.active_batch_worker.cancel()
+            if hasattr(self, "batch_pill"):
+                self.batch_pill.hide()
             self.status_label.setText("正在取消批处理任务...")
             self.batch_toolbar_btn.setText("批量翻译")
             if hasattr(self, "retranslate_toolbar_btn"):
@@ -1485,6 +1626,9 @@ class MainWindow(QMainWindow):
 
         self.progress_bar.show()
         self.progress_bar.setValue(0)
+        if hasattr(self, "batch_pill"):
+            self.batch_pill.show()
+            self.batch_pill.update_progress(0, len(items), "准备中...")
         self.batch_toolbar_btn.setText("取消批处理")
         if hasattr(self, "retranslate_toolbar_btn"):
             self.retranslate_toolbar_btn.setText("取消批处理")
@@ -1550,6 +1694,8 @@ class MainWindow(QMainWindow):
         overall = int(((cur - 1) / total) * 100 + (pct / total))
         self.progress_bar.setValue(overall)
         self.status_label.setText(f"批处理 ({cur}/{total}): {filename} - {msg}")
+        if hasattr(self, "batch_pill"):
+            self.batch_pill.update_progress(cur, total, f"{filename} - {msg}")
 
     def _on_batch_item_completed(self, image_id: str, result: Dict[str, Any]):
         self.page_list.update_item_status(image_id, "completed", "已完成")
@@ -1563,6 +1709,8 @@ class MainWindow(QMainWindow):
 
     def _on_batch_finished(self, success_count: int, fail_count: int):
         self.progress_bar.hide()
+        if hasattr(self, "batch_pill"):
+            self.batch_pill.show_finished(success_count, fail_count)
         self.batch_toolbar_btn.setText("批量翻译")
         if hasattr(self, "retranslate_toolbar_btn"):
             self.retranslate_toolbar_btn.setText("全部重新翻译")
