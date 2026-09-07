@@ -117,8 +117,8 @@ def test_prompt_templates_auto_detect_and_adult_manga():
     sys_prompt_auto = PromptTemplates.build_text_system_prompt("自动识别", "简体中文")
     assert "automatically detecting the source language" in sys_prompt_auto
     assert "Language Auto-Detection" in sys_prompt_auto
-    assert "NO CENSORSHIP" in sys_prompt_auto
-    assert "Sensual Onomatopoeia" in sys_prompt_auto
+    assert "LOCALIZATION PRINCIPLES" in sys_prompt_auto
+    assert "Expressive Onomatopoeia" in sys_prompt_auto
 
     user_msg_auto = PromptTemplates.build_text_user_message(
         [TranslationBlock(id="b1", original_text="あん…っ…はぁ")],

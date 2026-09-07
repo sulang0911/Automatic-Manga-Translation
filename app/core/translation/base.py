@@ -56,7 +56,9 @@ class TranslationError(Exception):
         retryable: bool = False,
         suggested_action: str = ""
     ):
-        super().__init__(message)
+        display_msg = f"{message}\n👉 建议: {suggested_action}" if suggested_action else message
+        super().__init__(display_msg)
+        self.raw_message = message
         self.provider = provider
         self.status_code = status_code
         self.retryable = retryable

@@ -120,6 +120,15 @@ def execute_http_request_with_retry(
                 continue
 
             # Other 4xx Errors (e.g. 400 Bad Request)
+            err_lower = resp.text.lower()
+            if resp.status_code == 400 and any(m in err_lower for m in ["moderation", "flagged", "safety", "content policy", "filter"]):
+                raise TranslationError(
+                    f"内容被安全风控拦截 (HTTP 400): {resp.text}",
+                    provider=provider_name,
+                    status_code=resp.status_code,
+                    suggested_action="请求被 OpenAI/服务商安全审查模型拦截（可能包含敏感/成人对话）。建议切换为 DeepSeek 或在自定义设置中切换为本地/无审核模型端点。"
+                )
+
             raise TranslationError(
                 f"请求错误 (HTTP {resp.status_code}): {resp.text}",
                 provider=provider_name,
