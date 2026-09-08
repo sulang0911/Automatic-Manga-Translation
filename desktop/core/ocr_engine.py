@@ -138,7 +138,7 @@ def ensemble_recognize_text(
     if t1 == t2:
         return t1, min(1.0, max(float(conf_pri), float(conf_sec)) + 0.05)
 
-    is_japanese = any(w in str(target_lang).lower() for w in ["japan", "ja"])
+    is_japanese = any(w in str(target_lang).lower() for w in ["japan", "ja", "auto", "自动识别"])
     is_chinese = any(w in str(target_lang).lower() for w in ["ch", "chinese", "zh"])
     is_english = any(w in str(target_lang).lower() for w in ["en", "eng", "english"])
 
@@ -147,23 +147,32 @@ def ensemble_recognize_text(
 
     cjk_cnt1 = sum(1 for c in t1 if is_cjk(c))
     cjk_cnt2 = sum(1 for c in t2 if is_cjk(c))
-    latin_letters_cnt1 = sum(1 for c in t1 if ('a' <= c <= 'z' or 'A' <= c <= 'Z'))
+    latin_letters_cnt1 = sum(1 for c in t1 if ('a' <= c <= 'z' or 'A' <= c <= 'Z' or '\uff21' <= c <= '\uff3a' or '\uff41' <= c <= '\uff5a'))
     latin_letters_cnt2 = sum(1 for c in t2 if ('a' <= c <= 'z' or 'A' <= c <= 'Z'))
     alphanumeric_cnt1 = sum(1 for c in t1 if (c.isalnum() or c in ".,!?'\"-()") and not is_cjk(c))
     alphanumeric_cnt2 = sum(1 for c in t2 if (c.isalnum() or c in ".,!?'\"-()") and not is_cjk(c))
 
-    # Case 1: Alphanumeric protection against Manga-OCR Japanese kana hallucination
+    import re
+    words_sec = re.findall(r'[a-zA-Z]{2,}', t2)
+    has_substantial_english = (len(words_sec) >= 2 or (len(words_sec) >= 1 and latin_letters_cnt2 >= 4))
+    is_pri_repetitive = len(t1) >= 15 and len(set(t1)) <= 3
+
+    # Case 1: Alphanumeric & English protection against Manga-OCR Japanese kana hallucination
     # e.g., t1="アリス(19)" or "フレンドA" or "ハハ" when original comic text is pure English "Chris (19)" or "Friend A" or "Haha"
-    # Secondary recognizer detects clean English/numbers with 0 CJK characters:
-    if latin_letters_cnt2 >= 2 and cjk_cnt2 == 0 and conf_sec >= 0.75:
-        # If primary has no CJK at all:
-        if cjk_cnt1 == 0:
+    # Or English chapter banners / game stats where Manga-OCR outputs kana hallucination or repetitive loops
+    if latin_letters_cnt2 >= 2 and cjk_cnt2 == 0 and conf_sec >= 0.20:
+        # 1a. Primary has NO CJK at all (or is repetitive looping hallucination)
+        if cjk_cnt1 == 0 or is_pri_repetitive:
             return t2, float(conf_sec)
-        # If primary mixed kana with alphanumeric (e.g. "アリス(19)" having "(19)", or "フレンドA" having "A"):
-        if alphanumeric_cnt1 >= 1:
+        # 1b. High confidence secondary English (>= 0.75)
+        if conf_sec >= 0.75:
+            if alphanumeric_cnt1 >= 1 or conf_sec >= conf_pri or latin_letters_cnt2 >= 4:
+                return t2, float(conf_sec)
+        # 1c. Primary contains latin/alphanumeric noise mixed with kana (e.g. 'Sersand' or '(19)')
+        if latin_letters_cnt1 >= 3 or alphanumeric_cnt1 >= 3:
             return t2, float(conf_sec)
-        # If secondary is clearly a known English word or has higher confidence than primary:
-        if conf_sec >= conf_pri or latin_letters_cnt2 >= 4:
+        # 1d. Secondary has substantial English words and far outweighs CJK (e.g. status screens / banners)
+        if has_substantial_english and (latin_letters_cnt2 >= 10 or latin_letters_cnt2 >= cjk_cnt1 * 2.5):
             return t2, float(conf_sec)
 
     # Case 2: Genuine CJK protection for Japanese/Chinese manga
@@ -175,7 +184,7 @@ def ensemble_recognize_text(
 
     # Case 3: English target language
     if is_english:
-        if latin_letters_cnt2 > latin_letters_cnt1 and conf_sec >= 0.4:
+        if latin_letters_cnt2 > latin_letters_cnt1 and conf_sec >= 0.2:
             return t2, float(conf_sec)
         if latin_letters_cnt1 >= latin_letters_cnt2:
             return t1, float(conf_pri)
@@ -498,7 +507,7 @@ class OCREngine:
         if any(w in str(self.lang).lower() for w in ["en", "eng", "english", "latin"]):
             return True, "en"
 
-        reader = self._get_easyocr_reader(is_english=True)
+        reader = self._get_easyocr_reader(is_english=False)
         sampled_texts = []
 
         if candidate_boxes:
@@ -510,7 +519,7 @@ class OCREngine:
             for b in sorted_boxes[:4]:
                 w_b = b.get("xmax", 0) - b.get("xmin", 0)
                 h_b = b.get("ymax", 0) - b.get("ymin", 0)
-                if w_b >= 30 and h_b >= 20:
+                if (w_b >= 25 and h_b >= 10) or (w_b >= 10 and h_b >= 25):
                     bx1 = max(0, min(b["xmin"], image.shape[1] - 1))
                     by1 = max(0, min(b["ymin"], image.shape[0] - 1))
                     bx2 = max(bx1 + 1, min(b["xmax"], image.shape[1]))
@@ -551,9 +560,11 @@ class OCREngine:
         total_latin = sum(len(w) for w in latin_words)
         total_cjk = len(cjk_chars)
 
-        # Require substantial English evidence (multiple distinct words and characters)
-        if (len(distinct_words) >= 3 and total_latin >= 10 and total_latin > total_cjk * 2) or \
-           (len(distinct_words) >= 2 and total_latin >= 8 and total_cjk == 0 and len(latin_words) >= 3):
+        # Require substantial English evidence and no genuine CJK dialogue (<= 1 char for screentone noise)
+        if total_cjk <= 1 and (
+            (len(distinct_words) >= 3 and total_latin >= 10) or
+            (len(distinct_words) >= 2 and total_latin >= 8 and len(latin_words) >= 3)
+        ):
             return True, "en"
 
         return False, str(self.lang)
@@ -615,7 +626,8 @@ class OCREngine:
 
         h_img, w_img = image.shape[:2]
         raw_boxes = []
-        page_is_english = any(w in str(self.lang).lower() for w in ["en", "eng", "english", "latin"])
+        is_pure_english = any(w in str(self.lang).lower() for w in ["en", "eng", "english", "latin"])
+        page_is_english = is_pure_english
 
         if progress_callback:
             progress_callback(10, "正在加载 OCR 识别引擎...")
@@ -662,13 +674,15 @@ class OCREngine:
 
             # If CTD produced candidate boxes, perform smart recognition
             if raw_boxes:
-                page_is_english, _ = self.detect_page_language(image, raw_boxes)
+                page_is_english = False
+                if is_pure_english:
+                    page_is_english = True
+                else:
+                    page_is_english, _ = self.detect_page_language(image, raw_boxes)
 
                 if page_is_english:
                     if progress_callback:
-                        progress_callback(55, "探知为英文漫画，自动切换 EasyOCR 准确提取英文 (硬禁用 Manga-OCR)...")
-                    # Hard-disable Manga-OCR to strictly eliminate Japanese kana/hiragana/katakana hallucinations
-                    self._manga_ocr = None
+                        progress_callback(55, "使用 EasyOCR 提取纯英文漫画内容...")
                     for box in raw_boxes:
                         bx1 = max(0, min(box["xmin"], w_img - 1))
                         by1 = max(0, min(box["ymin"], h_img - 1))
@@ -685,8 +699,12 @@ class OCREngine:
                     if self._manga_ocr is None:
                         from app.core.ocr.manga_ocr_wrapper import get_manga_ocr
                         self._manga_ocr = get_manga_ocr(force_cpu=not self.use_gpu)
+
+                    use_dual_engine = self.enable_ensemble_recognition
                     if progress_callback:
-                        progress_callback(55, "正在使用 Manga-OCR 高精度识别日文...")
+                        msg = "正在使用 Manga-OCR 与 EasyOCR 双引擎协同识别..." if use_dual_engine else "正在使用 Manga-OCR 高精度识别日文..."
+                        progress_callback(55, msg)
+
                     for box in raw_boxes:
                         bx1 = max(0, min(box["xmin"], w_img - 1))
                         by1 = max(0, min(box["ymin"], h_img - 1))
@@ -698,18 +716,22 @@ class OCREngine:
                         txt_pri = self._manga_ocr.recognize_crop(crop, angle=box.get("angle", 0.0))
                         conf_pri = max(float(box.get("conf", 0.8)), 0.95) if txt_pri else 0.0
 
-                        if self.enable_ensemble_recognition:
+                        # Check if box needs dual-engine collaboration (English titles/stats or hallucination)
+                        cjk_in_pri = sum(1 for c in txt_pri if ('\u4e00' <= c <= '\u9fff') or ('\u3040' <= c <= '\u309f') or ('\u30a0' <= c <= '\u30ff'))
+                        latin_in_pri = sum(1 for c in txt_pri if ('a' <= c <= 'z' or 'A' <= c <= 'Z' or '\uff21' <= c <= '\uff3a' or '\uff41' <= c <= '\uff5a'))
+                        is_repetitive = len(txt_pri) >= 15 and len(set(txt_pri)) <= 3
+                        is_wide_banner = ((bx2 - bx1) / max(1, (by2 - by1)) >= 2.5 and (bx2 - bx1) >= 60)
+                        need_sec = use_dual_engine or cjk_in_pri == 0 or latin_in_pri >= 2 or is_repetitive or is_wide_banner
+
+                        if need_sec and crop.size > 0:
                             txt_sec = box.get("sec_text", "")
                             conf_sec = float(box.get("sec_conf", 0.0))
-                            if not txt_sec and crop.size > 0:
+                            if not txt_sec:
                                 try:
-                                    self._init_easyocr(is_english=False)
-                                    rgb_c = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-                                    sec_res = self._easyocr_reader.readtext(rgb_c)
-                                    if sec_res:
-                                        txt_sec, conf_sec = sort_easyocr_fragments_2d(sec_res)
+                                    txt_sec, conf_sec = self._read_block_easyocr(crop, angle=box.get("angle", 0.0), is_english=True)
                                 except Exception:
-                                    pass
+                                    txt_sec, conf_sec = "", 0.0
+
                             final_t, final_c = ensemble_recognize_text(
                                 txt_pri, conf_pri, txt_sec, conf_sec, target_lang=self.lang
                             )
@@ -863,7 +885,7 @@ class OCREngine:
                     print(f"[-] EasyOCR 回退识别亦发生异常: {e_easy}")
 
         # Decoupled recognition / Recognition ensemble: Manga-OCR for Paddle Japanese text crops
-        if not page_is_english and (self.engine_type == "paddle_manga" or (self.engine_type == "paddle" and self.enable_ensemble_recognition)) and any(w in str(self.lang).lower() for w in ["japan", "ja"]):
+        if not is_pure_english and (self.engine_type == "paddle_manga" or (self.engine_type == "paddle" and self.enable_ensemble_recognition)) and any(w in str(self.lang).lower() for w in ["japan", "ja"]):
             try:
                 if self._manga_ocr is None:
                     from app.core.ocr.manga_ocr_wrapper import get_manga_ocr
@@ -969,9 +991,13 @@ class OCREngine:
 
         # 4. Resolve reading order mode based on language / comic format
         eff_direction = reading_direction or getattr(self, "reading_direction", None)
+        has_cjk_boxes = any(
+            any(('\u4e00' <= c <= '\u9fff') or ('\u3040' <= c <= '\u309f') or ('\u30a0' <= c <= '\u30ff') for c in str(b.get("text", "")))
+            for b in raw_boxes
+        )
         if eff_direction:
             resolved_mode = eff_direction
-        elif page_is_english or any(w in str(self.lang).lower() for w in ["en", "eng", "english", "latin"]):
+        elif is_pure_english or (not has_cjk_boxes and any(w in str(self.lang).lower() for w in ["en", "eng", "english", "latin"])):
             resolved_mode = ReadingOrderMode.WESTERN_LTR.value
         elif (h_img / max(1, w_img)) >= 2.2:
             resolved_mode = ReadingOrderMode.WEBTOON_TTB.value

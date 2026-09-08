@@ -253,3 +253,108 @@ class TestOCREngineEnsemblePipeline:
         # Arbitrated to Chris (19) instead of Kana hallucination
         assert results[0]["original_text"] == "Chris (19)"
 
+    def test_mixed_page_dual_engine_collaboration(self):
+        """
+        Tests that when a manga page contains BOTH an English chapter banner
+        and Japanese speech bubbles, Manga-OCR is NOT disabled;
+        both engines collaborate and assign the proper text to each box.
+        """
+        from unittest.mock import MagicMock
+        eng = OCREngine(
+            engine_type="ctd",
+            use_gpu=False,
+            lang="japan",
+            enable_ensemble_detection=False,
+            enable_ensemble_recognition=False
+        )
+
+        # 2 boxes: Box 0 is an English title banner, Box 1 is a Japanese dialogue bubble
+        mock_ctd = MagicMock()
+        mock_ctd.detect.return_value = ([
+            {
+                "xmin": 10, "ymin": 10, "xmax": 280, "ymax": 50,
+                "text": "temp1", "conf": 0.90,
+                "polygon": [[10, 10], [280, 10], [280, 50], [10, 50]],
+                "angle": 0.0
+            },
+            {
+                "xmin": 40, "ymin": 100, "xmax": 120, "ymax": 220,
+                "text": "temp2", "conf": 0.90,
+                "polygon": [[40, 100], [120, 100], [120, 220], [40, 220]],
+                "angle": 0.0
+            }
+        ], None)
+        eng._ctd_detector = mock_ctd
+
+        # Manga-OCR hallucinates kana on Box 0 banner, but correctly reads Box 1 Japanese dialogue
+        mock_manga = MagicMock()
+        mock_manga.recognize_crop.side_effect = [
+            "これからの「Ｓｅｒｓａｎｄ」は、Ｄｅｒｃｅｒｃｅｒ」",
+            "スカイリム国"
+        ]
+        eng._manga_ocr = mock_manga
+
+        # EasyOCR correctly recognizes English on Box 0 banner, but produces noise on Box 1 Japanese
+        mock_easyocr = MagicMock()
+        def mock_readtext(rgb_c):
+            # Box 0 is wider (280 - 10 = 270)
+            if rgb_c.shape[1] > 150:
+                return [([[0, 0], [270, 0], [270, 40], [0, 40]], "G-WORLD FOR 'SKYRIM DEVIOUS DEVICE' LIKE", 0.55)]
+            return [([[0, 0], [80, 0], [80, 120], [0, 120]], "スカイリム", 0.70)]
+        mock_easyocr.readtext.side_effect = mock_readtext
+        eng._easyocr_reader = mock_easyocr
+
+        dummy_img = np.full((300, 300, 3), 255, dtype=np.uint8)
+        results = eng.detect_and_recognize(dummy_img)
+
+        assert len(results) == 2
+        # Banner correctly recognized as English via EasyOCR
+        assert "G-WORLD FOR 'SKYRIM DEVIOUS DEVICE' LIKE" in [b["original_text"] for b in results]
+        # Dialogue bubble correctly recognized as Japanese via Manga-OCR
+        assert "スカイリム国" in [b["original_text"] for b in results]
+
+    def test_mixed_page_preserves_manga_rtl_reading_order(self):
+        """
+        Tests that having English titles or stats does NOT invert Japanese RTL reading order.
+        """
+        from unittest.mock import MagicMock
+        from desktop.core.ocr_engine import ReadingOrderMode
+        eng = OCREngine(
+            engine_type="ctd",
+            use_gpu=False,
+            lang="japan",
+            enable_ensemble_detection=False,
+            enable_ensemble_recognition=False
+        )
+
+        # Right box: Japanese text; Left box: English label
+        mock_ctd = MagicMock()
+        mock_ctd.detect.return_value = ([
+            {
+                "xmin": 200, "ymin": 50, "xmax": 280, "ymax": 150,
+                "text": "右側のセリフ", "conf": 0.95,
+                "polygon": [[200, 50], [280, 50], [280, 150], [200, 150]],
+                "angle": 0.0
+            },
+            {
+                "xmin": 20, "ymin": 50, "xmax": 100, "ymax": 100,
+                "text": "CHAPTER 1", "conf": 0.90,
+                "polygon": [[20, 50], [100, 50], [100, 100], [20, 100]],
+                "angle": 0.0
+            }
+        ], None)
+        eng._ctd_detector = mock_ctd
+
+        mock_manga = MagicMock()
+        mock_manga.recognize_crop.side_effect = ["右側のセリフ", "CHAPTER 1"]
+        eng._manga_ocr = mock_manga
+
+        dummy_img = np.full((300, 300, 3), 255, dtype=np.uint8)
+        results = eng.detect_and_recognize(dummy_img)
+
+        # Manga RTL: Right bubble (x=200..280) should come FIRST before Left box (x=20..100)
+        assert len(results) == 2
+        assert results[0]["original_text"] == "右側のセリフ"
+        assert results[1]["original_text"] == "CHAPTER 1"
+
+
