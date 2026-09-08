@@ -335,3 +335,60 @@ def test_bubble_drag_moves_rendered_text(qapp, tmp_path):
 
     win.close()
 
+
+def test_main_window_keyboard_shortcuts_and_view_mode_switching(qapp):
+    win = MainWindow()
+    win.show()
+
+    # 1. Test 1-5 view mode switching
+    win._switch_view_mode_by_index(1)  # split_slider
+    assert win.canvas_view.view_mode == "split_slider"
+    assert win.slider_bar.isVisible()
+    assert win._mode_buttons["split_slider"].isChecked()
+
+    win._switch_view_mode_by_index(2)  # side_by_side
+    assert win.canvas_view.view_mode == "side_by_side"
+    assert win.slider_bar.isHidden()
+    assert win._mode_buttons["side_by_side"].isChecked()
+
+    win._switch_view_mode_by_index(0)  # translated
+    assert win.canvas_view.view_mode == "translated"
+    assert win._mode_buttons["translated"].isChecked()
+
+    # 2. Test canvas keyPressEvent 1-5 switching
+    from PyQt6.QtGui import QKeyEvent
+    from PyQt6.QtCore import QEvent
+    ev_key2 = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_2, Qt.KeyboardModifier.NoModifier, "2")
+    win.canvas_view.keyPressEvent(ev_key2)
+    assert win.canvas_view.view_mode == "split_slider"
+
+    # 3. Test focus protection
+    from PyQt6.QtWidgets import QLineEdit
+    edit = QLineEdit(win)
+    edit.show()
+    qapp.setActiveWindow(win)
+    edit.setFocus()
+    assert win._is_text_input_focused() is True
+
+    # When text input is focused, _switch_view_mode_by_index should do nothing
+    win._switch_view_mode_by_index(3)
+    assert win.canvas_view.view_mode == "split_slider"  # unchanged!
+
+    # 4. Test zoom reset and fit
+    win.canvas_view.scale(2.0, 2.0)
+    win.canvas_view.reset_zoom()
+    assert abs(win.canvas_view.zoom_factor - 1.0) < 1e-4
+
+    win.close()
+
+
+def test_translation_block_from_dict_aliases():
+    from app.core.models import TranslationBlock
+    tb1 = TranslationBlock.from_dict({"translation": "译文测试", "raw_text": "原文测试"})
+    assert tb1.translated_text == "译文测试"
+    assert tb1.original_text == "原文测试"
+
+    tb2 = TranslationBlock.from_dict({"text": "原文二"})
+    assert tb2.original_text == "原文二"
+
+

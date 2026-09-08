@@ -16,7 +16,7 @@ DEFAULT_SYSTEM_PROMPT = (
 
 class TranslationEngine:
     def __init__(self, provider: str = "openai", api_key: str = "1", model: str = "richardyoung/qwen2.5-7b-instruct-abliterated:Q5_K_M",
-                 custom_endpoint: str = "http://127.0.0.1:11434/v1", target_lang: str = "简体中文",
+                 custom_endpoint: str = "", target_lang: str = "简体中文",
                  source_lang: str = "自动识别", temperature: float = 0.2, system_prompt: str = ""):
         self.provider = provider
         self.api_key = api_key
@@ -46,7 +46,7 @@ class TranslationEngine:
                 url = f"{self.custom_endpoint.rstrip('/')}/chat/completions"
             headers["Authorization"] = f"Bearer {self.api_key}"
         else: # custom
-            endpoint = self.custom_endpoint.rstrip('/')
+            endpoint = (self.custom_endpoint or "http://127.0.0.1:11434/v1").rstrip('/')
             if not endpoint.endswith("/chat/completions"):
                 url = f"{endpoint}/chat/completions"
             else:

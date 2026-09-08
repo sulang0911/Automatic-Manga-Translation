@@ -353,9 +353,9 @@ def align_translations_to_blocks(parsed_data: Any, blocks: List[TranslationBlock
                     matched_candidates.add(c_idx)
                     break
 
-    # Tier 4b: Sequential alignment for remaining unmatched
+    # Tier 4b: Sequential alignment for remaining unmatched candidates without explicit mismatched ID
     remaining_b_indices = [i for i in range(len(blocks)) if i not in matched_blocks]
-    remaining_c_indices = [i for i in range(len(candidates)) if i not in matched_candidates and candidates[i]["trans_text"]]
+    remaining_c_indices = [i for i in range(len(candidates)) if i not in matched_candidates and candidates[i]["trans_text"] and not candidates[i]["raw_id"]]
     for b_idx, c_idx in zip(remaining_b_indices, remaining_c_indices):
         assignments[b_idx] = candidates[c_idx]
         matched_blocks.add(b_idx)

@@ -239,6 +239,14 @@ class TranslationBlock:
     def from_dict(cls, data: Dict[str, Any]) -> TranslationBlock:
         valid_fields = {f for f in cls.__dataclass_fields__}
         filtered = {k: v for k, v in data.items() if k in valid_fields}
+        if "translated_text" not in filtered or not filtered["translated_text"]:
+            if "translation" in data and data["translation"]:
+                filtered["translated_text"] = data["translation"]
+        if "original_text" not in filtered or not filtered["original_text"]:
+            if "raw_text" in data and data["raw_text"]:
+                filtered["original_text"] = data["raw_text"]
+            elif "text" in data and data["text"]:
+                filtered["original_text"] = data["text"]
         return cls(**filtered)
 
 

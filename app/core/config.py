@@ -70,13 +70,19 @@ class AppConfig:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
+            "provider": self.llm.provider,
+            "api_key": self.llm.api_key,
+            "model": self.llm.model,
+            "custom_endpoint": self.llm.endpoint,
+            "target_lang": self.target_lang,
+            "source_lang": self.source_lang,
+            "temperature": self.llm.temperature,
+            "system_prompt": self.llm.system_prompt,
             "theme": self.theme,
             "llm": asdict(self.llm),
             "ocr": asdict(self.ocr),
             "inpaint": asdict(self.inpaint),
             "style": self.style.to_dict(),
-            "source_lang": self.source_lang,
-            "target_lang": self.target_lang,
             "cache_dir": self.cache_dir,
             "export_dir": self.export_dir,
             "auto_save_cache": self.auto_save_cache,
@@ -103,6 +109,23 @@ class AppConfig:
 
         if "llm" in data and isinstance(data["llm"], dict):
             cfg.llm = LLMConfig(**data["llm"])
+        # Support flat keys fallback if llm sub-dict was omitted or partial
+        if "provider" in data and ("llm" not in data or "provider" not in data.get("llm", {})):
+            cfg.llm.provider = data["provider"]
+        if "api_key" in data and ("llm" not in data or "api_key" not in data.get("llm", {})):
+            cfg.llm.api_key = data["api_key"]
+        if "model" in data and ("llm" not in data or "model" not in data.get("llm", {})):
+            cfg.llm.model = data["model"]
+        if "custom_endpoint" in data and ("llm" not in data or "endpoint" not in data.get("llm", {})):
+            cfg.llm.endpoint = data["custom_endpoint"]
+        if "system_prompt" in data and ("llm" not in data or "system_prompt" not in data.get("llm", {})):
+            cfg.llm.system_prompt = data["system_prompt"]
+        if "temperature" in data and ("llm" not in data or "temperature" not in data.get("llm", {})):
+            try:
+                cfg.llm.temperature = float(data["temperature"])
+            except Exception:
+                pass
+
         if "ocr" in data and isinstance(data["ocr"], dict):
             ocr_kwargs = {k: v for k, v in data["ocr"].items() if k in OCRConfig.__annotations__}
             cfg.ocr = OCRConfig(**ocr_kwargs)

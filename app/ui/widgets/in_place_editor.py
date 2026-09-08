@@ -273,10 +273,10 @@ class InPlaceBubbleEditor(QFrame):
         """Loads bubble block data into editor and focuses input."""
         self.block_data = block_data
         self.title_lbl.setText(f"💬 气泡 #{block_idx:02d}")
-        ocr_text = block_data.get("raw_text") or block_data.get("text") or "(无)"
+        ocr_text = block_data.get("original_text") or block_data.get("raw_text") or block_data.get("text") or "(无)"
         self.ocr_lbl.setText(f"原文: {ocr_text}")
 
-        trans_text = block_data.get("translation") or ""
+        trans_text = block_data.get("translated_text") or block_data.get("translation") or ""
         self.text_edit.setPlainText(trans_text)
         self.text_edit.selectAll()
         self.text_edit.setFocus()
@@ -286,6 +286,7 @@ class InPlaceBubbleEditor(QFrame):
             return
         new_text = self.text_edit.toPlainText().strip()
         self.block_data["translation"] = new_text
+        self.block_data["translated_text"] = new_text
         self.sig_commit_and_next.emit(self.block_data, new_text)
 
     def close_editor(self):

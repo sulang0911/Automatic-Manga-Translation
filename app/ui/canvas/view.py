@@ -713,6 +713,26 @@ class MangaCanvasView(QGraphicsView):
             self._select_next_bubble(forward=False)
             event.accept()
             return
+        elif event.key() == Qt.Key.Key_1:
+            self.set_view_mode("translated")
+            event.accept()
+            return
+        elif event.key() == Qt.Key.Key_2:
+            self.set_view_mode("split_slider")
+            event.accept()
+            return
+        elif event.key() == Qt.Key.Key_3:
+            self.set_view_mode("side_by_side")
+            event.accept()
+            return
+        elif event.key() == Qt.Key.Key_4:
+            self.set_view_mode("original")
+            event.accept()
+            return
+        elif event.key() == Qt.Key.Key_5:
+            self.set_view_mode("inpainted")
+            event.accept()
+            return
         elif event.key() in (Qt.Key.Key_Question, Qt.Key.Key_F1):
             self.sig_shortcuts_requested.emit()
             event.accept()

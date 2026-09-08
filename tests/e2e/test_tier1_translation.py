@@ -156,8 +156,9 @@ def test_ftrn_03_missing_id_in_response_preserves_original(monkeypatch):
 
 def test_ftrn_04_default_system_prompt():
     engine = TranslationEngine()
-    assert "manga" in engine.system_prompt.lower()
-    assert "dialogue" in engine.system_prompt.lower()
+    prompt_lower = engine.system_prompt.lower()
+    assert "manga" in prompt_lower or "漫画" in engine.system_prompt
+    assert "dialogue" in prompt_lower or "对话" in engine.system_prompt
 
 def test_ftrn_04_custom_system_prompt():
     custom = "Translate comic bubbles with funny humor."

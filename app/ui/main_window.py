@@ -97,6 +97,7 @@ class MainWindow(QMainWindow):
         # 1. Canvas Viewport (pre-instantiated for toolbar signal binding)
         self.canvas_view = MangaCanvasView(self)
         self.canvas_view.sig_zoom_changed.connect(self._on_zoom_changed)
+        self.canvas_view.sig_view_mode_changed.connect(self._sync_view_mode_buttons)
         self.canvas_view.sig_split_changed.connect(self._on_split_slider_moved_from_canvas)
         self.canvas_view.sig_bubble_selected.connect(self._on_bubble_selected_from_canvas)
         self.canvas_view.sig_bubble_changed.connect(self._on_bubble_moving)
@@ -473,23 +474,57 @@ class MainWindow(QMainWindow):
 
         return status_bar
 
+    def _is_text_input_focused(self) -> bool:
+        """Returns True if user is currently typing in an editable text input widget."""
+        focus_w = QApplication.focusWidget()
+        return isinstance(focus_w, (QTextEdit, QPlainTextEdit, QLineEdit))
+
     def _init_shortcuts(self):
         """Keyboard accelerators."""
         QShortcut(QKeySequence("Ctrl+="), self, self.canvas_view.zoom_in)
         QShortcut(QKeySequence("Ctrl+-"), self, self.canvas_view.zoom_out)
-        QShortcut(QKeySequence("Ctrl+0"), self, self.canvas_view.reset_zoom)
+        QShortcut(QKeySequence("Ctrl+0"), self, self.canvas_view.fit_in_view)
+        QShortcut(QKeySequence("Ctrl+1"), self, self.canvas_view.reset_zoom)
         QShortcut(QKeySequence("Ctrl+F"), self, self.canvas_view.fit_in_view)
         QShortcut(QKeySequence("Ctrl+B"), self, self.toggle_sidebar)
-        QShortcut(QKeySequence("R"), self, self.canvas_view.toggle_draw_tool)
+        QShortcut(QKeySequence("R"), self, self._handle_draw_tool_shortcut)
         QShortcut(QKeySequence("Ctrl+Z"), self, self._handle_undo_shortcut)
         QShortcut(QKeySequence("Ctrl+Y"), self, self._handle_redo_shortcut)
         QShortcut(QKeySequence("Ctrl+Shift+Z"), self, self._handle_redo_shortcut)
-        QShortcut(QKeySequence("?"), self, self._open_shortcuts_dialog)
+        QShortcut(QKeySequence("?"), self, self._handle_shortcuts_dialog_shortcut)
         QShortcut(QKeySequence("F1"), self, self._open_shortcuts_dialog)
-        QShortcut(QKeySequence("A"), self, lambda: self._navigate_page(-1))
-        QShortcut(QKeySequence("D"), self, lambda: self._navigate_page(1))
+        QShortcut(QKeySequence("1"), self, lambda: self._switch_view_mode_by_index(0))
+        QShortcut(QKeySequence("2"), self, lambda: self._switch_view_mode_by_index(1))
+        QShortcut(QKeySequence("3"), self, lambda: self._switch_view_mode_by_index(2))
+        QShortcut(QKeySequence("4"), self, lambda: self._switch_view_mode_by_index(3))
+        QShortcut(QKeySequence("5"), self, lambda: self._switch_view_mode_by_index(4))
+        QShortcut(QKeySequence("A"), self, lambda: self._navigate_page_shortcut(-1))
+        QShortcut(QKeySequence("D"), self, lambda: self._navigate_page_shortcut(1))
         QShortcut(QKeySequence(Qt.Key.Key_PageUp), self, lambda: self._navigate_page(-1))
         QShortcut(QKeySequence(Qt.Key.Key_PageDown), self, lambda: self._navigate_page(1))
+
+    def _switch_view_mode_by_index(self, index: int):
+        if self._is_text_input_focused():
+            return
+        btn = self.btn_group.button(index)
+        if btn:
+            btn.setChecked(True)
+            self._on_segment_button_clicked(index)
+
+    def _navigate_page_shortcut(self, delta: int):
+        if self._is_text_input_focused():
+            return
+        self._navigate_page(delta)
+
+    def _handle_draw_tool_shortcut(self):
+        if self._is_text_input_focused():
+            return
+        self.canvas_view.toggle_draw_tool()
+
+    def _handle_shortcuts_dialog_shortcut(self):
+        if self._is_text_input_focused():
+            return
+        self._open_shortcuts_dialog()
 
     # -------------------------------------------------------------------------
     # Event Handlers & View Synchronization
@@ -508,6 +543,18 @@ class MainWindow(QMainWindow):
     def _on_view_mode_changed(self, mode: str):
         """Switches view mode and manages split-slider bar visibility."""
         self.canvas_view.set_view_mode(mode)
+        if mode == "split_slider":
+            self.slider_bar.show()
+        else:
+            self.slider_bar.hide()
+
+    def _sync_view_mode_buttons(self, mode: str):
+        """Syncs segmented buttons when view mode is changed from canvas or shortcuts."""
+        btn = self._mode_buttons.get(mode)
+        if btn and not btn.isChecked():
+            self.btn_group.blockSignals(True)
+            btn.setChecked(True)
+            self.btn_group.blockSignals(False)
         if mode == "split_slider":
             self.slider_bar.show()
         else:
@@ -646,6 +693,7 @@ class MainWindow(QMainWindow):
     def _on_canvas_commit_bubble_text(self, block_data: Dict[str, Any], new_text: str):
         """Called when committing translation from the floating canvas in-place editor."""
         block_data["translation"] = new_text
+        block_data["translated_text"] = new_text
         self._on_block_updated_from_inspector(block_data)
         self._re_render_current_page()
         self.toast.show_message("气泡译文已更新并即时重绘", "success", duration_ms=1200)
@@ -946,6 +994,10 @@ class MainWindow(QMainWindow):
             return
         if self._pending_inspector_snapshot is None:
             self._pending_inspector_snapshot = self._take_current_snapshot("修改气泡内容/样式")
+        if "translation" in block_data and "translated_text" not in block_data:
+            block_data["translated_text"] = block_data["translation"]
+        elif "translated_text" in block_data and "translation" not in block_data:
+            block_data["translation"] = block_data["translated_text"]
         target_id = str(block_data.get("id"))
         blocks = self.current_image_data.get("blocks", [])
         for idx, b in enumerate(blocks):
@@ -1559,8 +1611,8 @@ class MainWindow(QMainWindow):
             page_id = getattr(self.active_worker, "page_id", None) or getattr(self, "_active_page_id", None)
             if page_id and hasattr(self.page_list, "update_item_status"):
                 self.page_list.update_item_status(page_id, "queued", "等待中")
-            self.run_btn.setText("开始翻译")
-            self.run_btn.setIcon(get_icon("play", color="#FFFFFF", size=16))
+            self.run_btn.setText("翻译单页")
+            self.run_btn.setIcon(get_icon("play", color="#FFFFFF", size=13))
             return
 
         if self.current_image_data and "path" in self.current_image_data:
@@ -1632,8 +1684,8 @@ class MainWindow(QMainWindow):
             self.canvas_view.translated_cv = result_data
 
     def _on_pipeline_finished(self, result: Dict[str, Any]):
-        self.run_btn.setText("开始翻译")
-        self.run_btn.setIcon(get_icon("play", color="#FFFFFF", size=16))
+        self.run_btn.setText("翻译单页")
+        self.run_btn.setIcon(get_icon("play", color="#FFFFFF", size=13))
         self.progress_bar.hide()
         self.status_label.setText("就绪 | 翻译处理完成")
 
@@ -1667,8 +1719,8 @@ class MainWindow(QMainWindow):
         self.toast.show_message("漫画翻译已成功完成！", "success")
 
     def _on_pipeline_error(self, err_msg: str):
-        self.run_btn.setText("开始翻译")
-        self.run_btn.setIcon(get_icon("play", color="#FFFFFF", size=16))
+        self.run_btn.setText("翻译单页")
+        self.run_btn.setIcon(get_icon("play", color="#FFFFFF", size=13))
         self.progress_bar.hide()
         self.status_label.setText(f"错误: {err_msg}")
         page_id = getattr(self.active_worker, "page_id", None) or getattr(self, "_active_page_id", None) or (self.current_image_data.get("id") if self.current_image_data else None)

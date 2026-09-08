@@ -148,6 +148,8 @@ class SplitSliderItem(QGraphicsObject):
     def mouseReleaseEvent(self, event: QGraphicsSceneMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton and self._is_dragging:
             self._is_dragging = False
+            if not self._is_near_split(event.pos()):
+                self.unsetCursor()
             event.accept()
         else:
             super().mouseReleaseEvent(event)
