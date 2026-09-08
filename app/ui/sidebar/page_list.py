@@ -243,6 +243,7 @@ class PageListWidget(QWidget):
         self.setAcceptDrops(True)
         self.items_data: List[Dict[str, Any]] = []
         self._item_widgets: Dict[str, PageItemWidget] = {}
+        self.last_removed_row: int = -1
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -290,6 +291,7 @@ class PageListWidget(QWidget):
         self.list_widget.itemDoubleClicked.connect(self._on_item_double_clicked)
         self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
+        self.list_widget.installEventFilter(self)
         layout.addWidget(self.list_widget, 1)
 
         # Batch Translate Buttons (Pro Developer / Design Action Strip)
@@ -481,10 +483,22 @@ class PageListWidget(QWidget):
         if self.list_widget.count() > 0 and self.list_widget.currentRow() < 0:
             self.list_widget.setCurrentRow(0)
 
+    def eventFilter(self, watched, event):
+        if watched == self.list_widget and event.type() == event.Type.KeyPress:
+            if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+                curr_row = self.list_widget.currentRow()
+                if 0 <= curr_row < len(self.items_data):
+                    item_id = self.items_data[curr_row].get("id")
+                    if item_id:
+                        self.remove_item(item_id)
+                        return True
+        return super().eventFilter(watched, event)
+
     def remove_item(self, item_id: str):
         """Removes a page item by its unique ID."""
         for row in range(len(self.items_data)):
             if self.items_data[row]["id"] == item_id:
+                self.last_removed_row = row
                 self.items_data.pop(row)
                 self.list_widget.takeItem(row)
                 self._item_widgets.pop(item_id, None)
@@ -494,6 +508,7 @@ class PageListWidget(QWidget):
 
     def clear_all(self):
         """Clears all pages from queue."""
+        self.last_removed_row = -1
         self.items_data.clear()
         self._item_widgets.clear()
         self.list_widget.clear()

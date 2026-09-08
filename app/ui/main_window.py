@@ -479,6 +479,15 @@ class MainWindow(QMainWindow):
         focus_w = QApplication.focusWidget()
         return isinstance(focus_w, (QTextEdit, QPlainTextEdit, QLineEdit))
 
+    def _update_status_bubble_count(self, count: Optional[int] = None):
+        """Updates status bar bubble count chip."""
+        if not hasattr(self, "status_bubble_label"):
+            return
+        if count is None:
+            blocks = self.current_image_data.get("blocks", []) if self.current_image_data else []
+            count = len(blocks)
+        self.status_bubble_label.setText(f"{count} BUBBLES")
+
     def _init_shortcuts(self):
         """Keyboard accelerators."""
         QShortcut(QKeySequence("Ctrl+="), self, self.canvas_view.zoom_in)
@@ -635,7 +644,10 @@ class MainWindow(QMainWindow):
         if total == 0:
             self._on_page_list_cleared()
         elif self.current_image_data and self.current_image_data.get("id") == page_id:
-            self._navigate_page(0)
+            last_row = getattr(self.page_list, "last_removed_row", 0)
+            new_idx = max(0, min(total - 1, last_row))
+            self.page_list.list_widget.setCurrentRow(new_idx)
+            self._on_page_selected(self.page_list.items_data[new_idx])
         else:
             if hasattr(self.canvas_view, "hud"):
                 curr_path = self.current_image_data.get("path") if self.current_image_data else None
@@ -756,8 +768,7 @@ class MainWindow(QMainWindow):
                     self.breadcrumb_label.setToolTip(path)
                 if hasattr(self, "status_page_label"):
                     self.status_page_label.setText(f"PAGE: {fname}")
-                if hasattr(self, "status_bubble_label"):
-                    self.status_bubble_label.setText(f"{len(blocks)} BUBBLES")
+                self._update_status_bubble_count(len(blocks))
 
                 # Update HUD pager info
                 if hasattr(self, "page_list") and self.page_list.items_data and hasattr(self.canvas_view, "hud"):
@@ -852,6 +863,7 @@ class MainWindow(QMainWindow):
         self.inspector_panel.select_block_by_id(new_block["id"])
         self.inspector_panel.tab_widget.setCurrentIndex(0)
         self.inspector_panel.trans_text_edit.setFocus()
+        self._update_status_bubble_count(len(blocks))
 
         self.toast.show_message(f"已新建气泡 #{str(new_block['id'])[:4]}，可直接在右侧输入译文！", "success")
 
@@ -876,6 +888,7 @@ class MainWindow(QMainWindow):
         )
         self.inspector_panel.set_blocks(blocks)
         self.inspector_panel.select_block_by_id(new_block["id"])
+        self._update_status_bubble_count(len(blocks))
 
         self._start_block_ocr_translate(new_block)
 
@@ -935,6 +948,7 @@ class MainWindow(QMainWindow):
         )
         self.inspector_panel.set_blocks(all_blocks)
         self.inspector_panel.select_block_by_id(target_block.get("id"))
+        self._update_status_bubble_count(len(all_blocks))
 
         # If user was in original view, switch to translated view so they see the rendered text
         if self.canvas_view.view_mode == "original":
@@ -984,6 +998,7 @@ class MainWindow(QMainWindow):
         self.current_image_data["blocks"] = blocks
         self.canvas_view.blocks = blocks
         self.canvas_view._rebuild_bubbles()
+        self._update_status_bubble_count(len(blocks))
         path = self.current_image_data.get("path")
         if path:
             get_cache_manager().save_page_cache(path, blocks=blocks)
@@ -1066,6 +1081,7 @@ class MainWindow(QMainWindow):
             self.inspector_panel.set_blocks(remaining_blocks)
             self.canvas_view.blocks = remaining_blocks
             self.canvas_view._rebuild_bubbles()
+            self._update_status_bubble_count(len(remaining_blocks))
 
             # Immediately persist updated blocks and restored erased_img to local disk cache (.amt_cache)
             if path and self.current_image_data.get("erased_img") is not None:
@@ -1249,6 +1265,12 @@ class MainWindow(QMainWindow):
         if hasattr(self.canvas_view, "hud"):
             self.canvas_view.hud.set_page_info(0, 0)
         self.inspector_panel.set_blocks([])
+        if hasattr(self, "breadcrumb_label"):
+            self.breadcrumb_label.setText("📂 工作区")
+            self.breadcrumb_label.setToolTip("")
+        if hasattr(self, "status_page_label"):
+            self.status_page_label.setText("PAGE: --")
+        self._update_status_bubble_count(0)
         self.status_label.setText("就绪 | 页面队列已清空")
 
     def _on_source_lang_changed(self, lang: str):
@@ -1292,6 +1314,7 @@ class MainWindow(QMainWindow):
         if "original" in self._mode_buttons:
             self._mode_buttons["original"].setChecked(True)
         self.inspector_panel.set_blocks([])
+        self._update_status_bubble_count(0)
         self.status_label.setText(f"已清除【{filename}】本地缓存，已重置为原图！")
         self.toast.show_message(f"🧹 已清除【{filename}】缓存，重置为原图", "success")
 
@@ -1332,7 +1355,7 @@ class MainWindow(QMainWindow):
         if "original" in self._mode_buttons:
             self._mode_buttons["original"].setChecked(True)
         self.inspector_panel.set_blocks([])
-        filename = os.path.basename(path)
+        self._update_status_bubble_count(0)
         self.status_label.setText(f"已清除【{filename}】本地缓存，已重置为原图！")
         self.toast.show_message(f"🧹 已清除【{filename}】缓存，重置为原图", "success")
 
@@ -1384,6 +1407,13 @@ class MainWindow(QMainWindow):
     def set_theme(self, theme_name: str):
         """Applies theme stylesheet and updates theme button icon."""
         self._current_theme = theme_name
+        if hasattr(self, "config") and hasattr(self.config, "theme"):
+            if self.config.theme != theme_name:
+                self.config.theme = theme_name
+                try:
+                    self.config.save()
+                except Exception:
+                    pass
         tokens = get_tokens(theme_name)
         css = build_stylesheet(tokens)
         app_inst = QApplication.instance()
@@ -1391,6 +1421,7 @@ class MainWindow(QMainWindow):
             app_inst.setStyleSheet(css)
         self.setStyleSheet(css)
         self.theme_btn.setIcon(get_icon("sun" if theme_name == "dark" else "moon", color=tokens.text_secondary, size=16))
+        self.theme_btn.setToolTip("切换到亮色模式" if theme_name == "dark" else "切换到暗色模式")
         self.settings_btn.setIcon(get_icon("settings", color=tokens.text_secondary, size=16))
         self.page_style_btn.setIcon(get_icon("sparkles", color=tokens.accent_primary, size=16))
         self.export_btn.setIcon(get_icon("download", color=tokens.text_secondary, size=16))
@@ -1411,6 +1442,14 @@ class MainWindow(QMainWindow):
         """Opens Apple HIG system settings preference modal."""
         dialog = SettingsDialog(config=self.config, parent=self)
         if dialog.exec():
+            # Synchronize source language combo if changed
+            if hasattr(self, "source_lang_combo") and hasattr(self.config, "source_lang"):
+                idx = self.source_lang_combo.findText(self.config.source_lang)
+                if idx >= 0 and self.source_lang_combo.currentIndex() != idx:
+                    self.source_lang_combo.blockSignals(True)
+                    self.source_lang_combo.setCurrentIndex(idx)
+                    self.source_lang_combo.blockSignals(False)
+
             if getattr(dialog, "re_render_all_requested", False):
                 self._re_render_all_pages()
             else:
@@ -1715,6 +1754,7 @@ class MainWindow(QMainWindow):
             )
             self.canvas_view.set_view_mode("translated")
             self.inspector_panel.set_blocks(result.get("blocks", []))
+            self._update_status_bubble_count(len(result.get("blocks", [])))
 
         self.toast.show_message("漫画翻译已成功完成！", "success")
 
@@ -1875,9 +1915,17 @@ class MainWindow(QMainWindow):
         if ext == ".pdf":
             # Save temporary image and compile PDF
             import tempfile
-            tmp_img = os.path.join(tempfile.gettempdir(), "temp_export_page.png")
-            cv2.imwrite(tmp_img, self.canvas_view.translated_cv)
-            success = MangaExporter.compile_chapter_pdf([tmp_img], file_path)
+            import uuid
+            tmp_img = os.path.join(tempfile.gettempdir(), f"temp_export_{uuid.uuid4().hex[:8]}.png")
+            try:
+                safe_cv2_imwrite(tmp_img, self.canvas_view.translated_cv)
+                success = MangaExporter.compile_chapter_pdf([tmp_img], file_path)
+            finally:
+                if os.path.exists(tmp_img):
+                    try:
+                        os.remove(tmp_img)
+                    except Exception:
+                        pass
         else:
             fmt = "JPEG" if ext in [".jpg", ".jpeg"] else ("WEBP" if ext == ".webp" else "PNG")
             success = MangaExporter.export_single_image(
@@ -2031,6 +2079,7 @@ class MainWindow(QMainWindow):
 
         # 4. Synchronize inspector panel
         self.inspector_panel.set_blocks(restored_blocks)
+        self._update_status_bubble_count(len(restored_blocks))
 
         # 5. Persist to disk cache
         if snapshot.page_path:

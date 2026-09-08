@@ -11,7 +11,7 @@ import cv2
 
 from PyQt6.QtWidgets import (
     QGraphicsView, QWidget, QFrame, QHBoxLayout, QToolButton,
-    QLabel, QGraphicsRectItem, QMenu
+    QLabel, QGraphicsRectItem, QMenu, QApplication, QTextEdit, QPlainTextEdit, QLineEdit
 )
 from PyQt6.QtCore import Qt, QRectF, QPoint, QPointF, pyqtSignal
 from PyQt6.QtGui import (
@@ -162,7 +162,7 @@ class CanvasZoomHud(QFrame):
         self.btn_reset.setIcon(get_icon("actual_size", color="#A1A1AA", size=12))
         self.btn_reset.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.btn_reset.setText("1:1")
-        self.btn_reset.setToolTip("恢复实际大小 100% (Ctrl+0)")
+        self.btn_reset.setToolTip("恢复实际大小 100% (Ctrl+1)")
         self.btn_reset.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_reset.clicked.connect(self.sig_zoom_reset.emit)
         layout.addWidget(self.btn_reset)
@@ -523,8 +523,11 @@ class MangaCanvasView(QGraphicsView):
     def set_show_bubbles(self, show: bool):
         """Toggles speech bubble overlay bounding box visibility."""
         self.show_bubbles = show
-        for item in self.bubble_items:
-            item.setVisible(show)
+        if show and not self.bubble_items and self.blocks and self.view_mode != "side_by_side":
+            self._rebuild_bubbles()
+        else:
+            for item in self.bubble_items:
+                item.setVisible(show)
 
     def set_data(
         self,
@@ -678,6 +681,11 @@ class MangaCanvasView(QGraphicsView):
     # Pan & Tool Engine
     # -------------------------------------------------------------------------
     def keyPressEvent(self, event: QKeyEvent):
+        focus_w = QApplication.focusWidget()
+        if isinstance(focus_w, (QTextEdit, QPlainTextEdit, QLineEdit)):
+            super().keyPressEvent(event)
+            return
+
         if event.key() == Qt.Key.Key_Space and not self._space_held:
             self._space_held = True
             if not self.is_panning:
@@ -825,35 +833,40 @@ class MangaCanvasView(QGraphicsView):
         if self._is_drawing_rect:
             is_ocr_mode = (self.tool_mode == "draw_ocr")
             self._is_drawing_rect = False
-            if self._rubber_band_item and self.original_cv is not None:
+            rect = None
+            if self._rubber_band_item:
                 rect = self._rubber_band_item.rect().normalized()
-                self._scene.removeItem(self._rubber_band_item)
+                try:
+                    self._scene.removeItem(self._rubber_band_item)
+                except Exception:
+                    pass
                 self._rubber_band_item = None
 
-                if rect.width() >= 10 and rect.height() >= 10:
-                    img_h, img_w = self.original_cv.shape[:2]
-                    xmin = round(max(0.0, min(100.0, (rect.left() / img_w) * 100.0)), 2)
-                    ymin = round(max(0.0, min(100.0, (rect.top() / img_h) * 100.0)), 2)
-                    xmax = round(max(0.0, min(100.0, (rect.right() / img_w) * 100.0)), 2)
-                    ymax = round(max(0.0, min(100.0, (rect.bottom() / img_h) * 100.0)), 2)
-                    new_block = {
-                        "id": f"m_{uuid.uuid4().hex[:4]}",
-                        "xmin": xmin,
-                        "ymin": ymin,
-                        "xmax": xmax,
-                        "ymax": ymax,
-                        "original_text": "",
-                        "translated_text": "",
-                        "type": "bubble",
-                        "confidence": 1.0,
-                    }
-                    if is_ocr_mode:
-                        self.sig_bubble_ocr_requested.emit(new_block)
-                    else:
-                        self.sig_bubble_created.emit(new_block)
-            elif self._rubber_band_item:
-                self._scene.removeItem(self._rubber_band_item)
-                self._rubber_band_item = None
+            base_img = self.original_cv if self.original_cv is not None else (
+                self.translated_cv if self.translated_cv is not None else self.erased_cv
+            )
+
+            if rect is not None and base_img is not None and rect.width() >= 10 and rect.height() >= 10:
+                img_h, img_w = base_img.shape[:2]
+                xmin = round(max(0.0, min(100.0, (rect.left() / img_w) * 100.0)), 2)
+                ymin = round(max(0.0, min(100.0, (rect.top() / img_h) * 100.0)), 2)
+                xmax = round(max(0.0, min(100.0, (rect.right() / img_w) * 100.0)), 2)
+                ymax = round(max(0.0, min(100.0, (rect.bottom() / img_h) * 100.0)), 2)
+                new_block = {
+                    "id": f"m_{uuid.uuid4().hex[:4]}",
+                    "xmin": xmin,
+                    "ymin": ymin,
+                    "xmax": xmax,
+                    "ymax": ymax,
+                    "original_text": "",
+                    "translated_text": "",
+                    "type": "bubble",
+                    "confidence": 1.0,
+                }
+                if is_ocr_mode:
+                    self.sig_bubble_ocr_requested.emit(new_block)
+                else:
+                    self.sig_bubble_created.emit(new_block)
 
             self.set_tool_mode("select")
             event.accept()

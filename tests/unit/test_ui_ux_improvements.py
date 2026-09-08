@@ -392,3 +392,188 @@ def test_translation_block_from_dict_aliases():
     assert tb2.original_text == "原文二"
 
 
+def test_page_list_keyboard_delete_and_adjacent_selection(qapp, tmp_path):
+    """Verify Delete key removes item and MainWindow smoothly selects adjacent page."""
+    import cv2
+    win = MainWindow()
+    win.show()
+
+    # Create 3 dummy pages
+    paths = []
+    for i in range(3):
+        p = str(tmp_path / f"page_{i}.png")
+        cv2.imwrite(p, np.full((100, 100, 3), 255, dtype=np.uint8))
+        paths.append(p)
+
+    win.page_list.add_paths(paths)
+    assert len(win.page_list.items_data) == 3
+
+    # Select middle page (index 1)
+    win.page_list.list_widget.setCurrentRow(1)
+    win._on_page_selected(win.page_list.items_data[1])
+    assert win.current_image_data["path"] == paths[1]
+
+    # Simulate pressing Delete key
+    from PyQt6.QtGui import QKeyEvent
+    from PyQt6.QtCore import QEvent
+    del_event = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Delete, Qt.KeyboardModifier.NoModifier)
+    consumed = win.page_list.eventFilter(win.page_list.list_widget, del_event)
+    assert consumed is True
+
+    # 1 item removed, now 2 items
+    assert len(win.page_list.items_data) == 2
+    assert win.page_list.last_removed_row == 1
+
+    # Smoothly selects adjacent page (index 1, formerly page_2), NOT index 0
+    assert win.page_list.list_widget.currentRow() == 1
+    assert win.current_image_data["path"] == paths[2]
+
+    # Now delete the last page (now at index 1)
+    consumed = win.page_list.eventFilter(win.page_list.list_widget, del_event)
+    assert consumed is True
+    assert len(win.page_list.items_data) == 1
+    assert win.page_list.list_widget.currentRow() == 0
+    assert win.current_image_data["path"] == paths[0]
+
+    win.close()
+
+
+def test_canvas_bubble_visibility_toggle_rebuilds_bubbles(qapp):
+    """Verify toggling bubble visibility rebuilds items if they were cleared."""
+    view = MangaCanvasView()
+    canvas = np.full((400, 400, 3), 255, dtype=np.uint8)
+    blocks = [
+        {"id": "b1", "xmin": 10, "ymin": 10, "xmax": 40, "ymax": 40, "translated_text": "A"},
+        {"id": "b2", "xmin": 50, "ymin": 50, "xmax": 80, "ymax": 80, "translated_text": "B"},
+    ]
+    view.set_data(original_cv=canvas, blocks=blocks)
+    assert len(view.bubble_items) == 2
+
+    # Hide bubbles
+    view.set_show_bubbles(False)
+    assert view.show_bubbles is False
+    assert all(not item.isVisible() for item in view.bubble_items)
+
+    # Simulate items being emptied
+    view.bubble_items.clear()
+
+    # Turn back on -> should automatically trigger _rebuild_bubbles()
+    view.set_show_bubbles(True)
+    assert view.show_bubbles is True
+    assert len(view.bubble_items) == 2
+    assert all(item.isVisible() for item in view.bubble_items)
+
+    view.close()
+
+
+def test_rubber_band_cleanup_safety(qapp):
+    """Verify rubber band item is safely removed even if no image is loaded."""
+    from PyQt6.QtWidgets import QGraphicsRectItem
+    from PyQt6.QtCore import QRectF
+
+    view = MangaCanvasView()
+    view._is_drawing_rect = True
+    view._rubber_band_item = QGraphicsRectItem(QRectF(10, 10, 50, 50))
+    view._scene.addItem(view._rubber_band_item)
+    assert view._rubber_band_item in view._scene.items()
+
+    # Release without original_cv
+    view.original_cv = None
+    view.translated_cv = None
+    view.erased_cv = None
+
+    release_event = QMouseEvent(
+        QMouseEvent.Type.MouseButtonRelease,
+        QPointF(60, 60),
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier
+    )
+    view.mouseReleaseEvent(release_event)
+
+    assert view._rubber_band_item is None
+    assert not any(isinstance(it, QGraphicsRectItem) for it in view._scene.items())
+    assert view.tool_mode == "select"
+
+    view.close()
+
+
+def test_main_window_status_bubble_counter_and_clear_sync(qapp, tmp_path):
+    """Verify status bar bubble count updates synchronously across all operations."""
+    import cv2
+    win = MainWindow()
+    win.show()
+
+    img_path = str(tmp_path / "sync_page.png")
+    cv2.imwrite(img_path, np.full((200, 200, 3), 255, dtype=np.uint8))
+    win.page_list.add_paths([img_path])
+    win._on_page_selected(win.page_list.items_data[0])
+
+    # Initial state
+    assert win.status_bubble_label.text() == "0 BUBBLES"
+
+    # 1. Create a bubble
+    b1 = {
+        "id": "b100",
+        "xmin": 10.0,
+        "ymin": 10.0,
+        "xmax": 30.0,
+        "ymax": 30.0,
+        "original_text": "原1",
+        "translated_text": "译1",
+    }
+    win._on_bubble_created(b1)
+    assert win.status_bubble_label.text() == "1 BUBBLES"
+
+    # 2. Create another bubble
+    b2 = {
+        "id": "b101",
+        "xmin": 40.0,
+        "ymin": 40.0,
+        "xmax": 60.0,
+        "ymax": 60.0,
+        "original_text": "原2",
+        "translated_text": "译2",
+    }
+    win._on_bubble_created(b2)
+    assert win.status_bubble_label.text() == "2 BUBBLES"
+
+    # 3. Delete a block
+    win._on_block_deleted("b100")
+    assert win.status_bubble_label.text() == "1 BUBBLES"
+
+    # 4. Clear page cache
+    win._on_page_cache_cleared(win.current_image_data)
+    assert win.status_bubble_label.text() == "0 BUBBLES"
+
+    # 5. Clear all list items
+    win.page_list.clear_all()
+    win._on_page_list_cleared()
+    assert win.status_bubble_label.text() == "0 BUBBLES"
+    assert win.status_page_label.text() == "PAGE: --"
+    assert win.breadcrumb_label.text() == "📂 工作区"
+
+    win.close()
+
+
+def test_theme_persistence_and_tooltip(qapp, tmp_path):
+    """Verify theme switching updates config theme, saves config, and toggles tooltip."""
+    win = MainWindow()
+    win.show()
+
+    # Switch to light
+    win.set_theme("light")
+    assert win._current_theme == "light"
+    assert win.config.theme == "light"
+    assert "切换到暗色模式" in win.theme_btn.toolTip()
+
+    # Switch back to dark
+    win.set_theme("dark")
+    assert win._current_theme == "dark"
+    assert win.config.theme == "dark"
+    assert "切换到亮色模式" in win.theme_btn.toolTip()
+
+    win.close()
+
+
+
