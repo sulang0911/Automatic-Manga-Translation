@@ -84,10 +84,19 @@ class BatchWorker(QThread):
 
         # Shared engines for batch reuse
         ocr_cfg = self.config.get("ocr", {}) if isinstance(self.config.get("ocr"), dict) else {}
+        from app.core.pipeline.utils import normalize_source_lang, is_auto_source_lang, source_lang_to_ocr_lang
+        effective_source = self.config.get("source_lang") or ocr_cfg.get("lang") or self.config.get("ocr_lang")
+        ocr_lang = source_lang_to_ocr_lang(effective_source)
+        is_manual = not is_auto_source_lang(effective_source)
+
         ocr_eng = OCREngine(
-            engine_type=ocr_cfg.get("engine", self.config.get("ocr_engine", "easyocr")),
+            engine_type=ocr_cfg.get("engine", self.config.get("ocr_engine", "ctd")),
             use_gpu=not ocr_cfg.get("force_cpu", False) if "force_cpu" in ocr_cfg else self.config.get("use_gpu", True),
-            lang=ocr_cfg.get("lang", self.config.get("ocr_lang", "japan"))
+            lang=ocr_lang,
+            enable_ensemble_detection=ocr_cfg.get("ensemble_detection", self.config.get("ocr_ensemble_detection", False)),
+            enable_ensemble_recognition=ocr_cfg.get("ensemble_recognition", self.config.get("ocr_ensemble_recognition", False)),
+            is_manual=is_manual,
+            source_lang=effective_source,
         )
         inp_cfg = self.config.get("inpaint", {}) if isinstance(self.config.get("inpaint"), dict) else {}
         inpaint_eng = InpaintEngine(mode=inp_cfg.get("engine", self.config.get("inpaint_engine", "auto")))
@@ -139,8 +148,27 @@ class BatchWorker(QThread):
             filename = os.path.basename(img_path)
 
             try:
-                # 1. Check for full cache breakpoint resumption (skipped when force_retranslate is True)
+                # 1. Check for full cache breakpoint resumption (skipped when force_retranslate is True or language mismatch)
+                cached_is_valid = False
                 if not self.force_retranslate and cache_mgr.is_fully_translated(img_path):
+                    if is_auto_source_lang(effective_source):
+                        cached_is_valid = True
+                    else:
+                        cached_meta = cache_mgr.load_page_cache(img_path, load_images=False)
+                        sample_text = " ".join(str(b.get("original_text", "")) if isinstance(b, dict) else str(getattr(b, "original_text", "")) for b in cached_meta.get("blocks", [])[:5])
+                        has_kana = any('\u3040' <= c <= '\u309f' or '\u30a0' <= c <= '\u30ff' for c in sample_text)
+                        has_hangul = any('\uac00' <= c <= '\ud7af' or '\u1100' <= c <= '\u11ff' for c in sample_text)
+                        norm_src = normalize_source_lang(effective_source)
+                        if norm_src == "en" and (has_kana or has_hangul):
+                            cached_is_valid = False
+                        elif norm_src == "ko" and has_kana and not has_hangul:
+                            cached_is_valid = False
+                        elif norm_src == "ja" and has_hangul and not has_kana:
+                            cached_is_valid = False
+                        else:
+                            cached_is_valid = True
+
+                if cached_is_valid:
                     self.sig_batch_progress.emit(idx + 1, total, filename, 90, "已命中本地缓存，正在检查导出...")
                     cached_data = cache_mgr.load_page_cache(img_path, load_images=False)
                     export_path = self.resolve_export_path(item)
@@ -187,9 +215,27 @@ class BatchWorker(QThread):
                 cache_status = {"blocks": False, "erased": False, "rendered": False} if self.force_retranslate else cache_mgr.has_cache(img_path)
 
                 # 3. OCR Stage (Check cache first)
+                reuse_ocr_cache = False
                 if cache_status["blocks"]:
-                    self.sig_batch_progress.emit(idx + 1, total, filename, 25, "正在读取已识别文本缓存...")
                     cached_blocks = cache_mgr.load_page_cache(img_path, load_images=False)["blocks"]
+                    if is_auto_source_lang(effective_source):
+                        reuse_ocr_cache = True
+                    else:
+                        norm_src = normalize_source_lang(effective_source)
+                        sample_text = " ".join(str(b.get("original_text", "")) if isinstance(b, dict) else str(getattr(b, "original_text", "")) for b in cached_blocks[:5])
+                        has_kana = any('\u3040' <= c <= '\u309f' or '\u30a0' <= c <= '\u30ff' for c in sample_text)
+                        has_hangul = any('\uac00' <= c <= '\ud7af' or '\u1100' <= c <= '\u11ff' for c in sample_text)
+                        if norm_src == "en" and (has_kana or has_hangul):
+                            reuse_ocr_cache = False
+                        elif norm_src == "ko" and has_kana and not has_hangul:
+                            reuse_ocr_cache = False
+                        elif norm_src == "ja" and has_hangul and not has_kana:
+                            reuse_ocr_cache = False
+                        else:
+                            reuse_ocr_cache = True
+
+                if reuse_ocr_cache:
+                    self.sig_batch_progress.emit(idx + 1, total, filename, 25, "正在读取已识别文本缓存...")
                     blocks = cached_blocks
                 else:
                     self.sig_batch_progress.emit(idx + 1, total, filename, 30, "正在识别文字...")

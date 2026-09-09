@@ -581,6 +581,8 @@ class SettingsDialog(QDialog):
         self.config.ocr.ensemble_detection = self.ensemble_det_cb.isChecked()
         self.config.ocr.ensemble_recognition = self.ensemble_rec_cb.isChecked()
         self.config.source_lang = self.source_lang_combo.currentText()
+        from app.core.pipeline.utils import source_lang_to_ocr_lang
+        self.config.ocr.lang = source_lang_to_ocr_lang(self.config.source_lang)
 
         # Inpaint
         self.config.inpaint.engine = self.inpaint_combo.currentText()

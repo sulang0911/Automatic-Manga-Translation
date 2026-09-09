@@ -11,6 +11,9 @@ from app.core.pipeline.utils import (
     clean_translation_syntax,
     prioritize_english_routing,
     post_process_translation_blocks,
+    normalize_source_lang,
+    is_auto_source_lang,
+    source_lang_to_ocr_lang,
 )
 
 __all__ = [
@@ -23,4 +26,7 @@ __all__ = [
     "clean_translation_syntax",
     "prioritize_english_routing",
     "post_process_translation_blocks",
+    "normalize_source_lang",
+    "is_auto_source_lang",
+    "source_lang_to_ocr_lang",
 ]

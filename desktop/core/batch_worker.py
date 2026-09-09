@@ -73,12 +73,18 @@ class BatchWorker(QThread):
         fail_count = 0
 
         # Shared engines for batch reuse
+        from app.core.pipeline.utils import source_lang_to_ocr_lang, is_auto_source_lang
+        effective_source = self.config.get("source_lang") or self.config.get("ocr_lang", "japan")
+        ocr_lang = source_lang_to_ocr_lang(effective_source)
+        is_manual = not is_auto_source_lang(effective_source)
         ocr_eng = OCREngine(
             engine_type=self.config.get("ocr_engine", "paddle"),
             use_gpu=self.config.get("use_gpu", True),
-            lang=self.config.get("ocr_lang", "japan"),
+            lang=ocr_lang,
             enable_ensemble_detection=self.config.get("ocr_ensemble_detection", False),
-            enable_ensemble_recognition=self.config.get("ocr_ensemble_recognition", False)
+            enable_ensemble_recognition=self.config.get("ocr_ensemble_recognition", False),
+            is_manual=is_manual,
+            source_lang=effective_source
         )
         inpaint_eng = InpaintEngine(mode=self.config.get("inpaint_engine", "auto"))
         trans_eng = TranslationEngine(
@@ -87,7 +93,7 @@ class BatchWorker(QThread):
             model=self.config.get("model", "deepseek-chat"),
             custom_endpoint=self.config.get("custom_endpoint", ""),
             target_lang=self.config.get("target_lang", "简体中文"),
-            source_lang=self.config.get("source_lang", "日语"),
+            source_lang=self.config.get("source_lang", "自动识别"),
             temperature=self.config.get("temperature", 0.3),
             system_prompt=self.config.get("system_prompt", "")
         )

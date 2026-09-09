@@ -20,7 +20,10 @@ except ImportError:
     from app.core.models import TranslationBlock, ReadingOrderMode
 
 try:
-    from app.core.pipeline import clean_ocr_syntax, clean_translation_syntax, normalize_domain_slang, prioritize_english_routing
+    from app.core.pipeline import (
+        clean_ocr_syntax, clean_translation_syntax, normalize_domain_slang,
+        prioritize_english_routing, normalize_source_lang, is_auto_source_lang
+    )
 except Exception:
     import re
     def clean_ocr_syntax(t: str) -> str:
@@ -39,8 +42,20 @@ except Exception:
         t = re.sub(r"\bBF['’]s\b", "boyfriend's", t)
         t = re.sub(r'\bBF\b', 'boyfriend', t)
         return re.sub(r'\b(no[-_ ]?fap)\b', 'no-fap', t, flags=re.IGNORECASE)
+    def normalize_source_lang(lang: Optional[str]) -> str:
+        if not lang: return "auto"
+        l = str(lang).strip().lower()
+        if l in ("auto", "自动识别", "自动", "unknown", "none", ""): return "auto"
+        if any(w in l for w in ["japan", "ja", "日"]): return "ja"
+        if any(w in l for w in ["en", "eng", "english", "latin", "英"]): return "en"
+        if any(w in l for w in ["korean", "ko", "hangul", "韩"]): return "ko"
+        if any(w in l for w in ["cht", "zh-tw", "chinese_cht", "ch_tra", "繁"]): return "cht"
+        if any(w in l for w in ["chinese", "chs", "ch", "zh", "zh-cn", "ch_sim", "中"]): return "chs"
+        return l
+    def is_auto_source_lang(lang: Optional[str]) -> bool:
+        return normalize_source_lang(lang) == "auto"
     def prioritize_english_routing(lang=None, image=None, text=None) -> bool:
-        return bool(lang and any(w in str(lang).lower() for w in ["en", "eng", "english"]))
+        return bool(lang and normalize_source_lang(lang) == "en")
 
 
 
@@ -365,7 +380,9 @@ class OCREngine:
         lang: str = "japan",
         reading_direction: Optional[str] = None,
         enable_ensemble_detection: bool = False,
-        enable_ensemble_recognition: bool = False
+        enable_ensemble_recognition: bool = False,
+        is_manual: Optional[bool] = None,
+        source_lang: Optional[str] = None
     ):
         self.engine_type = engine_type
         if self.engine_type == "cpu_paddle":
@@ -376,11 +393,34 @@ class OCREngine:
         self.reading_direction = reading_direction
         self.enable_ensemble_detection = enable_ensemble_detection
         self.enable_ensemble_recognition = enable_ensemble_recognition
+        self.source_lang = source_lang
+
+        norm = self.normalize_lang(self.lang)
+        if is_manual is not None:
+            self.is_manual = bool(is_manual)
+        elif source_lang is not None:
+            self.is_manual = not is_auto_source_lang(source_lang)
+        else:
+            if norm in ("ko", "chs", "cht", "en"):
+                self.is_manual = True
+            else:
+                self.is_manual = False
+
         self._paddle_ocr = None
         self._easyocr_reader = None
         self._easyocr_en_reader = None
+        self._easyocr_readers: Dict[str, Any] = {}
         self._manga_ocr = None
         self._ctd_detector = None
+
+    @staticmethod
+    def normalize_lang(lang: Optional[str]) -> str:
+        """Normalizes source language string to canonical code ('auto', 'ja', 'en', 'ko', 'chs', 'cht')."""
+        return normalize_source_lang(lang)
+
+    def is_manual_lang(self) -> bool:
+        """Returns True if the current language was explicitly configured (not auto)."""
+        return getattr(self, "is_manual", False)
 
     def _init_ctd(self):
         if self._ctd_detector is None:
@@ -409,6 +449,19 @@ class OCREngine:
             from paddleocr import PaddleOCR
             is_paddleocr_3x = hasattr(PaddleOCR, "_paddlex_pipeline_name")
 
+            # Map to PaddleOCR language codes
+            norm = self.normalize_lang(self.lang)
+            if norm == "en":
+                paddle_lang = "en"
+            elif norm == "ko":
+                paddle_lang = "korean"
+            elif norm == "chs":
+                paddle_lang = "ch"
+            elif norm == "cht":
+                paddle_lang = "chinese_cht"
+            else:
+                paddle_lang = "japan"
+
             if is_paddleocr_3x:
                 # PaddleOCR 3.x / PaddleX pipeline
                 can_use_gpu = bool(self.use_gpu and has_paddle_cuda)
@@ -417,15 +470,15 @@ class OCREngine:
                     self.use_gpu = False
 
                 device_str = "gpu" if can_use_gpu else "cpu"
-                print(f"[*] Initializing PaddleOCR 3.x (lang={self.lang}, device={device_str}, model=PP-OCRv3 Mobile)...")
+                print(f"[*] Initializing PaddleOCR 3.x (lang={paddle_lang}, device={device_str}, model=PP-OCRv3 Mobile)...")
 
                 kwargs = {
-                    "lang": self.lang,
-                    "ocr_version": "PP-OCRv3",  # 默认使用轻量级 Mobile 模型，内存仅占 ~150MB，避免 Medium 模型耗尽系统内存导致死机
+                    "lang": paddle_lang,
+                    "ocr_version": "PP-OCRv3",
                     "device": device_str,
                     "cpu_threads": 2,
                     "use_textline_orientation": True,
-                    "enable_mkldnn": False,  # 禁用 oneDNN 规避 Windows CPU PIR double attribute 转换异常
+                    "enable_mkldnn": False,
                     "use_doc_orientation_classify": False,
                     "use_doc_unwarping": False,
                 }
@@ -445,10 +498,10 @@ class OCREngine:
                 # PaddleOCR 2.x legacy or unit test mock
                 use_gpu_flag = bool(self.use_gpu)
                 device_str = "gpu" if use_gpu_flag else "cpu"
-                print(f"[*] Initializing PaddleOCR (lang={self.lang}, device={device_str}, use_gpu={use_gpu_flag})...")
+                print(f"[*] Initializing PaddleOCR (lang={paddle_lang}, device={device_str}, use_gpu={use_gpu_flag})...")
                 try:
                     self._paddle_ocr = PaddleOCR(
-                        lang=self.lang,
+                        lang=paddle_lang,
                         device=device_str,
                         use_gpu=use_gpu_flag,
                         use_textline_orientation=True
@@ -458,40 +511,68 @@ class OCREngine:
                     self.use_gpu = False
                     try:
                         self._paddle_ocr = PaddleOCR(
-                            lang=self.lang,
+                            lang=paddle_lang,
                             device="cpu",
                             use_gpu=False,
                             use_textline_orientation=True
                         )
                     except Exception as e2:
                         print(f"[!] Warning: PaddleOCR CPU init failed: {e2}. Fallback to generic init...")
-                        self._paddle_ocr = PaddleOCR(lang=self.lang)
+                        self._paddle_ocr = PaddleOCR(lang=paddle_lang)
 
-    def _init_easyocr(self, is_english: bool = False):
-        if is_english:
-            if getattr(self, "_easyocr_en_reader", None) is None:
-                import easyocr
-                print(f"[*] Initializing EasyOCR for English (langs=['en'], gpu={self.use_gpu})...")
-                self._easyocr_en_reader = easyocr.Reader(['en'], gpu=self.use_gpu)
-        else:
+    def _init_easyocr(self, is_english: bool = False, lang: Optional[str] = None):
+        target_norm = "en" if is_english else self.normalize_lang(lang or self.lang)
+        if target_norm == "en":
+            if getattr(self, "_easyocr_en_reader", None) is not None:
+                return
+            if getattr(self, "_easyocr_reader", None) is not None and "en" not in self._easyocr_readers:
+                self._easyocr_en_reader = self._easyocr_reader
+                self._easyocr_readers["en"] = self._easyocr_reader
+                return
+            import easyocr
+            print(f"[*] Initializing EasyOCR for English (langs=['en'], gpu={self.use_gpu})...")
+            self._easyocr_en_reader = easyocr.Reader(['en'], gpu=self.use_gpu)
+            self._easyocr_readers["en"] = self._easyocr_en_reader
             if self._easyocr_reader is None:
-                import easyocr
-                langs = ['ja', 'en'] if self.lang in ['japan', 'ja'] else ['ch_sim', 'en']
-                print(f"[*] Initializing EasyOCR (langs={langs}, gpu={self.use_gpu})...")
-                self._easyocr_reader = easyocr.Reader(langs, gpu=self.use_gpu)
+                self._easyocr_reader = self._easyocr_en_reader
+        else:
+            if target_norm in self._easyocr_readers:
+                return
+            if getattr(self, "_easyocr_reader", None) is not None and (target_norm in ("ja", "auto") or not self._easyocr_readers):
+                self._easyocr_readers[target_norm] = self._easyocr_reader
+                return
+            import easyocr
+            if target_norm == "ko":
+                langs = ['ko', 'en']
+            elif target_norm == "cht":
+                langs = ['ch_tra', 'en']
+            elif target_norm == "chs":
+                langs = ['ch_sim', 'en']
+            else:
+                langs = ['ja', 'en']
+            print(f"[*] Initializing EasyOCR for {target_norm} (langs={langs}, gpu={self.use_gpu})...")
+            reader = easyocr.Reader(langs, gpu=self.use_gpu)
+            self._easyocr_readers[target_norm] = reader
+            if self._easyocr_reader is None or target_norm in ("ja", "auto"):
+                self._easyocr_reader = reader
 
-    def _get_easyocr_reader(self, is_english: bool = False):
-        if is_english:
+    def _get_easyocr_reader(self, is_english: bool = False, lang: Optional[str] = None):
+        target_norm = "en" if is_english else self.normalize_lang(lang or self.lang)
+        if target_norm == "en":
             if getattr(self, "_easyocr_en_reader", None) is not None:
                 return self._easyocr_en_reader
-            if getattr(self, "_easyocr_reader", None) is not None:
+            if getattr(self, "_easyocr_reader", None) is not None and getattr(self, "_easyocr_en_reader", None) is None:
+                # If unit tests mocked _easyocr_reader but not _easyocr_en_reader
                 return self._easyocr_reader
             self._init_easyocr(is_english=True)
             return self._easyocr_en_reader
         else:
-            if self._easyocr_reader is None:
-                self._init_easyocr(is_english=False)
-            return self._easyocr_reader
+            if target_norm in self._easyocr_readers:
+                return self._easyocr_readers[target_norm]
+            if getattr(self, "_easyocr_reader", None) is not None and (target_norm in ("ja", "auto") or not self._easyocr_readers):
+                return self._easyocr_reader
+            self._init_easyocr(is_english=False, lang=target_norm)
+            return self._easyocr_readers.get(target_norm, self._easyocr_reader)
 
     def detect_page_language(
         self,
@@ -500,12 +581,18 @@ class OCREngine:
     ) -> Tuple[bool, str]:
         """
         Detects whether the image is an English manga page:
-        1. If self.lang explicitly specifies English, returns (True, 'en').
-        2. Fast sampling on candidate boxes or whole page using English EasyOCR.
+        1. If self.lang explicitly specifies a language (not auto):
+           Strictly respects user configuration!
+           Returns (True, 'en') if English, otherwise (False, norm_lang).
+        2. In auto mode: runs fast sampling on candidate boxes or whole page using EasyOCR.
         3. Returns (is_english, detected_lang).
         """
-        if any(w in str(self.lang).lower() for w in ["en", "eng", "english", "latin"]):
+        norm_lang = self.normalize_lang(self.lang)
+        if norm_lang == "en":
             return True, "en"
+        if getattr(self, "is_manual", False):
+            # Explicit non-English language requested by user; do NOT override!
+            return False, norm_lang
 
         reader = self._get_easyocr_reader(is_english=False)
         sampled_texts = []
@@ -569,7 +656,7 @@ class OCREngine:
 
         return False, str(self.lang)
 
-    def _read_block_easyocr(self, crop: np.ndarray, angle: float = 0.0, is_english: bool = True) -> Tuple[str, float]:
+    def _read_block_easyocr(self, crop: np.ndarray, angle: float = 0.0, is_english: bool = True, lang: Optional[str] = None) -> Tuple[str, float]:
         """
         Reads text in a cropped dialogue or narration box:
         - If slanted (abs(angle) >= 2.5), affine rotates crop upright before recognition.
@@ -579,7 +666,7 @@ class OCREngine:
         if crop is None or crop.size == 0:
             return "", 0.0
 
-        reader = self._get_easyocr_reader(is_english=is_english)
+        reader = self._get_easyocr_reader(is_english=is_english, lang=lang)
 
         if abs(angle) >= 2.5:
             crop_upright, _ = rotate_crop_upright(crop, angle)
@@ -605,6 +692,67 @@ class OCREngine:
         text = clean_ocr_syntax(text)
         return text, conf
 
+    def recognize_crop(self, crop: np.ndarray, angle: float = 0.0, lang: Optional[str] = None) -> Tuple[str, float]:
+        """
+        Directly recognizes text in an image crop according to the configured or specified language.
+        Strictly honors the user's manual language setting without unwanted arbitration.
+        """
+        if crop is None or crop.size == 0:
+            return "", 0.0
+
+        norm_lang = self.normalize_lang(lang or self.lang)
+
+        if norm_lang == "en":
+            return self._read_block_easyocr(crop, angle=angle, is_english=True)
+        elif norm_lang == "ko":
+            return self._read_block_easyocr(crop, angle=angle, is_english=False, lang="ko")
+        elif norm_lang in ("chs", "cht"):
+            if self.engine_type in ("paddle", "paddle_manga"):
+                try:
+                    self._init_paddle()
+                    res = self._paddle_ocr.ocr(crop)
+                    texts = []
+                    confs = []
+                    if res and len(res) > 0 and res[0]:
+                        if isinstance(res[0], dict):
+                            texts = res[0].get('rec_texts', [])
+                            confs = res[0].get('rec_scores', [])
+                        elif isinstance(res[0], list):
+                            for line in res[0]:
+                                texts.append(line[1][0])
+                                confs.append(float(line[1][1]))
+                    if texts:
+                        avg_c = (sum(confs) / len(confs)) if confs else 0.8
+                        return "\n".join(texts).strip(), avg_c
+                except Exception:
+                    pass
+            return self._read_block_easyocr(crop, angle=angle, is_english=False, lang=norm_lang)
+        elif norm_lang == "ja":
+            try:
+                if self._manga_ocr is None:
+                    from app.core.ocr.manga_ocr_wrapper import get_manga_ocr
+                    self._manga_ocr = get_manga_ocr(force_cpu=not self.use_gpu)
+                txt = self._manga_ocr.recognize_crop(crop, angle=angle)
+                return txt, 0.95 if txt else 0.0
+            except Exception:
+                return self._read_block_easyocr(crop, angle=angle, is_english=False, lang="ja")
+        else:
+            # Auto mode
+            txt_en, conf_en = self._read_block_easyocr(crop, angle=angle, is_english=True)
+            latin_cnt = sum(1 for c in txt_en if ('a' <= c <= 'z' or 'A' <= c <= 'Z'))
+            if latin_cnt >= 4 and conf_en >= 0.35:
+                return txt_en, conf_en
+            try:
+                if self._manga_ocr is None:
+                    from app.core.ocr.manga_ocr_wrapper import get_manga_ocr
+                    self._manga_ocr = get_manga_ocr(force_cpu=not self.use_gpu)
+                txt_ja = self._manga_ocr.recognize_crop(crop, angle=angle)
+                if self.enable_ensemble_recognition and txt_en:
+                    return ensemble_recognize_text(txt_ja, 0.95, txt_en, conf_en, target_lang="japan")
+                return txt_ja, 0.95 if txt_ja else 0.0
+            except Exception:
+                return txt_en, conf_en
+
     def detect_and_recognize(self, image: np.ndarray, progress_callback=None, reading_direction: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Runs OCR on an OpenCV BGR image and returns a list of translation blocks.
@@ -626,7 +774,9 @@ class OCREngine:
 
         h_img, w_img = image.shape[:2]
         raw_boxes = []
-        is_pure_english = any(w in str(self.lang).lower() for w in ["en", "eng", "english", "latin"])
+        norm_lang = self.normalize_lang(self.lang)
+        is_manual = getattr(self, "is_manual", False)
+        is_pure_english = (norm_lang == "en")
         page_is_english = is_pure_english
 
         if progress_callback:
@@ -646,11 +796,12 @@ class OCREngine:
             # Dual-Model Detection Fusion (CTD + General detector)
             if self.enable_ensemble_detection:
                 try:
-                    self._init_easyocr()
+                    self._init_easyocr(lang=norm_lang)
                     if progress_callback:
                         progress_callback(40, "正在运行辅助检测器进行双模型联合找框...")
                     rgb_full = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-                    easy_results = self._easyocr_reader.readtext(rgb_full)
+                    reader = self._get_easyocr_reader(is_english=False, lang=norm_lang)
+                    easy_results = reader.readtext(rgb_full) if reader else []
                     sec_boxes = []
                     for bbox, t_text, t_conf in easy_results:
                         if not str(t_text).strip() or t_conf < 0.2:
@@ -674,13 +825,17 @@ class OCREngine:
 
             # If CTD produced candidate boxes, perform smart recognition
             if raw_boxes:
-                page_is_english = False
-                if is_pure_english:
-                    page_is_english = True
+                if is_manual:
+                    # Strictly follow user's manual source language setting
+                    page_is_english = (norm_lang == "en")
                 else:
                     page_is_english, _ = self.detect_page_language(image, raw_boxes)
+                    if page_is_english:
+                        norm_lang = "en"
+                    else:
+                        norm_lang = "ja"
 
-                if page_is_english:
+                if page_is_english or norm_lang == "en":
                     if progress_callback:
                         progress_callback(55, "使用 EasyOCR 提取纯英文漫画内容...")
                     for box in raw_boxes:
@@ -695,7 +850,38 @@ class OCREngine:
                             if txt:
                                 box["text"] = txt
                                 box["conf"] = conf
+                elif norm_lang == "ko":
+                    if progress_callback:
+                        progress_callback(55, "使用 EasyOCR 提取韩语漫画内容...")
+                    for box in raw_boxes:
+                        bx1 = max(0, min(box["xmin"], w_img - 1))
+                        by1 = max(0, min(box["ymin"], h_img - 1))
+                        bx2 = max(bx1 + 1, min(box["xmax"], w_img))
+                        by2 = max(by1 + 1, min(box["ymax"], h_img))
+                        crop = image[by1:by2, bx1:bx2]
+                        if crop.size > 0:
+                            crop = mask_crop_with_lines(crop, box, bx1, by1)
+                            txt, conf = self._read_block_easyocr(crop, angle=box.get("angle", 0.0), is_english=False, lang="ko")
+                            if txt:
+                                box["text"] = txt
+                                box["conf"] = conf
+                elif norm_lang in ("chs", "cht"):
+                    if progress_callback:
+                        progress_callback(55, f"使用中文 OCR 提取{'繁体' if norm_lang == 'cht' else '简体'}漫画内容...")
+                    for box in raw_boxes:
+                        bx1 = max(0, min(box["xmin"], w_img - 1))
+                        by1 = max(0, min(box["ymin"], h_img - 1))
+                        bx2 = max(bx1 + 1, min(box["xmax"], w_img))
+                        by2 = max(by1 + 1, min(box["ymax"], h_img))
+                        crop = image[by1:by2, bx1:bx2]
+                        if crop.size > 0:
+                            crop = mask_crop_with_lines(crop, box, bx1, by1)
+                            txt, conf = self._read_block_easyocr(crop, angle=box.get("angle", 0.0), is_english=False, lang=norm_lang)
+                            if txt:
+                                box["text"] = txt
+                                box["conf"] = conf
                 else:
+                    # Japanese (norm_lang == "ja" or auto fallback)
                     if self._manga_ocr is None:
                         from app.core.ocr.manga_ocr_wrapper import get_manga_ocr
                         self._manga_ocr = get_manga_ocr(force_cpu=not self.use_gpu)
@@ -885,7 +1071,7 @@ class OCREngine:
                     print(f"[-] EasyOCR 回退识别亦发生异常: {e_easy}")
 
         # Decoupled recognition / Recognition ensemble: Manga-OCR for Paddle Japanese text crops
-        if not is_pure_english and (self.engine_type == "paddle_manga" or (self.engine_type == "paddle" and self.enable_ensemble_recognition)) and any(w in str(self.lang).lower() for w in ["japan", "ja"]):
+        if norm_lang in ("ja", "auto") and not page_is_english and (self.engine_type == "paddle_manga" or (self.engine_type == "paddle" and self.enable_ensemble_recognition)):
             try:
                 if self._manga_ocr is None:
                     from app.core.ocr.manga_ocr_wrapper import get_manga_ocr
@@ -997,8 +1183,12 @@ class OCREngine:
         )
         if eff_direction:
             resolved_mode = eff_direction
-        elif is_pure_english or (not has_cjk_boxes and any(w in str(self.lang).lower() for w in ["en", "eng", "english", "latin"])):
+        elif norm_lang == "en" or is_pure_english or (not has_cjk_boxes and any(w in str(self.lang).lower() for w in ["en", "eng", "english", "latin"])):
             resolved_mode = ReadingOrderMode.WESTERN_LTR.value
+        elif norm_lang == "ko":
+            resolved_mode = ReadingOrderMode.WEBTOON_TTB.value if (h_img / max(1, w_img)) >= 1.5 else ReadingOrderMode.WESTERN_LTR.value
+        elif norm_lang in ("chs", "cht"):
+            resolved_mode = ReadingOrderMode.WEBTOON_TTB.value if (h_img / max(1, w_img)) >= 1.8 else ReadingOrderMode.WESTERN_LTR.value
         elif (h_img / max(1, w_img)) >= 2.2:
             resolved_mode = ReadingOrderMode.WEBTOON_TTB.value
         else:

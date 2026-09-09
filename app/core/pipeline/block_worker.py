@@ -79,12 +79,19 @@ class BlockOcrTranslateWorker(QThread):
                 return
 
             ocr_cfg = self.config.get("ocr", {}) if isinstance(self.config.get("ocr"), dict) else {}
+            from app.core.pipeline.utils import normalize_source_lang, is_auto_source_lang, source_lang_to_ocr_lang
+            effective_source = self.config.get("source_lang") or ocr_cfg.get("lang") or self.config.get("ocr_lang")
+            ocr_lang = source_lang_to_ocr_lang(effective_source)
+            is_manual = not is_auto_source_lang(effective_source)
+
             ocr_eng = OCREngine(
-                engine_type=ocr_cfg.get("engine", self.config.get("ocr_engine", "easyocr")),
+                engine_type=ocr_cfg.get("engine", self.config.get("ocr_engine", "ctd")),
                 use_gpu=not ocr_cfg.get("force_cpu", False) if "force_cpu" in ocr_cfg else self.config.get("use_gpu", True),
-                lang=ocr_cfg.get("lang", self.config.get("ocr_lang", "japan")),
+                lang=ocr_lang,
                 enable_ensemble_detection=ocr_cfg.get("ensemble_detection", self.config.get("ocr_ensemble_detection", False)),
                 enable_ensemble_recognition=ocr_cfg.get("ensemble_recognition", self.config.get("ocr_ensemble_recognition", False)),
+                is_manual=is_manual,
+                source_lang=effective_source,
             )
 
             rec_text, tight_box = self._run_context_ocr(
@@ -210,12 +217,17 @@ class BlockOcrTranslateWorker(QThread):
         h_img: int
     ) -> Tuple[str, Optional[Tuple[int, int, int, int]]]:
         """
-        Executes high-precision OCR on the region by:
-        1. Checking if page cache has prior high-resolution detections overlapping this box.
-        2. Cropping with generous safety margins (20%) and upscaling if small so DBNet/CRNN see full stroke features.
-        3. Mapping detected boxes back to true page-level coordinates.
-        4. Running _merge_adjacent_boxes using full page dimensions (w_img, h_img) for identical quality to auto pipeline.
+        Executes high-precision OCR on the region strictly adhering to manual source language:
+        1. Checks if page cache has prior high-resolution detections overlapping this box,
+           verifying that cached language does not conflict with user's manual source language setting.
+        2. Direct single-crop recognition using ocr_eng.recognize_crop matching manual source language.
+        3. Multi-scale context-padded OCR for line segmentation and merging when multiple fragments exist.
+        4. Reliable fallbacks ensuring no blank bubbles when valid text is present.
         """
+        raw_source = self.config.get("source_lang") or getattr(ocr_eng, "lang", "auto")
+        from app.core.pipeline.utils import normalize_source_lang, is_auto_source_lang
+        norm_source = normalize_source_lang(raw_source)
+
         # A. Check page cache for prior full-page detections covering this region
         if self.image_path:
             try:
@@ -241,11 +253,30 @@ class BlockOcrTranslateWorker(QThread):
                                 # High overlap with a previously detected block!
                                 prior_text = str(cb_dict.get("original_text", "")).strip()
                                 if prior_text:
+                                    if not is_auto_source_lang(norm_source):
+                                        has_kana = any('\u3040' <= c <= '\u309f' or '\u30a0' <= c <= '\u30ff' for c in prior_text)
+                                        has_hangul = any('\uac00' <= c <= '\ud7af' or '\u1100' <= c <= '\u11ff' for c in prior_text)
+                                        if norm_source == "en" and (has_kana or has_hangul):
+                                            continue
+                                        if norm_source == "ko" and has_kana and not has_hangul:
+                                            continue
+                                        if norm_source == "ja" and has_hangul and not has_kana:
+                                            continue
                                     return prior_text, (cb_x1, cb_y1, cb_x2, cb_y2)
             except Exception:
                 pass
 
-        # B. Multi-Scale Context-Padded OCR
+        # B. Direct single-crop recognition adhering strictly to manual source language
+        tight_crop = self.original_cv[ymin_px:ymax_px, xmin_px:xmax_px]
+        if hasattr(ocr_eng, "recognize_crop") and tight_crop is not None and tight_crop.size > 0:
+            try:
+                rec_txt, rec_conf = ocr_eng.recognize_crop(tight_crop, lang=norm_source)
+                if rec_txt and rec_txt.strip():
+                    return rec_txt.strip(), (xmin_px, ymin_px, xmax_px, ymax_px)
+            except Exception as e_rec:
+                print(f"[-] Crop recognize_crop error: {e_rec}")
+
+        # C. Multi-Scale Context-Padded Crop & Line Segmentation
         pad_x = max(16, int((xmax_px - xmin_px) * 0.20))
         pad_y = max(16, int((ymax_px - ymin_px) * 0.20))
         c_xmin = max(0, xmin_px - pad_x)
@@ -254,105 +285,78 @@ class BlockOcrTranslateWorker(QThread):
         c_ymax = min(h_img, ymax_px + pad_y)
 
         crop = self.original_cv[c_ymin:c_ymax, c_xmin:c_xmax]
-        if crop.size == 0:
+        if (crop is None or crop.size == 0) and (tight_crop is None or tight_crop.size == 0):
             return "", None
 
-        # Upscale crop if text lines are small so DBNet detector and recognizer achieve peak accuracy
-        h_c, w_c = crop.shape[:2]
+        target_img = crop if (crop is not None and crop.size > 0) else tight_crop
+        h_c, w_c = target_img.shape[:2]
         scale = 1.0
-        if max(h_c, w_c) < 650:
+        if max(h_c, w_c) < 650 and max(h_c, w_c) > 0:
             scale = min(3.0, 650.0 / max(h_c, w_c))
-            scaled_crop = cv2.resize(crop, (int(w_c * scale), int(h_c * scale)), interpolation=cv2.INTER_CUBIC)
+            scaled_crop = cv2.resize(target_img, (int(w_c * scale), int(h_c * scale)), interpolation=cv2.INTER_CUBIC)
         else:
-            scaled_crop = crop
+            scaled_crop = target_img
 
         raw_boxes = []
-        eng_type = getattr(ocr_eng, "engine_type", "easyocr")
-        if hasattr(ocr_eng, "detect_and_recognize") and not hasattr(ocr_eng, "_init_easyocr") and not hasattr(ocr_eng, "_init_paddle"):
+        if hasattr(ocr_eng, "detect_and_recognize"):
             try:
                 res = ocr_eng.detect_and_recognize(scaled_crop)
                 for b in res:
+                    txt = b.get("original_text", b.get("text", ""))
+                    if not txt:
+                        continue
+                    bx1 = b.get("xmin", 0)
+                    by1 = b.get("ymin", 0)
+                    bx2 = b.get("xmax", 0)
+                    by2 = b.get("ymax", 0)
+                    if isinstance(bx1, (float, int)) and bx1 <= 100.0 and bx2 <= 100.0:
+                        sw = scaled_crop.shape[1]
+                        sh = scaled_crop.shape[0]
+                        px_xmin = int(round((bx1 / 100.0) * sw / scale))
+                        px_ymin = int(round((by1 / 100.0) * sh / scale))
+                        px_xmax = int(round((bx2 / 100.0) * sw / scale))
+                        px_ymax = int(round((by2 / 100.0) * sh / scale))
+                    else:
+                        px_xmin = int(bx1 / scale)
+                        px_ymin = int(by1 / scale)
+                        px_xmax = int(bx2 / scale)
+                        px_ymax = int(by2 / scale)
+
                     raw_boxes.append({
-                        "xmin": c_xmin + int(b.get("xmin", 0) / scale),
-                        "ymin": c_ymin + int(b.get("ymin", 0) / scale),
-                        "xmax": c_xmin + int(b.get("xmax", 0) / scale),
-                        "ymax": c_ymin + int(b.get("ymax", 0) / scale),
-                        "text": b.get("original_text", b.get("text", "")),
-                        "conf": b.get("conf", 1.0)
+                        "xmin": c_xmin + px_xmin,
+                        "ymin": c_ymin + px_ymin,
+                        "xmax": c_xmin + px_xmax,
+                        "ymax": c_ymin + px_ymax,
+                        "text": txt,
+                        "conf": float(b.get("conf", 1.0))
                     })
-            except Exception:
+            except Exception as e_det:
                 pass
-        elif eng_type == "easyocr":
+        elif getattr(ocr_eng, "engine_type", "easyocr") == "easyocr" or hasattr(ocr_eng, "_easyocr_reader"):
             try:
                 if hasattr(ocr_eng, "_init_easyocr"):
-                    ocr_eng._init_easyocr()
-                rgb = cv2.cvtColor(scaled_crop, cv2.COLOR_BGR2RGB)
-                results = ocr_eng._easyocr_reader.readtext(rgb)
-                for bbox, text, conf in results:
-                    clean_text = text.strip()
-                    if not clean_text or conf < 0.20:
-                        continue
-                    pts = np.array(bbox, dtype=np.float32) / scale
-                    raw_boxes.append({
-                        "xmin": c_xmin + int(np.min(pts[:, 0])),
-                        "ymin": c_ymin + int(np.min(pts[:, 1])),
-                        "xmax": c_xmin + int(np.max(pts[:, 0])),
-                        "ymax": c_ymin + int(np.max(pts[:, 1])),
-                        "text": clean_text,
-                        "conf": float(conf)
-                    })
-            except Exception as e:
-                print(f"[-] Crop EasyOCR error: {e}")
-        else:
-            try:
-                ocr_eng._init_paddle()
-                results = ocr_eng._paddle_ocr.ocr(scaled_crop)
-                if results and len(results) > 0 and results[0]:
-                    if isinstance(results[0], dict):
-                        res_dict = results[0]
-                        rec_texts = res_dict.get('rec_texts', [])
-                        rec_scores = res_dict.get('rec_scores', [])
-                        rec_polys = res_dict.get('rec_polys', [])
-                        if (rec_polys is None or len(rec_polys) == 0) and 'dt_polys' in res_dict:
-                            rec_polys = res_dict.get('dt_polys', [])
-                        for i in range(len(rec_texts)):
-                            t = str(rec_texts[i]).strip()
-                            conf = float(rec_scores[i]) if i < len(rec_scores) else 1.0
-                            if not t or conf < 0.22:
-                                continue
-                            poly = rec_polys[i] if (rec_polys is not None and i < len(rec_polys)) else None
-                            if poly is not None and len(poly) >= 4:
-                                pts = np.array(poly, dtype=np.float32) / scale
-                                raw_boxes.append({
-                                    "xmin": c_xmin + int(np.min(pts[:, 0])),
-                                    "ymin": c_ymin + int(np.min(pts[:, 1])),
-                                    "xmax": c_xmin + int(np.max(pts[:, 0])),
-                                    "ymax": c_ymin + int(np.max(pts[:, 1])),
-                                    "text": t,
-                                    "conf": conf
-                                })
-                    elif isinstance(results[0], list):
-                        for line in results[0]:
-                            try:
-                                pts = np.array(line[0], dtype=np.float32) / scale
-                                text = str(line[1][0]).strip()
-                                conf = float(line[1][1])
-                                if not text or conf < 0.22:
-                                    continue
-                                raw_boxes.append({
-                                    "xmin": c_xmin + int(np.min(pts[:, 0])),
-                                    "ymin": c_ymin + int(np.min(pts[:, 1])),
-                                    "xmax": c_xmin + int(np.max(pts[:, 0])),
-                                    "ymax": c_ymin + int(np.max(pts[:, 1])),
-                                    "text": text,
-                                    "conf": conf
-                                })
-                            except Exception:
-                                pass
-            except Exception as e:
-                print(f"[-] Crop PaddleOCR error: {e}")
+                    ocr_eng._init_easyocr(lang=norm_source)
+                reader = getattr(ocr_eng, "_easyocr_reader", None)
+                if reader is not None:
+                    rgb = cv2.cvtColor(scaled_crop, cv2.COLOR_BGR2RGB)
+                    results = reader.readtext(rgb)
+                    for bbox, text, conf in results:
+                        clean_text = text.strip()
+                        if not clean_text or conf < 0.20:
+                            continue
+                        pts = np.array(bbox, dtype=np.float32) / scale
+                        raw_boxes.append({
+                            "xmin": c_xmin + int(np.min(pts[:, 0])),
+                            "ymin": c_ymin + int(np.min(pts[:, 1])),
+                            "xmax": c_xmin + int(np.max(pts[:, 0])),
+                            "ymax": c_ymin + int(np.max(pts[:, 1])),
+                            "text": clean_text,
+                            "conf": float(conf)
+                        })
+            except Exception:
+                pass
 
-        # Filter raw boxes to those within the user's manual selection box
+        # Filter raw boxes to those within user's manual selection box
         filtered_boxes = []
         margin = 8
         for b in raw_boxes:
@@ -364,7 +368,7 @@ class BlockOcrTranslateWorker(QThread):
         if not filtered_boxes and raw_boxes:
             filtered_boxes = raw_boxes
 
-        # C. Paragraph/Line Merging using Full Page Dimensions
+        # D. Paragraph/Line Merging
         if filtered_boxes:
             if hasattr(ocr_eng, "_merge_adjacent_boxes"):
                 merged = ocr_eng._merge_adjacent_boxes(filtered_boxes, w_img=w_img, h_img=h_img)
@@ -379,9 +383,16 @@ class BlockOcrTranslateWorker(QThread):
                 t_ymax = max(b["ymax"] for b in merged)
                 return full_text, (t_xmin, t_ymin, t_xmax, t_ymax)
 
-        # D. Direct reading fallback on tight crop
-        tight_crop = self.original_cv[ymin_px:ymax_px, xmin_px:xmax_px]
-        if tight_crop.size > 0 and hasattr(ocr_eng, "_easyocr_reader") and ocr_eng._easyocr_reader is not None:
+        # E. Fallback reading on padded crop using recognize_crop or reader
+        if hasattr(ocr_eng, "recognize_crop") and crop is not None and crop.size > 0:
+            try:
+                txt, conf = ocr_eng.recognize_crop(crop, lang=norm_source)
+                if txt and txt.strip():
+                    return txt.strip(), (xmin_px, ymin_px, xmax_px, ymax_px)
+            except Exception:
+                pass
+
+        if tight_crop is not None and tight_crop.size > 0 and hasattr(ocr_eng, "_easyocr_reader") and ocr_eng._easyocr_reader is not None:
             try:
                 res = ocr_eng._easyocr_reader.readtext(tight_crop)
                 texts = [str(item[1]).strip() for item in res if len(item) > 1 and str(item[1]).strip()]

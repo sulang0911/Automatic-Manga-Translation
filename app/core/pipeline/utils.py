@@ -112,6 +112,13 @@ def clean_translation_syntax(translated_text: str, original_text: str = "") -> s
     return t.strip()
 
 
+from app.core.translation.prompt_templates import (
+    normalize_source_lang,
+    is_auto_source_lang,
+    source_lang_to_ocr_lang,
+)
+
+
 def prioritize_english_routing(
     source_lang: Optional[str] = None,
     image: Optional[np.ndarray] = None,
@@ -126,14 +133,11 @@ def prioritize_english_routing(
     2. source_lang is 'auto' / '自动识别' and sample text or image shows English predominance.
     """
     if source_lang:
-        sl = str(source_lang).lower().strip()
-        if any(w in sl for w in ["en", "eng", "english", "latin"]):
+        norm = normalize_source_lang(source_lang)
+        if norm == "en":
             return True
-        if sl in ["auto", "unknown", "自动识别", "自动"]:
-            # Auto-detection required
-            pass
-        elif any(w in sl for w in ["japan", "ja", "日", "chinese", "zh", "中", "korean", "ko"]):
-            # Explicit non-English language requested by user
+        if norm != "auto":
+            # Explicit non-English language requested by user (ja, ko, chs, cht)
             return False
 
     if sample_text:

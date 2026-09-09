@@ -1276,6 +1276,14 @@ class MainWindow(QMainWindow):
     def _on_source_lang_changed(self, lang: str):
         """Updates active source language in application configuration."""
         self.config.source_lang = lang
+        from app.core.pipeline.utils import source_lang_to_ocr_lang
+        if hasattr(self.config, "ocr") and hasattr(self.config.ocr, "lang"):
+            self.config.ocr.lang = source_lang_to_ocr_lang(lang)
+        if hasattr(self.config, "save"):
+            try:
+                self.config.save("desktop_config.json")
+            except Exception:
+                pass
         self.status_label.setText(f"翻译源语言已切换为: {lang}")
 
     def _on_page_cache_cleared(self, item_data: Dict[str, Any]):
