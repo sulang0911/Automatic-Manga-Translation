@@ -283,6 +283,10 @@ class SettingsDialog(QDialog):
 
         box_layout.addWidget(ens_group)
 
+        self.recog_onoma_cb = QCheckBox("识别并翻译背景语气词与拟声词 (Onomatopoeia)")
+        self.recog_onoma_cb.setChecked(getattr(self.config.ocr, "recognize_onomatopoeia", False))
+        box_layout.addWidget(self.recog_onoma_cb)
+
         layout.addWidget(box)
         layout.addStretch()
         return widget
@@ -580,6 +584,7 @@ class SettingsDialog(QDialog):
         self.config.ocr.force_cpu = not self.gpu_cb.isChecked()
         self.config.ocr.ensemble_detection = self.ensemble_det_cb.isChecked()
         self.config.ocr.ensemble_recognition = self.ensemble_rec_cb.isChecked()
+        self.config.ocr.recognize_onomatopoeia = self.recog_onoma_cb.isChecked()
         self.config.source_lang = self.source_lang_combo.currentText()
         from app.core.pipeline.utils import source_lang_to_ocr_lang
         self.config.ocr.lang = source_lang_to_ocr_lang(self.config.source_lang)

@@ -112,6 +112,7 @@ class MainWindow(QMainWindow):
         self.canvas_view.sig_bubble_ocr_requested.connect(self._on_bubble_ocr_requested)
         self.canvas_view.sig_clear_cache_requested.connect(self._on_canvas_clear_cache_requested)
         self.canvas_view.sig_retranslate_requested.connect(self._on_canvas_retranslate_requested)
+        self.canvas_view.sig_force_erase_toggled.connect(self._on_force_erase_toggled)
         self.canvas_view.sig_open_style_requested.connect(self._open_current_page_style_dialog)
         self.canvas_view.sig_undo_requested.connect(self._undo)
         self.canvas_view.sig_redo_requested.connect(self._redo)
@@ -1097,6 +1098,30 @@ class MainWindow(QMainWindow):
         """Starts 300ms debounce timer to prevent lag during rapid slider/text input."""
         self._rerender_timer.start(300)
 
+    def _on_force_erase_toggled(self, block_data: dict):
+        if not self.current_image_data:
+            return
+        blocks = self.current_image_data.get("blocks", [])
+        bid = block_data.get("id")
+        
+        # We need to find the block in current_image_data and update it
+        for idx, b in enumerate(blocks):
+            if isinstance(b, dict) and b.get("id") == bid:
+                b["force_erase"] = block_data.get("force_erase", False)
+            elif not isinstance(b, dict) and getattr(b, "id", None) == bid:
+                b.force_erase = block_data.get("force_erase", False)
+                
+        path = self.current_image_data.get("path")
+        if path:
+            from app.core.cache.cache_manager import get_cache_manager
+            get_cache_manager().save_page_cache(path, blocks=blocks)
+            
+        self.inspector_panel.set_blocks(blocks)
+        if bid:
+            self.inspector_panel.sig_block_selected.emit(str(bid))
+            
+        self._start_pipeline_for_page(mode="inpaint_only")
+
     def _re_render_current_page(self):
         """Performs live typography re-render onto canvas using current style configuration."""
         if not self.current_image_data:
@@ -1144,11 +1169,12 @@ class MainWindow(QMainWindow):
             self.status_label.setText("气泡已删除，已还原原图底图")
             return
 
-        # Convert dict blocks to TranslationBlock objects if needed
-        model_blocks = [
-            b if isinstance(b, TranslationBlock) else TranslationBlock.from_dict(b)
-            for b in blocks
-        ]
+        model_blocks = []
+        for b in blocks:
+            tb = b if isinstance(b, TranslationBlock) else TranslationBlock.from_dict(b)
+            if tb.type == "onomatopoeia" and not getattr(tb, "force_erase", False):
+                continue
+            model_blocks.append(tb)
 
         try:
             page_style = self.current_image_data.get("style") or self.config.style
@@ -1163,9 +1189,13 @@ class MainWindow(QMainWindow):
                     self._mode_buttons["translated"].setChecked(True)
 
             if path:
+                full_blocks_to_save = [
+                    (b if isinstance(b, TranslationBlock) else TranslationBlock.from_dict(b)) 
+                    for b in blocks
+                ]
                 get_cache_manager().save_page_cache(
                     path,
-                    blocks=model_blocks,
+                    blocks=full_blocks_to_save,
                     erased_img=base_img,
                     rendered_img=rendered
                 )
@@ -1560,9 +1590,15 @@ class MainWindow(QMainWindow):
                 b if isinstance(b, TranslationBlock) else TranslationBlock.from_dict(b)
                 for b in blocks
             ]
+            
+            render_blocks = [
+                tb for tb in model_blocks
+                if tb.type != "onomatopoeia" or getattr(tb, "force_erase", False)
+            ]
+            
             effective_style = item.get("style") or self.config.style
             try:
-                rendered = self.typo_engine.render_page(erased_img, model_blocks, effective_style)
+                rendered = self.typo_engine.render_page(erased_img, render_blocks, effective_style)
                 item["translated_img"] = rendered
                 cache_mgr.save_page_cache(path, erased_img=erased_img, blocks=model_blocks, rendered_img=rendered)
                 re_rendered_count += 1
@@ -1622,11 +1658,16 @@ class MainWindow(QMainWindow):
             b if isinstance(b, TranslationBlock) else TranslationBlock.from_dict(b)
             for b in blocks
         ]
+        
+        render_blocks = [
+            tb for tb in model_blocks
+            if tb.type != "onomatopoeia" or getattr(tb, "force_erase", False)
+        ]
 
         style_to_use = page_style if page_style is not None else self.config.style
 
         try:
-            rendered = self.typo_engine.render_page(erased_img, model_blocks, style_to_use)
+            rendered = self.typo_engine.render_page(erased_img, render_blocks, style_to_use)
             item_data["translated_img"] = rendered
             cache_mgr.save_page_cache(path, erased_img=erased_img, blocks=model_blocks, rendered_img=rendered)
 

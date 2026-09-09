@@ -44,6 +44,7 @@ class OCRConfig:
     confidence_threshold: float = 0.25
     ensemble_detection: bool = True
     ensemble_recognition: bool = True
+    recognize_onomatopoeia: bool = False
 
 
 @dataclass

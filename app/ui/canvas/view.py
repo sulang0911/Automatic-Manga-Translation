@@ -235,6 +235,7 @@ class MangaCanvasView(QGraphicsView):
     sig_next_page = pyqtSignal()
     sig_shortcuts_requested = pyqtSignal()
     sig_commit_bubble_text = pyqtSignal(dict, str)
+    sig_force_erase_toggled = pyqtSignal(dict)
     sig_open_folder_requested = pyqtSignal()
     sig_open_files_requested = pyqtSignal()
 
@@ -427,6 +428,7 @@ class MangaCanvasView(QGraphicsView):
             item.signals.merge_prev_requested.connect(self.sig_bubble_merge_prev.emit)
             item.signals.merge_next_requested.connect(self.sig_bubble_merge_next.emit)
             item.signals.delete_requested.connect(self.sig_bubble_delete.emit)
+            item.signals.force_erase_toggled.connect(self.sig_force_erase_toggled.emit)
             self._scene.addItem(item)
             self.bubble_items.append(item)
 

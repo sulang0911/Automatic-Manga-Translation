@@ -119,7 +119,9 @@ class PipelineWorker(QThread):
 
                     blocks = ocr_eng.detect_and_recognize(original_img, progress_callback=ocr_cb)
                     cache_mgr.save_page_cache(self.image_path, blocks=blocks)
-                    self.sig_step_done.emit("ocr", blocks)
+
+                ocr_cfg = self.config.get("ocr", {}) if isinstance(self.config.get("ocr"), dict) else {}
+                self.sig_step_done.emit("ocr", blocks)
 
                 if self.mode == "ocr_only":
                     self.sig_finished.emit({
@@ -216,7 +218,13 @@ class PipelineWorker(QThread):
             self.sig_progress.emit(92, "正在生成高保真排版与字体渲染...")
             typo_eng = TypographyEngine()
             base_bg = erased_img if erased_img is not None else original_img
-            translated_img = typo_eng.render_translations(base_bg, blocks, self.config)
+            
+            render_blocks = [
+                b for b in blocks 
+                if getattr(b, "type", "") != "onomatopoeia" or getattr(b, "force_erase", False)
+            ]
+            
+            translated_img = typo_eng.render_translations(base_bg, render_blocks, self.config)
             cache_mgr.save_page_cache(self.image_path, erased_img=erased_img, blocks=blocks, rendered_img=translated_img)
             self.sig_step_done.emit("render", translated_img)
 

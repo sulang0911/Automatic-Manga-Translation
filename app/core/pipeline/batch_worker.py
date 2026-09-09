@@ -181,7 +181,12 @@ class BatchWorker(QThread):
                                 if base_bg is None:
                                     base_bg = safe_cv2_imread(img_path)
                                 if base_bg is not None:
-                                    rendered_to_export = typo_eng.render_translations(base_bg, cached_data.get("blocks", []), self.config)
+                                    c_blocks = cached_data.get("blocks", [])
+                                    render_blocks = [
+                                        b for b in c_blocks 
+                                        if (b.type if hasattr(b, "type") else b.get("type", "")) != "onomatopoeia" or (b.force_erase if hasattr(b, "force_erase") else b.get("force_erase", False))
+                                    ]
+                                    rendered_to_export = typo_eng.render_translations(base_bg, render_blocks, self.config)
                             if rendered_to_export is not None:
                                 compressed = False
                                 if hasattr(self.config, "style"):
@@ -281,7 +286,11 @@ class BatchWorker(QThread):
                 if export_path:
                     self.sig_batch_progress.emit(idx + 1, total, filename, 90, "正在生成排版并导出...")
                     base_bg = erased_img if erased_img is not None else original_img
-                    translated_img = typo_eng.render_translations(base_bg, blocks, self.config)
+                    render_blocks = [
+                        b for b in blocks 
+                        if (getattr(b, "type", "") if hasattr(b, "type") else b.get("type", "")) != "onomatopoeia" or (getattr(b, "force_erase", False) if hasattr(b, "force_erase") else b.get("force_erase", False))
+                    ]
+                    translated_img = typo_eng.render_translations(base_bg, render_blocks, self.config)
                     compressed = False
                     if hasattr(self.config, "style"):
                         compressed = getattr(self.config.style, "export_compressed", False)

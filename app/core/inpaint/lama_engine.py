@@ -130,7 +130,9 @@ class LaMaInpainter(BaseInpainter):
             if progress_callback:
                 progress_callback(int((idx / total_blocks) * 35), f"分析修复掩码 ({idx+1}/{total_blocks})...")
 
-            if block.type == "onomatopoeia" and style_config and style_config.onomatopoeia_mode == OnomatopoeiaMode.IGNORE.value:
+            b_type = getattr(block, "type", "") if not isinstance(block, dict) else block.get("type", "")
+            b_force = getattr(block, "force_erase", False) if not isinstance(block, dict) else block.get("force_erase", False)
+            if b_type == "onomatopoeia" and not b_force:
                 continue
 
             from app.core.inpaint.unboxed_text_eraser import is_unboxed_text_block, erase_unboxed_text_block

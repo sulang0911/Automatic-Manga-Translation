@@ -112,6 +112,12 @@ class InpaintEngine:
             if progress_callback:
                 progress_callback(int((idx / max(1, total_blocks)) * 40), f"正在分析第 {idx+1}/{total_blocks} 个气泡区域背景...")
 
+            block_type = block.get("type", "bubble") if isinstance(block, dict) else getattr(block, "type", "bubble")
+            erase_override = block.get("force_erase", False) if isinstance(block, dict) else getattr(block, "force_erase", False)
+            if block_type == "onomatopoeia" and not erase_override:
+                continue
+
+
             if is_unboxed_text_block(block, erased_img):
                 erased_img, unboxed_mask = erase_unboxed_text_block(
                     erased_img, block, qr_mask=qr_mask, min_dilation=max(3, onomatopoeia_dilation)

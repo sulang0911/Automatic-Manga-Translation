@@ -153,6 +153,12 @@ class InspectorPanel(QFrame):
         self.type_combo.currentTextChanged.connect(self._on_type_changed)
         row_type.addWidget(self.type_combo, 1)
 
+        self.force_erase_cb = QCheckBox("强制消除并翻译", self.detail_frame)
+        self.force_erase_cb.stateChanged.connect(self._on_force_erase_changed)
+        self.force_erase_cb.setVisible(False)
+        self.force_erase_cb.setToolTip("选中后将抹除此拟声词并显示翻译")
+        row_type.addWidget(self.force_erase_cb)
+
         self.delete_block_btn = QPushButton("删除气泡", self.detail_frame)
         self.delete_block_btn.setIcon(get_icon("trash", color="#EF4444", size=12))
         self.delete_block_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -501,6 +507,15 @@ class InspectorPanel(QFrame):
             self.type_combo.setCurrentIndex(idx)
             self.type_combo.blockSignals(False)
 
+        if btype == "onomatopoeia":
+            self.force_erase_cb.setVisible(True)
+            self.force_erase_cb.blockSignals(True)
+            self.force_erase_cb.setChecked(bool(block.get("force_erase", False)))
+            self.force_erase_cb.blockSignals(False)
+        else:
+            self.force_erase_cb.setVisible(False)
+
+
         # Populate swap target combo
         self.swap_target_combo.blockSignals(True)
         self.swap_target_combo.clear()
@@ -648,7 +663,23 @@ class InspectorPanel(QFrame):
     def _on_type_changed(self, new_type: str):
         if self.selected_block:
             self.selected_block["type"] = new_type
+            
+            if new_type == "onomatopoeia":
+                self.force_erase_cb.setVisible(True)
+                self.force_erase_cb.blockSignals(True)
+                self.force_erase_cb.setChecked(bool(self.selected_block.get("force_erase", False)))
+                self.force_erase_cb.blockSignals(False)
+            else:
+                self.force_erase_cb.setVisible(False)
+                
             self.sig_block_updated.emit(self.selected_block)
+
+    def _on_force_erase_changed(self, state: int):
+        if self.selected_block:
+            is_checked = (state == Qt.CheckState.Checked.value)
+            self.selected_block["force_erase"] = is_checked
+            self.sig_block_updated.emit(self.selected_block)
+            self.sig_re_render_requested.emit()
 
     def _on_delete_block(self):
         if self.selected_block:

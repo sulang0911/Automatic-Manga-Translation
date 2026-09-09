@@ -287,6 +287,7 @@ class TypographyEngine:
             if block.type == "onomatopoeia" and cfg.onomatopoeia_mode == OnomatopoeiaMode.IGNORE.value:
                 continue
 
+
             # Compute pixel bounding box
             x, y, w, h = block.to_pixel_rect(w_img, h_img)
             if w <= 4 or h <= 4:
