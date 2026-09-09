@@ -54,9 +54,11 @@ class BatchProgressPill(QFrame):
         """)
 
         layout = QHBoxLayout(self)
+        layout.setSizeConstraint(QHBoxLayout.SizeConstraint.SetFixedSize)
         layout.setContentsMargins(12, 4, 12, 4)
         layout.setSpacing(10)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
 
         # Pulse / Activity indicator icon
         self.icon_lbl = QLabel(self)
@@ -116,6 +118,13 @@ class BatchProgressPill(QFrame):
             self.eta_lbl.setText(eta_str)
         else:
             self.eta_lbl.setText("")
+            
+        self.adjustSize()
+        
+        # Re-center if parent is available
+        if self.parentWidget():
+            x = (self.parentWidget().width() - self.width()) // 2
+            self.move(max(10, x), self.y())
 
     def show_finished(self, success_count: int, failed_count: int = 0):
         """Displays completion state."""
@@ -124,3 +133,7 @@ class BatchProgressPill(QFrame):
         self.status_lbl.setText(f"批处理完成 ({success_count} 成功{fail_msg})")
         self.eta_lbl.setText("")
         self.btn_cancel.setText("关闭")
+        self.adjustSize()
+        if self.parentWidget():
+            x = (self.parentWidget().width() - self.width()) // 2
+            self.move(max(10, x), self.y())
