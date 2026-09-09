@@ -153,7 +153,8 @@ def ensemble_recognize_text(
     if t1 == t2:
         return t1, min(1.0, max(float(conf_pri), float(conf_sec)) + 0.05)
 
-    is_japanese = any(w in str(target_lang).lower() for w in ["japan", "ja", "auto", "自动识别"])
+    is_auto = any(w in str(target_lang).lower() for w in ["auto", "自动识别"])
+    is_japanese = is_auto or any(w in str(target_lang).lower() for w in ["japan", "ja"])
     is_chinese = any(w in str(target_lang).lower() for w in ["ch", "chinese", "zh"])
     is_english = any(w in str(target_lang).lower() for w in ["en", "eng", "english"])
 
@@ -171,6 +172,22 @@ def ensemble_recognize_text(
     words_sec = re.findall(r'[a-zA-Z]{2,}', t2)
     has_substantial_english = (len(words_sec) >= 2 or (len(words_sec) >= 1 and latin_letters_cnt2 >= 4))
     is_pri_repetitive = len(t1) >= 15 and len(set(t1)) <= 3
+
+    # New robust logic for auto mode using character ratios
+    if is_auto:
+        t1_cjk_ratio = cjk_cnt1 / max(1, len(t1))
+        t2_latin_ratio = latin_letters_cnt2 / max(1, len(t2))
+        t1_latin_ratio = latin_letters_cnt1 / max(1, len(t1))
+
+        # If EasyOCR strongly believes it's English (high latin ratio) and it's longer than hallucinated kana
+        if t2_latin_ratio >= 0.6 and latin_letters_cnt2 > cjk_cnt1 and conf_sec >= 0.25:
+            # Check if MangaOCR just gave us gibberish kana for English text
+            if cjk_cnt1 < latin_letters_cnt2:
+                return t2, float(conf_sec)
+
+        # If MangaOCR strongly believes it's Japanese (high CJK ratio)
+        if t1_cjk_ratio >= 0.5 and cjk_cnt1 > latin_letters_cnt2:
+            return t1, float(conf_pri)
 
     # Case 1: Alphanumeric & English protection against Manga-OCR Japanese kana hallucination
     # e.g., t1="アリス(19)" or "フレンドA" or "ハハ" when original comic text is pure English "Chris (19)" or "Friend A" or "Haha"

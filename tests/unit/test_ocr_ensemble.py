@@ -137,6 +137,29 @@ class TestEnsembleRecognizeText:
         assert res_t == "WARNING"
         assert res_c == 0.78
 
+    def test_auto_mode_character_ratio_english_hallucination(self):
+        # Image is English: "HELLO WORLD"
+        # MangaOCR hallucinates Kana with high confidence
+        text_pri = "ハハ"
+        conf_pri = 0.99
+        # EasyOCR gets it right
+        text_sec = "HELLO WORLD"
+        conf_sec = 0.85
+        res_t, res_c = ensemble_recognize_text(text_pri, conf_pri, text_sec, conf_sec, target_lang="auto")
+        assert res_t == "HELLO WORLD"
+        assert res_c == 0.85
+
+    def test_auto_mode_character_ratio_japanese_authentic(self):
+        # Image is Japanese: "こんにちは"
+        text_pri = "こんにちは"
+        conf_pri = 0.98
+        # EasyOCR gets confused and thinks it's some English noise
+        text_sec = "konni"
+        conf_sec = 0.45
+        res_t, res_c = ensemble_recognize_text(text_pri, conf_pri, text_sec, conf_sec, target_lang="auto")
+        assert res_t == "こんにちは"
+        assert res_c == 0.98
+
 
 class TestEnsembleConfigIntegration:
     def test_default_config_has_ensemble_keys(self):
