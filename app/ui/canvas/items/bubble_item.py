@@ -186,6 +186,7 @@ class BubbleItem(QGraphicsRectItem):
                 self._active_handle = HANDLE_NONE
                 self._is_moving_body = True
 
+            self._has_actually_moved = False
             self._drag_start_pos = self._extract_scene_pos(event)
             self._drag_start_rect = QRectF(self.rect())
             self._drag_start_scene_pos = QPointF(self.pos())
@@ -203,6 +204,7 @@ class BubbleItem(QGraphicsRectItem):
 
         # 1. Resizing via handle
         if self._active_handle != HANDLE_NONE and self._drag_start_pos is not None:
+            self._has_actually_moved = True
             delta = sp_event - self._drag_start_pos
             r = self._drag_start_rect
             sp = self._drag_start_scene_pos
@@ -248,6 +250,7 @@ class BubbleItem(QGraphicsRectItem):
 
         # 2. Moving whole bubble body
         if self._is_moving_body and self._drag_start_pos is not None:
+            self._has_actually_moved = True
             delta = sp_event - self._drag_start_pos
             sp = self._drag_start_scene_pos
             new_x = max(0.0, min(float(self.img_w - self.rect().width()), sp.x() + delta.x()))
@@ -262,14 +265,17 @@ class BubbleItem(QGraphicsRectItem):
 
     def mouseReleaseEvent(self, event):
         was_dragging = (self._active_handle != HANDLE_NONE) or self._is_moving_body
+        actually_moved = getattr(self, "_has_actually_moved", False)
         self._active_handle = HANDLE_NONE
         self._is_moving_body = False
+        self._has_actually_moved = False
 
         if was_dragging:
-            self._sync_block_coords()
-            self.signals.changed.emit(self.block_data)
-            self.signals.geometry_commit.emit(self.block_data)
-            self.update()
+            if actually_moved:
+                self._sync_block_coords()
+                self.signals.changed.emit(self.block_data)
+                self.signals.geometry_commit.emit(self.block_data)
+                self.update()
             event.accept()
             return
 

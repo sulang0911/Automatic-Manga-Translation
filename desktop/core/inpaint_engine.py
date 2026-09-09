@@ -84,7 +84,8 @@ class InpaintEngine:
     def inpaint(self, image: np.ndarray, blocks: List[Dict[str, Any]], 
                 bubble_dilation: int = 3, onomatopoeia_dilation: int = 6, 
                 feather_radius: int = 4, progress_callback=None,
-                qr_mask: Optional[np.ndarray] = None) -> np.ndarray:
+                qr_mask: Optional[np.ndarray] = None,
+                onomatopoeia_mode: str = "normal", **kwargs) -> np.ndarray:
         if image is None or image.size == 0 or not blocks:
             return image.copy() if image is not None else None
 
@@ -114,7 +115,10 @@ class InpaintEngine:
 
             block_type = block.get("type", "bubble") if isinstance(block, dict) else getattr(block, "type", "bubble")
             erase_override = block.get("force_erase", False) if isinstance(block, dict) else getattr(block, "force_erase", False)
-            if block_type == "onomatopoeia" and not erase_override:
+            has_trans = bool(block.get("translated_text", "") if isinstance(block, dict) else getattr(block, "translated_text", ""))
+
+            # Only skip if explicitly configured to ignore onomatopoeia AND not forced to erase AND has no translation
+            if block_type == "onomatopoeia" and onomatopoeia_mode == "ignore" and not erase_override and not has_trans:
                 continue
 
 
@@ -240,7 +244,7 @@ class InpaintEngine:
                 text_mask = cv2.bitwise_and(text_mask, poly_mask)
 
             block_type = block.get("type", "bubble") if isinstance(block, dict) else getattr(block, "type", "bubble")
-            if is_dark_bg or (block_type == "bubble" and is_uniform):
+            if is_dark_bg or is_uniform or (block_type == "bubble" and is_uniform):
                 fill_color = target_bg_color if is_dark_bg else bg_color
                 dilated = dilate_mask(text_mask, adaptive_dil)
                 if np.sum(text_mask) == 0:

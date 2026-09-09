@@ -260,7 +260,22 @@ class PaddleOCREngine(BaseOCREngine):
             text_hex = analyze_text_color(crop, (bg_b, bg_g, bg_r))
 
             aspect = (xmax - xmin) / max(1, (ymax - ymin))
-            is_bubble = not (aspect > 4.0 or aspect < 0.15)
+            is_bubble = True
+            if aspect > 4.0 or aspect < 0.15:
+                is_uniform_banner = False
+                if crop.size > 0:
+                    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+                    h_c, w_c = gray.shape[:2]
+                    if h_c >= 4 and w_c >= 4:
+                        border_pixels = np.concatenate([gray[0, :], gray[-1, :], gray[:, 0], gray[:, -1]])
+                        border_std = float(np.std(border_pixels))
+                        conf = float(b.get("conf", 1.0))
+                        text_str = str(b.get("text", "")).strip()
+                        med_lum = float(np.median(border_pixels))
+                        if border_std < 25.0 or med_lum > 220 or med_lum < 35 or conf >= 0.20 or len(text_str) >= 2:
+                            is_uniform_banner = True
+                if not is_uniform_banner:
+                    is_bubble = False
             is_vertical = (ymax - ymin) > (xmax - xmin) * 1.15
 
             block = TranslationBlock.from_pixel_box(

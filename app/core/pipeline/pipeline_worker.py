@@ -147,12 +147,21 @@ class PipelineWorker(QThread):
                 def inpaint_cb(pct, msg):
                     self.sig_progress.emit(int(45 + pct * 0.25), msg)
 
+                onoma_mode = "normal"
+                if hasattr(self.config, "style"):
+                    onoma_mode = getattr(self.config.style, "onomatopoeia_mode", "normal")
+                elif isinstance(self.config, dict):
+                    style_cfg = self.config.get("style", {})
+                    if isinstance(style_cfg, dict):
+                        onoma_mode = style_cfg.get("onomatopoeia_mode", "normal")
+
                 erased_img = inpaint_eng.inpaint(
                     original_img, blocks,
                     bubble_dilation=self.config.get("bubble_dilation", 3),
                     onomatopoeia_dilation=self.config.get("onomatopoeia_dilation", 6),
                     feather_radius=self.config.get("feather_radius", 4),
-                    progress_callback=inpaint_cb
+                    progress_callback=inpaint_cb,
+                    onomatopoeia_mode=onoma_mode
                 )
                 cache_mgr.save_page_cache(self.image_path, erased_img=erased_img, blocks=blocks)
                 self.sig_step_done.emit("inpaint", erased_img)
@@ -219,9 +228,17 @@ class PipelineWorker(QThread):
             typo_eng = TypographyEngine()
             base_bg = erased_img if erased_img is not None else original_img
             
+            onoma_mode = "normal"
+            if hasattr(self.config, "style"):
+                onoma_mode = getattr(self.config.style, "onomatopoeia_mode", "normal")
+            elif isinstance(self.config, dict):
+                style_cfg = self.config.get("style", {})
+                if isinstance(style_cfg, dict):
+                    onoma_mode = style_cfg.get("onomatopoeia_mode", "normal")
+
             render_blocks = [
                 b for b in blocks 
-                if getattr(b, "type", "") != "onomatopoeia" or getattr(b, "force_erase", False)
+                if (getattr(b, "type", "") if hasattr(b, "type") else b.get("type", "")) != "onomatopoeia" or onoma_mode != "ignore" or (getattr(b, "force_erase", False) if hasattr(b, "force_erase") else b.get("force_erase", False))
             ]
             
             translated_img = typo_eng.render_translations(base_bg, render_blocks, self.config)

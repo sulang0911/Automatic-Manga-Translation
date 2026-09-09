@@ -132,7 +132,14 @@ class LaMaInpainter(BaseInpainter):
 
             b_type = getattr(block, "type", "") if not isinstance(block, dict) else block.get("type", "")
             b_force = getattr(block, "force_erase", False) if not isinstance(block, dict) else block.get("force_erase", False)
-            if b_type == "onomatopoeia" and not b_force:
+            has_trans = bool(getattr(block, "translated_text", "") if not isinstance(block, dict) else block.get("translated_text", ""))
+            if isinstance(style_config, dict):
+                onoma_mode = style_config.get("onomatopoeia_mode", "normal")
+            elif style_config:
+                onoma_mode = getattr(style_config, "onomatopoeia_mode", "normal")
+            else:
+                onoma_mode = "normal"
+            if b_type == "onomatopoeia" and onoma_mode == "ignore" and not b_force and not has_trans:
                 continue
 
             from app.core.inpaint.unboxed_text_eraser import is_unboxed_text_block, erase_unboxed_text_block

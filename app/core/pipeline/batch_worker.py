@@ -182,9 +182,17 @@ class BatchWorker(QThread):
                                     base_bg = safe_cv2_imread(img_path)
                                 if base_bg is not None:
                                     c_blocks = cached_data.get("blocks", [])
+                                    onoma_mode = "normal"
+                                    if hasattr(self.config, "style"):
+                                        onoma_mode = getattr(self.config.style, "onomatopoeia_mode", "normal")
+                                    elif isinstance(self.config, dict):
+                                        style_cfg = self.config.get("style", {})
+                                        if isinstance(style_cfg, dict):
+                                            onoma_mode = style_cfg.get("onomatopoeia_mode", "normal")
+
                                     render_blocks = [
                                         b for b in c_blocks 
-                                        if (b.type if hasattr(b, "type") else b.get("type", "")) != "onomatopoeia" or (b.force_erase if hasattr(b, "force_erase") else b.get("force_erase", False))
+                                        if (b.type if hasattr(b, "type") else b.get("type", "")) != "onomatopoeia" or onoma_mode != "ignore" or (b.force_erase if hasattr(b, "force_erase") else b.get("force_erase", False))
                                     ]
                                     rendered_to_export = typo_eng.render_translations(base_bg, render_blocks, self.config)
                             if rendered_to_export is not None:
@@ -254,11 +262,20 @@ class BatchWorker(QThread):
                     erased_img = cache_mgr.load_page_cache(img_path, load_images=True)["erased_img"]
                 else:
                     self.sig_batch_progress.emit(idx + 1, total, filename, 55, "正在消除背景...")
+                    onoma_mode = "normal"
+                    if hasattr(self.config, "style"):
+                        onoma_mode = getattr(self.config.style, "onomatopoeia_mode", "normal")
+                    elif isinstance(self.config, dict):
+                        style_cfg = self.config.get("style", {})
+                        if isinstance(style_cfg, dict):
+                            onoma_mode = style_cfg.get("onomatopoeia_mode", "normal")
+
                     erased_img = inpaint_eng.inpaint(
                         original_img, blocks,
                         bubble_dilation=self.config.get("bubble_dilation", 3),
                         onomatopoeia_dilation=self.config.get("onomatopoeia_dilation", 6),
-                        feather_radius=self.config.get("feather_radius", 4)
+                        feather_radius=self.config.get("feather_radius", 4),
+                        onomatopoeia_mode=onoma_mode
                     )
                     cache_mgr.save_page_cache(img_path, erased_img=erased_img, blocks=blocks)
 
@@ -286,9 +303,17 @@ class BatchWorker(QThread):
                 if export_path:
                     self.sig_batch_progress.emit(idx + 1, total, filename, 90, "正在生成排版并导出...")
                     base_bg = erased_img if erased_img is not None else original_img
+                    onoma_mode = "normal"
+                    if hasattr(self.config, "style"):
+                        onoma_mode = getattr(self.config.style, "onomatopoeia_mode", "normal")
+                    elif isinstance(self.config, dict):
+                        style_cfg = self.config.get("style", {})
+                        if isinstance(style_cfg, dict):
+                            onoma_mode = style_cfg.get("onomatopoeia_mode", "normal")
+
                     render_blocks = [
                         b for b in blocks 
-                        if (getattr(b, "type", "") if hasattr(b, "type") else b.get("type", "")) != "onomatopoeia" or (getattr(b, "force_erase", False) if hasattr(b, "force_erase") else b.get("force_erase", False))
+                        if (getattr(b, "type", "") if hasattr(b, "type") else b.get("type", "")) != "onomatopoeia" or onoma_mode != "ignore" or (getattr(b, "force_erase", False) if hasattr(b, "force_erase") else b.get("force_erase", False))
                     ]
                     translated_img = typo_eng.render_translations(base_bg, render_blocks, self.config)
                     compressed = False

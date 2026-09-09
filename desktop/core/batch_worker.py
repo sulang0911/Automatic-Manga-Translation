@@ -125,11 +125,13 @@ class BatchWorker(QThread):
 
                 # Inpaint
                 self.sig_batch_progress.emit(idx + 1, total, filename, 55, "正在消除背景...")
+                onoma_mode = self.config.get("onomatopoeia_mode", "normal")
                 erased_img = inpaint_eng.inpaint(
                     original_img, blocks,
                     bubble_dilation=self.config.get("bubble_dilation", 3),
                     onomatopoeia_dilation=self.config.get("onomatopoeia_dilation", 6),
-                    feather_radius=self.config.get("feather_radius", 4)
+                    feather_radius=self.config.get("feather_radius", 4),
+                    onomatopoeia_mode=onoma_mode
                 )
 
                 # Translate
@@ -139,7 +141,11 @@ class BatchWorker(QThread):
                 # Render
                 self.sig_batch_progress.emit(idx + 1, total, filename, 90, "正在生成排版...")
                 base_bg = erased_img if erased_img is not None else original_img
-                translated_img = typo_eng.render_translations(base_bg, blocks, self.config)
+                render_blocks = [
+                    b for b in blocks
+                    if (getattr(b, "type", "") if hasattr(b, "type") else b.get("type", "")) != "onomatopoeia" or onoma_mode != "ignore" or (getattr(b, "force_erase", False) if hasattr(b, "force_erase") else b.get("force_erase", False))
+                ]
+                translated_img = typo_eng.render_translations(base_bg, render_blocks, self.config)
 
                 # Auto save if export_dir specified
                 export_path = self.resolve_export_path(item)

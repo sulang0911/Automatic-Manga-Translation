@@ -1161,7 +1161,7 @@ class OCREngine:
             aspect = (xmax - xmin) / max(1, (ymax - ymin))
             if aspect > 4.0 or aspect < 0.15:
                 is_uniform_banner = False
-                if aspect > 4.0 and crop.size > 0:
+                if crop.size > 0:
                     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
                     h_c, w_c = gray.shape[:2]
                     if h_c >= 4 and w_c >= 4:
@@ -1169,7 +1169,8 @@ class OCREngine:
                         border_std = float(np.std(border_pixels))
                         conf = float(box.get("conf", 1.0))
                         text_str = str(box.get("text", "")).strip()
-                        if border_std < 22.0 and (conf >= 0.20 or len(text_str) >= 3):
+                        med_lum = float(np.median(border_pixels))
+                        if border_std < 25.0 or med_lum > 220 or med_lum < 35 or conf >= 0.20 or len(text_str) >= 2:
                             is_uniform_banner = True
                 if not is_uniform_banner:
                     is_bubble = False

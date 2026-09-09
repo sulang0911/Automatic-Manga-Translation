@@ -60,10 +60,11 @@ class MainWindow(QMainWindow):
 
         self._current_theme = theme
         tokens = get_tokens(theme)
+        sheet = build_stylesheet(tokens)
         app_inst = QApplication.instance()
-        if app_inst:
-            app_inst.setStyleSheet(build_stylesheet(tokens))
-        self.setStyleSheet(build_stylesheet(tokens))
+        if app_inst and app_inst.styleSheet() != sheet:
+            app_inst.setStyleSheet(sheet)
+        self.setStyleSheet(sheet)
 
         self.config = AppConfig.load("desktop_config.json")
         self.typo_engine = TypographyEngine()
@@ -738,16 +739,58 @@ class MainWindow(QMainWindow):
                 cached_rendered = cached.get("rendered_img")
                 translated = cached_rendered if cached_rendered is not None else item_data.get("translated_img")
 
-                # If blocks exist and erased exists but rendered image not on disk yet, render on demand
-                if translated is None and blocks and (erased is not None or cv_img is not None):
+                has_translations = any(
+                    bool(getattr(b, "translated_text", "") if hasattr(b, "translated_text") else b.get("translated_text", ""))
+                    for b in blocks
+                )
+
+                # If blocks exist and have translations, but rendered image not on disk yet, render on demand
+                if translated is None and blocks and has_translations and (erased is not None or cv_img is not None):
+                    page_style = item_data.get("style") or self.config.style
+                    onoma_mode = getattr(page_style, "onomatopoeia_mode", "normal")
+                    if erased is None and cv_img is not None:
+                        try:
+                            from desktop.core.inpaint_engine import InpaintEngine
+                            inpaint_mode = "auto"
+                            bubble_dil = 3
+                            onoma_dil = 6
+                            feather_rad = 4
+                            if hasattr(self.config, "inpaint"):
+                                inpaint_mode = getattr(self.config.inpaint, "engine", "auto")
+                            elif isinstance(self.config, dict):
+                                inpaint_mode = self.config.get("inpaint", {}).get("engine", self.config.get("inpaint_engine", "auto"))
+                            if hasattr(self.config, "style"):
+                                bubble_dil = getattr(self.config.style, "bubble_dilation", 3)
+                                onoma_dil = getattr(self.config.style, "onomatopoeia_dilation", 6)
+                                feather_rad = getattr(self.config.style, "feather_radius", 4)
+                            elif isinstance(self.config, dict):
+                                bubble_dil = self.config.get("bubble_dilation", 3)
+                                onoma_dil = self.config.get("onomatopoeia_dilation", 6)
+                                feather_rad = self.config.get("feather_radius", 4)
+
+                            inpaint_eng = InpaintEngine(mode=inpaint_mode)
+                            erased = inpaint_eng.inpaint(
+                                cv_img, blocks,
+                                bubble_dilation=bubble_dil,
+                                onomatopoeia_dilation=onoma_dil,
+                                feather_radius=feather_rad,
+                                onomatopoeia_mode=onoma_mode
+                            )
+                            cache_mgr.save_page_cache(path, erased_img=erased)
+                        except Exception as e:
+                            print(f"[-] Auto inpaint on select error: {e}")
+
                     base_bg = erased if erased is not None else cv_img
                     model_blocks = [
                         b if isinstance(b, TranslationBlock) else TranslationBlock.from_dict(b)
                         for b in blocks
                     ]
                     try:
-                        page_style = item_data.get("style") or self.config.style
-                        translated = self.typo_engine.render_page(base_bg, model_blocks, page_style)
+                        render_blocks = [
+                            b for b in model_blocks
+                            if b.type != "onomatopoeia" or onoma_mode != "ignore" or getattr(b, "force_erase", False)
+                        ]
+                        translated = self.typo_engine.render_page(base_bg, render_blocks, page_style)
                         cache_mgr.save_page_cache(path, rendered_img=translated)
                     except Exception as e:
                         print(f"[-] Auto render on select error: {e}")
@@ -759,6 +802,18 @@ class MainWindow(QMainWindow):
                 self.canvas_view.set_data(cv_img, translated_cv=translated, erased_cv=erased, blocks=blocks)
                 self.canvas_view.fit_in_view()
                 self.inspector_panel.set_blocks(blocks)
+
+                # Automatically switch to translated view mode if translation result is available
+                if translated is not None or (erased is not None and has_translations):
+                    if self.canvas_view.view_mode in ("original", "inpainted"):
+                        self.canvas_view.set_view_mode("translated")
+                        if hasattr(self, "_mode_buttons") and "translated" in self._mode_buttons:
+                            self._mode_buttons["translated"].setChecked(True)
+                elif translated is None and (not blocks or not has_translations):
+                    if self.canvas_view.view_mode == "translated":
+                        self.canvas_view.set_view_mode("original")
+                        if hasattr(self, "_mode_buttons") and "original" in self._mode_buttons:
+                            self._mode_buttons["original"].setChecked(True)
 
                 # Update breadcrumb and status chips
                 fname = os.path.basename(path)
@@ -1169,15 +1224,16 @@ class MainWindow(QMainWindow):
             self.status_label.setText("气泡已删除，已还原原图底图")
             return
 
+        page_style = self.current_image_data.get("style") or self.config.style
+        onoma_mode = getattr(page_style, "onomatopoeia_mode", "normal")
         model_blocks = []
         for b in blocks:
             tb = b if isinstance(b, TranslationBlock) else TranslationBlock.from_dict(b)
-            if tb.type == "onomatopoeia" and not getattr(tb, "force_erase", False):
+            if tb.type == "onomatopoeia" and onoma_mode == "ignore" and not getattr(tb, "force_erase", False):
                 continue
             model_blocks.append(tb)
 
         try:
-            page_style = self.current_image_data.get("style") or self.config.style
             rendered = self.typo_engine.render_page(base_img, model_blocks, page_style)
             self.current_image_data["translated_img"] = rendered
             self.canvas_view.translated_cv = rendered
@@ -1591,12 +1647,12 @@ class MainWindow(QMainWindow):
                 for b in blocks
             ]
             
+            effective_style = item.get("style") or self.config.style
+            onoma_mode = getattr(effective_style, "onomatopoeia_mode", "normal")
             render_blocks = [
                 tb for tb in model_blocks
-                if tb.type != "onomatopoeia" or getattr(tb, "force_erase", False)
+                if tb.type != "onomatopoeia" or onoma_mode != "ignore" or getattr(tb, "force_erase", False)
             ]
-            
-            effective_style = item.get("style") or self.config.style
             try:
                 rendered = self.typo_engine.render_page(erased_img, render_blocks, effective_style)
                 item["translated_img"] = rendered
@@ -1659,12 +1715,12 @@ class MainWindow(QMainWindow):
             for b in blocks
         ]
         
+        style_to_use = page_style if page_style is not None else self.config.style
+        onoma_mode = getattr(style_to_use, "onomatopoeia_mode", "normal")
         render_blocks = [
             tb for tb in model_blocks
-            if tb.type != "onomatopoeia" or getattr(tb, "force_erase", False)
+            if tb.type != "onomatopoeia" or onoma_mode != "ignore" or getattr(tb, "force_erase", False)
         ]
-
-        style_to_use = page_style if page_style is not None else self.config.style
 
         try:
             rendered = self.typo_engine.render_page(erased_img, render_blocks, style_to_use)
@@ -1935,6 +1991,10 @@ class MainWindow(QMainWindow):
             self.page_list.retranslate_all_btn.setText("🔄 全部重新翻译 (强制覆盖)")
         self.status_label.setText(f"批处理完成: {success_count} 成功, {fail_count} 失败")
         self.toast.show_message(f"批处理完成: {success_count} 成功, {fail_count} 失败", "success" if fail_count == 0 else "warning")
+
+        # Automatically refresh current canvas page if it now has translation results
+        if self.current_image_data:
+            self._on_page_selected(self.current_image_data)
 
     def _export_current_page(self):
         """Exports currently active translated manga page to high-res PNG/JPG/WebP/PDF."""
