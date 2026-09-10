@@ -176,7 +176,11 @@ class PipelineWorker(QThread):
                     return
 
             # 3. Translation Stage
-            if self.mode in ["full", "translate_only"] or any(not b.get("translated_text") for b in (blocks or [])):
+            if self.mode in ["full", "translate_only"] or any(
+                bool((getattr(b, "original_text", "") if hasattr(b, "original_text") else b.get("original_text", "")).strip()) and
+                not (getattr(b, "translated_text", "") if hasattr(b, "translated_text") else b.get("translated_text", ""))
+                for b in (blocks or [])
+            ):
                 if self._is_cancelled:
                     return
                 self.sig_progress.emit(72, "正在调用大语言模型进行精准翻译...")

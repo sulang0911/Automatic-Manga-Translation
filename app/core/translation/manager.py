@@ -129,11 +129,50 @@ class TranslationManager:
             elif isinstance(b, dict):
                 tb_blocks.append(TranslationBlock.from_dict(b))
 
+        # Determine reading order mode based on context or source_lang
+        reading_mode = "manga_rtl"
+        if self._chapter_context and self._chapter_context.reading_direction:
+            rd = self._chapter_context.reading_direction.lower()
+            if rd in ("ltr", "western_ltr"):
+                reading_mode = "western_ltr"
+            elif rd in ("ttb", "webtoon_ttb", "vertical"):
+                reading_mode = "webtoon_ttb"
+            elif rd in ("rtl", "manga_rtl"):
+                reading_mode = "manga_rtl"
+        elif source_lang:
+            from app.core.translation.prompt_templates import normalize_source_lang
+            norm_lang = normalize_source_lang(source_lang)
+            if norm_lang == "en":
+                reading_mode = "western_ltr"
+            elif norm_lang == "ko":
+                reading_mode = "webtoon_ttb"
+
+        # Ensure sequential reading order to guarantee dialogue continuity for LLM
+        has_reading_order = any(b.reading_order > 0 for b in tb_blocks)
+        if has_reading_order:
+            x_mult = 1 if reading_mode == "western_ltr" else -1
+            tb_blocks.sort(key=lambda b: (b.reading_order if b.reading_order > 0 else 9999, x_mult * b.xmin, b.ymin))
+        elif len(tb_blocks) > 1 and mode != "vision":
+            try:
+                from app.core.ocr.reading_order import sort_reading_order
+                tb_blocks = sort_reading_order(tb_blocks, mode=reading_mode)
+            except Exception:
+                pass
+
+        # Separate blocks with actual text from empty/whitespace blocks
+        active_blocks = [b for b in tb_blocks if b.original_text and b.original_text.strip()]
+        for b in tb_blocks:
+            if not (b.original_text and b.original_text.strip()):
+                b.translated_text = ""
+
+        if not active_blocks and mode != "vision":
+            return [b.to_dict() for b in tb_blocks] if is_dict_input else tb_blocks
+
         # Local demonstration mode when API key is empty
         if not provider.config.api_key and provider.config.provider_name != "custom":
             if progress_callback:
                 progress_callback(50, "未检测到 API Key，正在运行本地演示翻译模式...")
-            for b in tb_blocks:
+            for b in active_blocks:
                 if not b.translated_text:
                     b.translated_text = f"【译】{b.original_text}"
             return [b.to_dict() for b in tb_blocks] if is_dict_input else tb_blocks
@@ -148,15 +187,63 @@ class TranslationManager:
             )
             return [b.to_dict() for b in translated_tb] if is_dict_input else translated_tb
 
-        # Standard text translation mode
-        translated_tb = provider.translate_text_blocks(
-            tb_blocks,
-            source_lang=source_lang,
-            target_lang=target_lang,
-            context=self._chapter_context,
-            progress_callback=progress_callback
-        )
-        return [b.to_dict() for b in translated_tb] if is_dict_input else translated_tb
+        # Standard text translation mode (with automatic chunking for large page sets)
+        CHUNK_SIZE = 25
+        if len(active_blocks) > CHUNK_SIZE:
+            total_active = len(active_blocks)
+            for i in range(0, total_active, CHUNK_SIZE):
+                chunk = active_blocks[i:i + CHUNK_SIZE]
+                chunk_start_pct = int(20 + 75 * (i / total_active))
+                chunk_end_pct = int(20 + 75 * (min(i + CHUNK_SIZE, total_active) / total_active))
+
+                def make_chunk_cb(c_start: int, c_end: int, c_from: int, c_to: int):
+                    def cb(pct: int, msg: str):
+                        if progress_callback:
+                            scaled = int(c_start + (c_end - c_start) * (pct / 100.0))
+                            progress_callback(
+                                min(98, max(1, scaled)),
+                                f"[{c_from}-{c_to}/{total_active}] {msg}"
+                            )
+                    return cb
+
+                chunk_cb = make_chunk_cb(chunk_start_pct, chunk_end_pct, i + 1, min(i + CHUNK_SIZE, total_active))
+
+                # Build context for this chunk carrying narrative continuity from preceding chunks
+                chunk_context = TranslationContext(
+                    glossary=self._chapter_context.glossary,
+                    character_notes=self._chapter_context.character_notes,
+                    previous_summary=self._chapter_context.previous_summary,
+                    reading_direction=self._chapter_context.reading_direction
+                )
+                if i > 0:
+                    prev_dialogues = "\n".join(
+                        f"- [{b.id}] 原文: {b.original_text} => 译文: {b.translated_text}"
+                        for b in active_blocks[max(0, i - 3):i]
+                        if b.translated_text
+                    )
+                    if prev_dialogues:
+                        prefix = (chunk_context.previous_summary + "\n") if chunk_context.previous_summary else ""
+                        chunk_context.previous_summary = f"{prefix}Previous dialogue context:\n{prev_dialogues}"
+
+                provider.translate_text_blocks(
+                    chunk,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    context=chunk_context,
+                    progress_callback=chunk_cb
+                )
+            if progress_callback:
+                progress_callback(100, f"所有 {len(active_blocks)} 个文本气泡翻译完成")
+        else:
+            provider.translate_text_blocks(
+                active_blocks,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                context=self._chapter_context,
+                progress_callback=progress_callback
+            )
+
+        return [b.to_dict() for b in tb_blocks] if is_dict_input else tb_blocks
 
     # Chapter Glossary & Terminology Continuity
     def set_glossary(self, glossary: Dict[str, str]):

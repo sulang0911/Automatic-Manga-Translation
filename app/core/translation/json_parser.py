@@ -6,7 +6,8 @@ Handles thinking tags, markdown wrappers, trailing commas, truncated JSON, and s
 import json
 import re
 import difflib
-from typing import Any, List, Dict, Optional, Set
+import unicodedata
+from typing import Any, List, Dict, Optional, Set, Tuple
 from app.core.models import TranslationBlock
 
 
@@ -25,27 +26,32 @@ def parse_llm_json_response(raw_text: str) -> Any:
         raise ValueError("收到空响应文本，无法解析翻译结果。")
 
     # Pass 1: Strip thinking/reasoning tags
-    text = re.sub(r'<think>[\s\S]*?</think>', '', raw_text, flags=re.IGNORECASE).strip()
+    text = re.sub(r'<(?:think|thought|reasoning)>[\s\S]*?</(?:think|thought|reasoning)>', '', raw_text, flags=re.IGNORECASE).strip()
 
     # Pass 2: Extract code block from markdown fences
     json_match = re.search(r'```(?:json)\s*([\s\S]*?)\s*```', text, flags=re.IGNORECASE)
     if json_match:
         text = json_match.group(1).strip()
     else:
-        blocks = re.findall(r'```(?:[a-zA-Z0-9_\-]+)?\s*([\s\S]*?)\s*```', text)
-        found = None
-        for b in blocks:
-            b_s = b.strip()
-            if ('[' in b_s and ']' in b_s) or ('{' in b_s and '}' in b_s):
-                found = b_s
-                break
-        if found is not None:
-            text = found
-        elif blocks:
-            text = blocks[-1].strip()
-        elif text.startswith('```'):
-            text = re.sub(r'^```[a-zA-Z]*\n?', '', text).strip()
-            text = re.sub(r'\n?```$', '', text).strip()
+        # Check for unclosed code fence continuing to EOF
+        unclosed = re.search(r'```(?:json)?\s*([\s\S]+)$', text, flags=re.IGNORECASE)
+        if unclosed and ('[' in unclosed.group(1) or '{' in unclosed.group(1)):
+            text = unclosed.group(1).strip()
+        else:
+            blocks = re.findall(r'```(?:[a-zA-Z0-9_\-]+)?\s*([\s\S]*?)\s*```', text)
+            found = None
+            for b in blocks:
+                b_s = b.strip()
+                if ('[' in b_s and ']' in b_s) or ('{' in b_s and '}' in b_s):
+                    found = b_s
+                    break
+            if found is not None:
+                text = found
+            elif blocks:
+                text = blocks[-1].strip()
+            elif text.startswith('```'):
+                text = re.sub(r'^```[a-zA-Z]*\n?', '', text).strip()
+                text = re.sub(r'\n?```$', '', text).strip()
 
     # Pass 3: Direct standard parse
     try:
@@ -123,6 +129,9 @@ def _repair_unclosed_json(text: str) -> str:
     if in_string:
         repaired += '"'
 
+    # Strip incomplete trailing key or key-value pair, e.g. `, "key":` or `, "key"` or `,`
+    repaired = re.sub(r',\s*"[^"]*"\s*(?::\s*)?$', '', repaired)
+    repaired = re.sub(r'{\s*"[^"]*"\s*(?::\s*)?$', '{', repaired)
     repaired = re.sub(r',\s*$', '', repaired)
 
     for opener in reversed(stack):
@@ -134,33 +143,59 @@ def _repair_unclosed_json(text: str) -> str:
 
 
 def _salvage_translation_blocks(text: str) -> List[Dict[str, Any]]:
-    """Extracts id and translated_text pairs via regex when JSON syntax is severely corrupted."""
+    """Extracts id, original_text, and translated_text pairs via regex when JSON syntax is severely corrupted."""
     items = []
     # Split text into chunks at each 'id' / 'block_id' declaration
     segments = re.split(r'(?=["\']?(?:id|block_id)["\']?\s*[:=])', text, flags=re.IGNORECASE)
     for seg in segments:
         id_match = re.search(
-            r'["\']?(?:id|block_id)["\']?\s*[:=]\s*["\']?([a-zA-Z0-9_\-]+)["\']?',
+            r'(?<![a-zA-Z0-9_])["\']?(?:id|block_id)["\']?\s*[:=]\s*["\']?([a-zA-Z0-9_\-]+)["\']?',
+            seg, flags=re.IGNORECASE
+        )
+        orig_match = re.search(
+            r'(?<![a-zA-Z0-9_])["\']?(?:original_text|source_text|orig_text)["\']?\s*[:=]\s*(?:"((?:\\.|[^"\\])*)"|\'((?:\\.|[^\'\\])*)\'|([^"\'\n\r,}]+))',
             seg, flags=re.IGNORECASE
         )
         text_match = re.search(
-            r'["\']?(?:translated_text|text|translation)["\']?\s*[:=]\s*(?:"([^"]*)"|\'([^\']*)\'|([^"\'\n\r,}]+))',
+            r'(?<![a-zA-Z0-9_])["\']?(?:translated_text|translation|target_text|text)["\']?\s*[:=]\s*(?:"((?:\\.|[^"\\])*)"|\'((?:\\.|[^\'\\])*)\'|([^"\'\n\r,}]+))',
             seg, flags=re.IGNORECASE
         )
         type_match = re.search(
-            r'["\']?(?:type)["\']?\s*[:=]\s*["\']?(bubble|onomatopoeia|other)["\']?',
+            r'(?<![a-zA-Z0-9_])["\']?(?:type)["\']?\s*[:=]\s*["\']?(bubble|onomatopoeia|other)["\']?',
             seg, flags=re.IGNORECASE
         )
 
         if id_match and text_match:
             bid = id_match.group(1).strip()
             btext = (text_match.group(1) or text_match.group(2) or text_match.group(3) or "").strip()
+            btext = btext.replace('\\"', '"').replace("\\'", "'")
+            otext = ""
+            if orig_match:
+                otext = (orig_match.group(1) or orig_match.group(2) or orig_match.group(3) or "").strip()
+                otext = otext.replace('\\"', '"').replace("\\'", "'")
             btype = type_match.group(1).strip().lower() if type_match else "bubble"
             items.append({
                 "id": bid,
+                "original_text": otext,
                 "translated_text": btext,
                 "type": btype
             })
+
+    # Plain text list fallback (e.g. "1. [id] translated text" or "1. translated text")
+    if not items:
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        for line in lines:
+            m = re.match(r'^(?:[-*]|\d+[\.\)])\s*(?:\[([a-zA-Z0-9_\-]+)\]|([a-zA-Z0-9_\-]+)\s*[:：])?\s*(.+)$', line)
+            if m:
+                lid = (m.group(1) or m.group(2) or str(len(items) + 1)).strip()
+                ltxt = m.group(3).strip()
+                if ltxt and not ltxt.startswith("```"):
+                    items.append({
+                        "id": lid,
+                        "original_text": "",
+                        "translated_text": ltxt,
+                        "type": "bubble"
+                    })
     return items
 
 
@@ -216,15 +251,32 @@ def _text_similarity(s1: str, s2: str) -> float:
     """Calculates normalized text similarity between two strings."""
     if not s1 or not s2:
         return 0.0
-    s1_c = "".join(s1.lower().split())
-    s2_c = "".join(s2.lower().split())
+    s1_norm = unicodedata.normalize('NFKC', s1)
+    s2_norm = unicodedata.normalize('NFKC', s2)
+    s1_c = "".join(s1_norm.lower().split())
+    s2_c = "".join(s2_norm.lower().split())
     if s1_c == s2_c:
         return 1.0
+
+    # Strip common punctuation for punctuation-agnostic match
+    punc_clean = str.maketrans("", "", ".,!?;:\"'「」『』()（）[]【】…〜~-—_ 、。")
+    s1_p = s1_c.translate(punc_clean)
+    s2_p = s2_c.translate(punc_clean)
+    if s1_p and s2_p and s1_p == s2_p:
+        return 0.98
+
+    min_l = min(len(s1_c), len(s2_c))
+    max_l = max(len(s1_c), len(s2_c))
+
+    # Substring check with coverage-weighted scoring
     if s1_c in s2_c or s2_c in s1_c:
-        min_l = min(len(s1_c), len(s2_c))
-        max_l = max(len(s1_c), len(s2_c))
         if min_l >= 3 and (min_l / max_l) >= 0.4:
-            return 0.90
+            return round(0.75 + 0.25 * (min_l / max_l), 2)
+
+    # Early exit for drastic length discrepancies where ratio cannot reach 0.55
+    if max_l > 0 and (min_l / max_l) < 0.25 and min_l < 4:
+        return 0.0
+
     return difflib.SequenceMatcher(None, s1_c, s2_c).ratio()
 
 
@@ -286,26 +338,29 @@ def align_translations_to_blocks(parsed_data: Any, blocks: List[TranslationBlock
 
     matched_blocks: Set[int] = set()
     matched_candidates: Set[int] = set()
+    text_verified_blocks: Set[int] = set()
     assignments: Dict[int, Dict[str, Any]] = {}  # block_idx -> candidate
 
-    # Tier 1: Original text semantic similarity matching
-    # If the LLM returned original_text, match by content first to heal any swapped IDs!
+    # Tier 1: Original text semantic similarity matching with Global Maximum Weight Greedy Matching
+    # Collect all candidate-block pairs and prioritize by highest similarity descending
+    sim_pairs: List[Tuple[float, int, int]] = []
     for c_idx, cand in enumerate(candidates):
         if not cand["orig_text"] or not cand["trans_text"]:
             continue
-        best_b_idx = None
-        best_score = 0.0
         for b_idx, block in enumerate(blocks):
-            if b_idx in matched_blocks:
-                continue
             sim = _text_similarity(cand["orig_text"], block.original_text)
-            if sim > best_score:
-                best_score = sim
-                best_b_idx = b_idx
-        if best_b_idx is not None and best_score >= 0.55:
-            assignments[best_b_idx] = cand
-            matched_blocks.add(best_b_idx)
+            if sim >= 0.55:
+                bonus = 0.05 if (cand["raw_id"] and cand["raw_id"].lower() == block.id.lower()) else 0.0
+                sim_pairs.append((sim + bonus, c_idx, b_idx))
+
+    sim_pairs.sort(key=lambda item: item[0], reverse=True)
+
+    for score, c_idx, b_idx in sim_pairs:
+        if c_idx not in matched_candidates and b_idx not in matched_blocks:
+            assignments[b_idx] = candidates[c_idx]
+            matched_blocks.add(b_idx)
             matched_candidates.add(c_idx)
+            text_verified_blocks.add(b_idx)
 
     # Tier 2: Exact ID match
     for c_idx, cand in enumerate(candidates):
@@ -338,24 +393,47 @@ def align_translations_to_blocks(parsed_data: Any, blocks: List[TranslationBlock
                 break
 
     # Tier 4: Reading Order or Sequential Index match (e.g. '1', '2', 'block_1')
+    # Step 4a: Explicit reading_order matching
     for c_idx, cand in enumerate(candidates):
         if c_idx in matched_candidates or not cand["trans_text"]:
             continue
-        c_clean = cand["raw_id"].lower().replace("block_", "").replace("bubble_", "").replace("b", "")
+        c_clean = re.sub(r'^(?:block_|bubble_|b_?|#)', '', cand["raw_id"].strip().lower())
         if c_clean.isdigit():
             k = int(c_clean)
             for b_idx, block in enumerate(blocks):
                 if b_idx in matched_blocks:
                     continue
-                if block.reading_order == k or (b_idx + 1) == k or b_idx == k:
+                if block.reading_order > 0 and block.reading_order == k:
                     assignments[b_idx] = cand
                     matched_blocks.add(b_idx)
                     matched_candidates.add(c_idx)
                     break
 
-    # Tier 4b: Sequential alignment for remaining unmatched candidates without explicit mismatched ID
+    # Step 4b: Position-based matching (detect 0-based vs 1-based indexing to prevent off-by-one shifts)
+    numeric_cands: List[Tuple[int, int]] = []
+    for c_idx, cand in enumerate(candidates):
+        if c_idx in matched_candidates or not cand["trans_text"]:
+            continue
+        c_clean = re.sub(r'^(?:block_|bubble_|b_?|#)', '', cand["raw_id"].strip().lower())
+        if c_clean.isdigit():
+            numeric_cands.append((c_idx, int(c_clean)))
+
+    has_zero = any(k == 0 for _, k in numeric_cands)
+    for c_idx, k in numeric_cands:
+        if c_idx in matched_candidates:
+            continue
+        target_b_idx = (k if has_zero else k - 1)
+        if 0 <= target_b_idx < len(blocks) and target_b_idx not in matched_blocks:
+            assignments[target_b_idx] = candidates[c_idx]
+            matched_blocks.add(target_b_idx)
+            matched_candidates.add(c_idx)
+
+    # Tier 4c: Sequential alignment for remaining unmatched candidates without explicit mismatched ID
     remaining_b_indices = [i for i in range(len(blocks)) if i not in matched_blocks]
-    remaining_c_indices = [i for i in range(len(candidates)) if i not in matched_candidates and candidates[i]["trans_text"] and not candidates[i]["raw_id"]]
+    remaining_c_indices = [
+        i for i in range(len(candidates))
+        if i not in matched_candidates and candidates[i]["trans_text"] and not candidates[i]["raw_id"]
+    ]
     for b_idx, c_idx in zip(remaining_b_indices, remaining_c_indices):
         assignments[b_idx] = candidates[c_idx]
         matched_blocks.add(b_idx)
@@ -372,16 +450,27 @@ def align_translations_to_blocks(parsed_data: Any, blocks: List[TranslationBlock
             block.translated_text = block.original_text
 
     # Tier 5: Length Ratio Inversion Anomaly Detection & Self-Healing
-    # Detect cases where long dialogue and short label got swapped
+    # Detect cases where long dialogue and short label got swapped (bidirectional check)
+    swapped_indices: Set[int] = set()
     for i in range(len(blocks)):
+        if i in swapped_indices or i in text_verified_blocks:
+            continue
         for j in range(i + 1, len(blocks)):
+            if j in swapped_indices or j in text_verified_blocks:
+                continue
             b1, b2 = blocks[i], blocks[j]
             o1, o2 = len(b1.original_text), len(b2.original_text)
             t1, t2 = len(b1.translated_text), len(b2.translated_text)
-            # If b1 is much longer than b2 in original, but b2 is much longer than b1 in translation:
-            if o1 >= 50 and o2 <= 25 and t1 <= 18 and t2 >= 35:
-                # Anomaly detected: severe length inversion
+            # Check both directions (i long / j short OR i short / j long)
+            is_anomaly = (
+                (o1 >= 50 and o2 <= 25 and t1 <= 18 and t2 >= 35) or
+                (o2 >= 50 and o1 <= 25 and t2 <= 18 and t1 >= 35)
+            )
+            if is_anomaly:
                 b1.translated_text, b2.translated_text = b2.translated_text, b1.translated_text
                 b1.type, b2.type = b2.type, b1.type
+                swapped_indices.add(i)
+                swapped_indices.add(j)
+                break
 
     return blocks

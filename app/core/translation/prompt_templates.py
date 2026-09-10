@@ -77,9 +77,28 @@ class PromptTemplates:
         is_auto = (norm == "auto")
         source_desc = "automatically detecting the source language (Japanese, Korean, English, etc.)" if is_auto else f"translating from {source_lang}"
 
-        if reading_order_mode == "western_ltr" or norm == "en":
+        explicit_mode = False
+        if context and context.reading_direction:
+            dir_clean = context.reading_direction.lower()
+            if dir_clean in ("ltr", "western_ltr"):
+                reading_order_mode = "western_ltr"
+                explicit_mode = True
+            elif dir_clean in ("ttb", "webtoon_ttb", "vertical"):
+                reading_order_mode = "webtoon_ttb"
+                explicit_mode = True
+            elif dir_clean in ("rtl", "manga_rtl"):
+                reading_order_mode = "manga_rtl"
+                explicit_mode = True
+
+        if not explicit_mode:
+            if norm == "en":
+                reading_order_mode = "western_ltr"
+            elif norm == "ko":
+                reading_order_mode = "webtoon_ttb"
+
+        if reading_order_mode == "western_ltr":
             reading_order_desc = "Western comic narrative reading order (Left-to-Right, Top-to-Bottom)"
-        elif reading_order_mode == "webtoon_ttb" or norm == "ko":
+        elif reading_order_mode == "webtoon_ttb":
             reading_order_desc = "Webtoon continuous vertical reading order (Top-to-Bottom)"
         elif norm in ("chs", "cht"):
             reading_order_desc = "Chinese manhua narrative reading order (Top-to-Bottom or Left-to-Right)"

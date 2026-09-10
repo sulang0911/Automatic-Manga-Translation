@@ -76,11 +76,20 @@ class GeminiProvider(BaseTranslationProvider):
             timeout=self.config.timeout_seconds,
             max_retries=self.config.max_retries,
             provider_name="Gemini",
-            progress_callback=progress_callback
+            progress_callback=progress_callback,
+            proxies=self.resolve_proxies()
         )
 
         data = resp.json()
-        raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
+        candidates = data.get("candidates", [])
+        if not candidates or "content" not in candidates[0] or not candidates[0]["content"].get("parts"):
+            finish_reason = candidates[0].get("finishReason", "UNKNOWN") if candidates else "NO_CANDIDATE"
+            raise TranslationError(
+                f"Gemini 未返回有效的翻译内容 (finishReason: {finish_reason})",
+                provider="Gemini",
+                suggested_action="内容可能被 Gemini 安全规则拦截，建议切换为 DeepSeek 或在设置中更换模型。"
+            )
+        raw_text = candidates[0]["content"]["parts"][0].get("text", "")
         parsed = parse_llm_json_response(raw_text)
         blocks = align_translations_to_blocks(parsed, blocks)
 
@@ -134,11 +143,20 @@ class GeminiProvider(BaseTranslationProvider):
             timeout=self.config.timeout_seconds,
             max_retries=self.config.max_retries,
             provider_name="Gemini Vision",
-            progress_callback=progress_callback
+            progress_callback=progress_callback,
+            proxies=self.resolve_proxies()
         )
 
         data = resp.json()
-        raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
+        candidates = data.get("candidates", [])
+        if not candidates or "content" not in candidates[0] or not candidates[0]["content"].get("parts"):
+            finish_reason = candidates[0].get("finishReason", "UNKNOWN") if candidates else "NO_CANDIDATE"
+            raise TranslationError(
+                f"Gemini Vision 未返回有效的识别内容 (finishReason: {finish_reason})",
+                provider="Gemini Vision",
+                suggested_action="图像可能被安全审核拦截，建议切换为文字模式或更换模型。"
+            )
+        raw_text = candidates[0]["content"]["parts"][0].get("text", "")
         parsed = parse_llm_json_response(raw_text)
 
         blocks_raw = parsed.get("blocks", []) if isinstance(parsed, dict) else parsed
@@ -169,7 +187,9 @@ class GeminiProvider(BaseTranslationProvider):
             "generationConfig": {"maxOutputTokens": 5}
         }
         try:
-            resp = requests.post(url, headers=headers, json=body, timeout=10.0)
+            px = self.resolve_proxies()
+            resp = requests.post(url, headers=headers, json=body, timeout=10.0,
+                                 **({} if px is None else {"proxies": px}))
             latency = (time.perf_counter() - start_time) * 1000
             if resp.status_code == 200:
                 return DiagnosticResult(

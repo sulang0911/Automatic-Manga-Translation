@@ -286,13 +286,15 @@ class BatchWorker(QThread):
                             b["translated_text"] = ""
                         elif hasattr(b, "translated_text"):
                             b.translated_text = ""
-                    has_translations = False
+                    needs_translation = bool(blocks)
                 else:
-                    has_translations = any(
-                        bool(getattr(b, "translated_text", "") if hasattr(b, "translated_text") else b.get("translated_text", ""))
+                    needs_translation = any(
+                        bool((getattr(b, "original_text", "") if hasattr(b, "original_text") else b.get("original_text", "")).strip()) and
+                        not (getattr(b, "translated_text", "") if hasattr(b, "translated_text") else b.get("translated_text", ""))
                         for b in blocks
-                    )
-                if not has_translations:
+                    ) if blocks else False
+
+                if needs_translation:
                     self.sig_batch_progress.emit(idx + 1, total, filename, 75, "正在大模型翻译...")
                     blocks = trans_mgr.translate(blocks=blocks, mode="text", source_lang=source_lang, target_lang=target_lang)
                     cache_mgr.save_page_cache(img_path, blocks=blocks)
