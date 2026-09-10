@@ -19,6 +19,7 @@ class BatchProgressPill(QFrame):
     Floating horizontal status capsule displayed during batch translation.
     """
     sig_cancel_requested = pyqtSignal()
+    sig_pause_requested = pyqtSignal(bool)
     sig_open_export_dir = pyqtSignal()
 
     def __init__(self, parent: Optional[QWidget] = None):
@@ -82,6 +83,26 @@ class BatchProgressPill(QFrame):
         self.eta_lbl.setStyleSheet("font-size: 11px; color: #A1A1AA;")
         layout.addWidget(self.eta_lbl)
 
+        # Pause button
+        self.btn_pause = QPushButton("暂停", self)
+        self.btn_pause.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.btn_pause.setStyleSheet("""
+            QPushButton {
+                background: rgba(255, 165, 0, 0.15);
+                color: #FFA500;
+                border: 1px solid rgba(255, 165, 0, 0.3);
+                border-radius: 12px;
+                padding: 2px 10px;
+                font-size: 11px;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background: rgba(255, 165, 0, 0.25);
+            }
+        """)
+        self.btn_pause.clicked.connect(self._toggle_pause)
+        layout.addWidget(self.btn_pause)
+
         # Cancel button
         self.btn_cancel = QPushButton("取消", self)
         self.btn_cancel.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
@@ -101,6 +122,14 @@ class BatchProgressPill(QFrame):
         """)
         self.btn_cancel.clicked.connect(self.sig_cancel_requested.emit)
         layout.addWidget(self.btn_cancel)
+
+    def _toggle_pause(self):
+        if self.btn_pause.text() == "暂停":
+            self.btn_pause.setText("恢复")
+            self.sig_pause_requested.emit(True)
+        else:
+            self.btn_pause.setText("暂停")
+            self.sig_pause_requested.emit(False)
 
     def update_progress(self, current: int, total: int, step_text: str = "", eta_seconds: Optional[int] = None):
         """Updates progress metrics smoothly."""

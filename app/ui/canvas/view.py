@@ -59,6 +59,7 @@ class CanvasZoomHud(QFrame):
     sig_zoom_fit = pyqtSignal()
     sig_tool_draw_toggled = pyqtSignal(bool)
     sig_tool_ocr_draw_toggled = pyqtSignal(bool)
+    sig_tool_brush_toggled = pyqtSignal(bool)
     sig_prev_page = pyqtSignal()
     sig_next_page = pyqtSignal()
 
@@ -124,6 +125,17 @@ class CanvasZoomHud(QFrame):
         self.btn_ocr_draw.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_ocr_draw.toggled.connect(self.sig_tool_ocr_draw_toggled.emit)
         layout.addWidget(self.btn_ocr_draw)
+
+        # Brush tool button
+        self.btn_brush = QToolButton(self)
+        self.btn_brush.setIcon(get_icon("edit", color="#A1A1AA", active_color="#FFFFFF", size=13))
+        self.btn_brush.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.btn_brush.setText("保护画笔 (B)")
+        self.btn_brush.setCheckable(True)
+        self.btn_brush.setToolTip("手动涂抹保护角色，阻止引擎过度擦除 (快捷键: B)")
+        self.btn_brush.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_brush.toggled.connect(self.sig_tool_brush_toggled.emit)
+        layout.addWidget(self.btn_brush)
 
         # Separator line
         sep = QFrame(self)
@@ -238,6 +250,7 @@ class MangaCanvasView(QGraphicsView):
     sig_force_erase_toggled = pyqtSignal(dict)
     sig_open_folder_requested = pyqtSignal()
     sig_open_files_requested = pyqtSignal()
+    sig_brush_stroke_completed = pyqtSignal(list)
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -296,6 +309,7 @@ class MangaCanvasView(QGraphicsView):
         self.hud.sig_zoom_fit.connect(self.fit_in_view)
         self.hud.sig_tool_draw_toggled.connect(self._on_hud_draw_toggled)
         self.hud.sig_tool_ocr_draw_toggled.connect(self._on_hud_ocr_draw_toggled)
+        self.hud.sig_tool_brush_toggled.connect(self._on_hud_brush_toggled)
         self.hud.sig_prev_page.connect(self.sig_prev_page.emit)
         self.hud.sig_next_page.connect(self.sig_next_page.emit)
 
@@ -362,6 +376,9 @@ class MangaCanvasView(QGraphicsView):
 
     def _on_hud_ocr_draw_toggled(self, checked: bool):
         self.set_tool_mode("draw_ocr" if checked else "select")
+
+    def _on_hud_brush_toggled(self, checked: bool):
+        self.set_tool_mode("brush" if checked else "select")
 
     def toggle_draw_tool(self):
         """Toggles blank draw tool mode (called by shortcut R)."""
@@ -803,6 +820,19 @@ class MangaCanvasView(QGraphicsView):
             event.accept()
             return
 
+        # Brush tool active
+        if self.tool_mode == "brush" and event.button() == Qt.MouseButton.LeftButton:
+            self._is_drawing_brush = True
+            self._brush_points = [self.mapToScene(event.pos())]
+            from PyQt6.QtWidgets import QGraphicsPathItem
+            from PyQt6.QtGui import QPainterPath, QPen
+            self._brush_path_item = QGraphicsPathItem()
+            pen = QPen(QColor(0, 255, 0, 100), 16, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+            self._brush_path_item.setPen(pen)
+            self._scene.addItem(self._brush_path_item)
+            event.accept()
+            return
+
         # Middle click OR Space+Left click triggers panning
         if event.button() == Qt.MouseButton.MiddleButton or (
             event.button() == Qt.MouseButton.LeftButton and self._space_held
@@ -815,6 +845,17 @@ class MangaCanvasView(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent):
+        if getattr(self, "_is_drawing_brush", False) and getattr(self, "_brush_path_item", None):
+            self._brush_points.append(self.mapToScene(event.pos()))
+            from PyQt6.QtGui import QPainterPath
+            path = QPainterPath()
+            path.moveTo(self._brush_points[0])
+            for pt in self._brush_points[1:]:
+                path.lineTo(pt)
+            self._brush_path_item.setPath(path)
+            event.accept()
+            return
+
         if self._is_drawing_rect and self._rubber_band_item and self._draw_start_scene_pt:
             curr_pt = self.mapToScene(event.pos())
             rect = QRectF(self._draw_start_scene_pt, curr_pt).normalized()
@@ -832,6 +873,18 @@ class MangaCanvasView(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent):
+        if getattr(self, "_is_drawing_brush", False):
+            self._is_drawing_brush = False
+            pts = [(p.x(), p.y()) for p in getattr(self, "_brush_points", [])]
+            if pts:
+                self.sig_brush_stroke_completed.emit(pts)
+            if getattr(self, "_brush_path_item", None):
+                self._scene.removeItem(self._brush_path_item)
+                self._brush_path_item = None
+            self.set_tool_mode("select")
+            event.accept()
+            return
+
         if self._is_drawing_rect:
             is_ocr_mode = (self.tool_mode == "draw_ocr")
             self._is_drawing_rect = False

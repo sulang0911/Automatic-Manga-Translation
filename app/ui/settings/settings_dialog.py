@@ -78,6 +78,7 @@ class SettingsDialog(QDialog):
             ("🧹 图像背景修复", 2),
             ("📝 译文文字设置", 3),
             ("💾 导出与缓存", 4),
+            ("📖 专有名词词典", 5),
         ]
         for name, _ in categories:
             item = QListWidgetItem(name)
@@ -96,6 +97,7 @@ class SettingsDialog(QDialog):
         self.stack.addWidget(self._create_inpaint_page())
         self.stack.addWidget(self._create_typography_page())
         self.stack.addWidget(self._create_export_page())
+        self.stack.addWidget(self._create_glossary_page())
 
         self.nav_list.currentRowChanged.connect(self.stack.setCurrentIndex)
         self.nav_list.setCurrentRow(0)
@@ -514,6 +516,59 @@ class SettingsDialog(QDialog):
         layout.addStretch()
         return widget
 
+    def _create_glossary_page(self) -> QWidget:
+        from PyQt6.QtWidgets import QTableWidget, QTableWidgetItem, QHeaderView, QToolBar
+        from PyQt6.QtGui import QAction
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("background: transparent;")
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setSpacing(16)
+        
+        group = QGroupBox("专有名词词典 (Glossary)")
+        glayout = QVBoxLayout(group)
+        
+        toolbar = QToolBar()
+        add_btn = QAction("添加", self)
+        del_btn = QAction("删除选定", self)
+        toolbar.addAction(add_btn)
+        toolbar.addAction(del_btn)
+        glayout.addWidget(toolbar)
+        
+        self.glossary_table = QTableWidget(0, 2)
+        self.glossary_table.setHorizontalHeaderLabels(["原文 (Source)", "译文 (Target)"])
+        self.glossary_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        glayout.addWidget(self.glossary_table)
+        
+        glossary = getattr(self.config, "glossary", {})
+        for src, dst in glossary.items():
+            row = self.glossary_table.rowCount()
+            self.glossary_table.insertRow(row)
+            self.glossary_table.setItem(row, 0, QTableWidgetItem(src))
+            self.glossary_table.setItem(row, 1, QTableWidgetItem(dst))
+            
+        def _add_row():
+            row = self.glossary_table.rowCount()
+            self.glossary_table.insertRow(row)
+            self.glossary_table.setItem(row, 0, QTableWidgetItem(""))
+            self.glossary_table.setItem(row, 1, QTableWidgetItem(""))
+            self.glossary_table.editItem(self.glossary_table.item(row, 0))
+            
+        def _del_row():
+            rows = set(item.row() for item in self.glossary_table.selectedItems())
+            for row in sorted(rows, reverse=True):
+                self.glossary_table.removeRow(row)
+                
+        add_btn.triggered.connect(_add_row)
+        del_btn.triggered.connect(_del_row)
+        
+        layout.addWidget(group)
+        layout.addStretch()
+        scroll.setWidget(content)
+        return scroll
+
     def _pick_global_text_color(self):
         color = QColorDialog.getColor(QColor(self._global_custom_text_color), self, "选择全局文字颜色")
         if color.isValid():
@@ -612,6 +667,21 @@ class SettingsDialog(QDialog):
         # Export & cache
         self.config.style.export_compressed = self.compress_cb.isChecked()
         self.config.auto_save_cache = self.auto_cache_cb.isChecked()
+        
+        # Save glossary
+        if hasattr(self, 'glossary_table'):
+            from app.core.translation import TranslationManager
+            glossary = {}
+            for row in range(self.glossary_table.rowCount()):
+                src_item = self.glossary_table.item(row, 0)
+                dst_item = self.glossary_table.item(row, 1)
+                if src_item and dst_item:
+                    src = src_item.text().strip()
+                    dst = dst_item.text().strip()
+                    if src and dst:
+                        glossary[src] = dst
+            self.config.glossary = glossary
+            TranslationManager.get_instance().set_glossary(glossary)
 
         self.config.save("desktop_config.json")
 

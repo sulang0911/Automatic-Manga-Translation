@@ -85,6 +85,7 @@ class InpaintEngine:
                 bubble_dilation: int = 3, onomatopoeia_dilation: int = 6, 
                 feather_radius: int = 4, progress_callback=None,
                 qr_mask: Optional[np.ndarray] = None,
+                manual_mask: Optional[np.ndarray] = None,
                 onomatopoeia_mode: str = "normal", **kwargs) -> np.ndarray:
         if image is None or image.size == 0 or not blocks:
             return image.copy() if image is not None else None
@@ -100,6 +101,10 @@ class InpaintEngine:
                 qr_mask = filt.get_protection_mask((h_img, w_img), qr_regs)
             except Exception:
                 qr_mask = np.zeros((h_img, w_img), dtype=np.uint8)
+
+        if manual_mask is not None:
+            # Combine manual mask with qr_mask
+            qr_mask = cv2.bitwise_or(qr_mask, manual_mask)
 
         erased_img = image.copy()
         inpaint_mask = np.zeros((h_img, w_img), dtype=np.uint8)

@@ -29,6 +29,7 @@ class PipelineWorker(QThread):
         config: Dict[str, Any],
         existing_blocks: Optional[List[Dict[str, Any]]] = None,
         existing_erased: Optional[np.ndarray] = None,
+        manual_mask: Optional[np.ndarray] = None,
         mode: str = "full",
         parent=None
     ):
@@ -37,6 +38,7 @@ class PipelineWorker(QThread):
         self.config = config
         self.existing_blocks = existing_blocks
         self.existing_erased = existing_erased
+        self.manual_mask = manual_mask
         self.mode = mode  # "full" | "ocr_only" | "inpaint_only" | "translate_only" | "render_only"
         self._is_cancelled = False
 
@@ -161,6 +163,7 @@ class PipelineWorker(QThread):
                     onomatopoeia_dilation=self.config.get("onomatopoeia_dilation", 6),
                     feather_radius=self.config.get("feather_radius", 4),
                     progress_callback=inpaint_cb,
+                    manual_mask=self.manual_mask,
                     onomatopoeia_mode=onoma_mode
                 )
                 cache_mgr.save_page_cache(self.image_path, erased_img=erased_img, blocks=blocks)

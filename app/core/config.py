@@ -68,6 +68,7 @@ class AppConfig:
     export_dir: str = "exported_chapter"
     auto_save_cache: bool = True
     max_concurrent_workers: int = 2
+    glossary: Dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -88,6 +89,7 @@ class AppConfig:
             "export_dir": self.export_dir,
             "auto_save_cache": self.auto_save_cache,
             "max_concurrent_workers": self.max_concurrent_workers,
+            "glossary": self.glossary,
         }
 
     @classmethod
@@ -107,6 +109,8 @@ class AppConfig:
             cfg.auto_save_cache = data["auto_save_cache"]
         if "max_concurrent_workers" in data:
             cfg.max_concurrent_workers = data["max_concurrent_workers"]
+        if "glossary" in data:
+            cfg.glossary = data["glossary"]
 
         if "llm" in data and isinstance(data["llm"], dict):
             cfg.llm = LLMConfig(**data["llm"])

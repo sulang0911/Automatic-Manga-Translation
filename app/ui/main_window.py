@@ -72,6 +72,11 @@ class MainWindow(QMainWindow):
         self._pending_drag_snapshot: Optional[PageSnapshot] = None
         self._pending_inspector_snapshot: Optional[PageSnapshot] = None
         self.current_image_data: Optional[Dict[str, Any]] = None
+
+        from app.core.translation import TranslationManager
+        if hasattr(self.config, "glossary"):
+            TranslationManager.get_instance().set_glossary(self.config.glossary)
+
         self.active_worker: Optional[PipelineWorker] = None
         self.active_batch_worker: Optional[BatchWorker] = None
 
@@ -87,6 +92,8 @@ class MainWindow(QMainWindow):
         self.drag_overlay = DragDropOverlay(self)
         self.batch_pill = BatchProgressPill(self)
         self.batch_pill.sig_cancel_requested.connect(self._cancel_batch)
+        self.batch_pill.sig_pause_requested.connect(self._toggle_batch_pause)
+        self.batch_pill.sig_open_export_dir.connect(self._open_export_directory)
 
     def _init_ui(self):
         central_widget = QWidget(self)
@@ -123,6 +130,7 @@ class MainWindow(QMainWindow):
         self.canvas_view.sig_commit_bubble_text.connect(self._on_canvas_commit_bubble_text)
         self.canvas_view.sig_open_folder_requested.connect(self._open_folder_dialog)
         self.canvas_view.sig_open_files_requested.connect(self._open_file_dialog)
+        self.canvas_view.sig_brush_stroke_completed.connect(self._on_brush_stroke_completed)
 
         # 2. Action Toolbar
         self.toolbar_widget = self._create_toolbar()
@@ -721,6 +729,15 @@ class MainWindow(QMainWindow):
         self.status_label.setText("批处理已取消")
         self.toast.show_message("批处理任务已取消", "info")
 
+    def _toggle_batch_pause(self, paused: bool):
+        if self.active_batch_worker:
+            if paused:
+                self.active_batch_worker.pause()
+                self.toast.show_message("批处理已暂停", "info")
+            else:
+                self.active_batch_worker.resume()
+                self.toast.show_message("批处理已恢复", "success")
+
     def _on_page_selected(self, item_data: Dict[str, Any]):
         path = item_data.get("path")
         if path and os.path.exists(path):
@@ -1059,6 +1076,40 @@ class MainWindow(QMainWindow):
         if path:
             get_cache_manager().save_page_cache(path, blocks=blocks)
         self._re_render_current_page()
+
+    def _on_brush_stroke_completed(self, pts: list):
+        if not hasattr(self, "current_image_data") or not self.current_image_data:
+            return
+        if not pts or len(pts) < 2:
+            return
+
+        import cv2
+        import numpy as np
+
+        original_cv = getattr(self.canvas_view, "original_cv", None)
+        if original_cv is None:
+            original_cv = self.current_image_data.get("original_cv") or self.current_image_data.get("img")
+        if original_cv is None:
+            path = self.current_image_data.get("path")
+            if path and os.path.exists(path):
+                original_cv = safe_cv2_imread(path)
+        if original_cv is None:
+            return
+
+        h, w = original_cv.shape[:2]
+        
+        # Load or create manual_mask
+        manual_mask = self.current_image_data.get("manual_mask")
+        if manual_mask is None:
+            manual_mask = np.zeros((h, w), dtype=np.uint8)
+
+        # Draw polyline on manual mask
+        np_pts = np.array(pts, dtype=np.int32)
+        cv2.polylines(manual_mask, [np_pts], isClosed=False, color=255, thickness=16)
+
+        self.current_image_data["manual_mask"] = manual_mask
+        self.toast.show_message("应用手动笔刷中...", "info")
+        self._start_pipeline_for_page(mode="inpaint_only")
 
     def _on_block_updated_from_inspector(self, block_data: Dict[str, Any]):
         if not self.current_image_data:
@@ -1795,6 +1846,7 @@ class MainWindow(QMainWindow):
             config=self.config.to_dict(),
             existing_blocks=blocks,
             existing_erased=erased,
+            manual_mask=self.current_image_data.get("manual_mask"),
             mode=mode,
             parent=self
         )

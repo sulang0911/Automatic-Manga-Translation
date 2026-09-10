@@ -369,6 +369,22 @@ class PageListWidget(QWidget):
         discovered_entries: List[Dict[str, str]] = []
 
         valid_input_paths = [p for p in paths if p and os.path.exists(p)]
+        
+        # Handle zip/cbz archives
+        extracted_paths = []
+        for p in list(valid_input_paths):
+            if os.path.isfile(p) and p.lower().endswith(('.zip', '.cbz')):
+                try:
+                    import zipfile, tempfile
+                    ext_dir = tempfile.mkdtemp(prefix="amt_archive_")
+                    with zipfile.ZipFile(p, 'r') as zf:
+                        zf.extractall(ext_dir)
+                    extracted_paths.append(ext_dir)
+                    valid_input_paths.remove(p)
+                except Exception:
+                    pass
+        valid_input_paths.extend(extracted_paths)
+
         dir_paths = [os.path.normpath(os.path.abspath(p)) for p in valid_input_paths if os.path.isdir(p)]
 
         batch_root: Optional[str] = None

@@ -41,6 +41,7 @@ class BatchWorker(QThread):
         self.root_dir = root_dir
         self.force_retranslate = force_retranslate
         self._is_cancelled = False
+        self._is_paused = False
 
         if not self.root_dir and self.queue_items:
             valid_roots = list(dict.fromkeys(it.get("root_dir") for it in self.queue_items if it.get("root_dir")))
@@ -57,6 +58,12 @@ class BatchWorker(QThread):
                             self.root_dir = os.path.dirname(common)
                     except Exception:
                         self.root_dir = None
+
+    def pause(self):
+        self._is_paused = True
+
+    def resume(self):
+        self._is_paused = False
 
     def cancel(self):
         """Signals cooperative cancellation."""
@@ -139,7 +146,11 @@ class BatchWorker(QThread):
             self.sig_batch_progress.emit(1, total, "", 0, "正在清理原有缓存文件夹...")
             cache_mgr.clear_caches_for_items(self.queue_items)
 
+        import time
         for idx, item in enumerate(self.queue_items):
+            while self._is_paused and not self._is_cancelled:
+                time.sleep(0.1)
+
             if self._is_cancelled:
                 break
 
