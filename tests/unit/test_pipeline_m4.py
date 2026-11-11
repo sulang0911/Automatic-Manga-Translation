@@ -148,6 +148,6 @@ def test_toast_widget(qapp):
 def test_settings_dialog_creation(qapp):
     cfg = AppConfig()
     dialog = SettingsDialog(cfg)
-    assert dialog.nav_list.count() == 5
-    assert dialog.stack.count() == 5
+    assert dialog.nav_list.count() == 6
+    assert dialog.stack.count() == 6
     dialog.close()

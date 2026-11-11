@@ -216,7 +216,8 @@ class OpenCVInpainter(BaseInpainter):
             if isinstance(block, dict):
                 block_type = block.get("type", "bubble")
 
-            if is_dark_bg or (block_type == "bubble" and uniform):
+            explicit_black_box = bool(block_bg and isinstance(block_bg, str) and block_bg.strip().lower() == "#000000")
+            if explicit_black_box or (is_dark_bg and uniform) or (block_type == "bubble" and uniform):
                 # Instant flat-fill for solid speech bubbles and inverted dark background boxes
                 fill_color = target_bg_bgr if is_dark_bg else bg_bgr
                 dilated = dilate_mask(text_mask, adaptive_dil)
@@ -226,6 +227,11 @@ class OpenCVInpainter(BaseInpainter):
                 crop[(dilated == 255) & (qr_mask_crop == 0)] = fill_color
                 erased_img[py_min:py_max, px_min:px_max] = crop
             else:
+                from app.core.inpaint.color_analyzer import get_stroked_text_mask
+                stroked_mask = get_stroked_text_mask(crop)
+                if stroked_mask is not None:
+                    text_mask = cv2.bitwise_and(stroked_mask, poly_mask)
+                    adaptive_dil = 0
                 # Accumulate into inpaint mask
                 dilated = dilate_mask(text_mask, adaptive_dil)
                 if np.sum(text_mask) == 0:

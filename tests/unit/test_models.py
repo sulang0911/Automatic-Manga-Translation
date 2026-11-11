@@ -94,7 +94,7 @@ def test_translation_block_serialization_roundtrip():
 def test_style_config_defaults_and_serialization():
     style = StyleConfig()
     assert style.font_family == "霞鹜文楷"
-    assert style.font_bold is True
+    assert style.font_bold is False
     assert style.auto_fit_font_size is True
     assert style.min_font_size == 8
     assert style.reading_direction == ReadingOrderMode.MANGA_RTL.value

@@ -2,21 +2,6 @@
 app/core/inpaint/unboxed_text_eraser.py
 High-precision erasure algorithm for unboxed / free text (chapter titles, page margin notes,
 sound effects / onomatopoeia, and floating text without explicit speech bubbles).
-
-Core capabilities:
-1. Intelligent Unboxed Text Detection: Distinguishes free-standing chapter titles, margin notes,
-   and SFX from enclosed dialogue bubbles, even when default OCR categorizes them as bubbles.
-2. Orientation-Aware Adaptive Expansion: Expands tight OCR bounding boxes according to character
-   scale and reading orientation to capture sub-pixel anti-aliasing edges, ascenders, descenders, and accents.
-3. Contrast-Aware Boundary Barrier Protection: Ray-casts outward in 4 directions to detect and halt before
-   crossing high-contrast comic panel frames or artwork borders (adapting to both light margins and dark banners).
-4. Text-Insulated Peripheral Uniformity Analysis: Accurately isolates background variance from text stroke
-   edge artifacts to distinguish solid/flat margins from textured artwork.
-5. Dual-Mode Erasure:
-   - Uniform backgrounds: Instant pristine flat-fill using peripheral background color (eliminates
-     blurry gray halos, smudges, and partial-erasure artifacts).
-   - Textured artwork backgrounds: Delivers an expanded, fully dilated stroke mask for seamless
-     diffusion / neural inpainting without boundary stroke bleeding.
 """
 from typing import Any, Dict, Optional, Tuple
 import cv2
@@ -47,11 +32,6 @@ def _parse_block_coordinates(block: Any, w_img: int, h_img: int) -> Optional[np.
 def is_unboxed_text_block(block: Any, image: Optional[np.ndarray] = None) -> bool:
     """
     Determines whether a block represents text without an explicit speech bubble or text box.
-    
-    Checks:
-    1. Explicit type designation (!= 'bubble') or 'is_unboxed' flag.
-    2. If image context is supplied, checks for margin placement, banner aspect ratio,
-       or open unboxed background even if OCR engine defaulted the type to 'bubble'.
     """
     b_type = block.get("type", "bubble") if isinstance(block, dict) else getattr(block, "type", "bubble")
     if b_type != "bubble":
@@ -81,7 +61,6 @@ def is_unboxed_text_block(block: Any, image: Optional[np.ndarray] = None) -> boo
             is_extreme_aspect = (aspect >= 4.0) or (aspect <= 0.15)
 
             if is_top_margin or is_bottom_margin or is_side_margin or is_extreme_aspect:
-                # Sample local background around the block
                 pad = 4
                 s_ymin, s_ymax = max(0, py_min - pad), min(h_img, py_max + pad)
                 s_xmin, s_xmax = max(0, px_min - pad), min(w_img, px_max + pad)
@@ -108,20 +87,6 @@ def erase_unboxed_text_block(
 ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
     """
     Erases text without an explicit text box from the given image.
-
-    Args:
-        image: BGR numpy image array (H, W, 3).
-        block: TranslationBlock instance or dict containing polygon/box coordinates.
-        qr_mask: Optional binary mask (H, W) where >0 pixels must never be altered.
-        border_stop_threshold: Grayscale pixel intensity reference for barrier detection.
-        min_dilation: Minimum morphological dilation radius in pixels.
-
-    Returns:
-        (modified_image, inpaint_mask_contribution)
-        If the local background is uniform, the text is flat-filled directly in modified_image,
-        and inpaint_mask_contribution is None.
-        If the background is textured, inpaint_mask_contribution is a binary mask (H, W) containing
-        the dilated text stroke region to be inpainted.
     """
     if image is None or image.size == 0:
         return image, None
@@ -145,11 +110,11 @@ def erase_unboxed_text_block(
 
     # Orientation-aware adaptive expansion margins
     if bw >= bh:
-        pad_x = max(8, int(round(bw * 0.05)), int(round(bh * 0.30)))
-        pad_y = max(6, int(round(bh * 0.35)))
+        pad_x = max(10, int(round(bw * 0.05)), int(round(bh * 0.30)))
+        pad_y = max(8, int(round(bh * 0.35)))
     else:
-        pad_y = max(8, int(round(bh * 0.05)), int(round(bw * 0.30)))
-        pad_x = max(6, int(round(bw * 0.35)))
+        pad_y = max(10, int(round(bh * 0.05)), int(round(bw * 0.30)))
+        pad_x = max(8, int(round(bw * 0.35)))
 
     gray_full = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
 
@@ -167,7 +132,6 @@ def erase_unboxed_text_block(
         except ValueError:
             pass
     else:
-        # Sample outer corners
         corner_pts = [
             (max(0, px_min - 2), max(0, py_min - 2)),
             (min(w_img - 1, px_max + 2), max(0, py_min - 2)),
@@ -179,8 +143,6 @@ def erase_unboxed_text_block(
 
     is_dark_bg = (bg_lum_est < 90.0)
 
-    # Contrast-aware barrier values
-    # In manga, comic panel borders are solid lines dividing panels or page margins.
     if is_dark_bg:
         barrier_val = max(150, min(235, int(bg_lum_est + 60)))
         def is_barrier(slice_arr):
@@ -229,7 +191,6 @@ def erase_unboxed_text_block(
     if ch < 2 or cw < 2:
         return image, None
 
-    # Sample peripheral perimeter pixels (avoiding inner text glyphs)
     border_pixels = []
     border_pixels.extend(crop[0, :])
     border_pixels.extend(crop[-1, :])
@@ -247,7 +208,6 @@ def erase_unboxed_text_block(
     border_gray = 0.299 * border_pixels[:, 2] + 0.587 * border_pixels[:, 1] + 0.114 * border_pixels[:, 0]
     bg_lum = 0.299 * bg_color[2] + 0.587 * bg_color[1] + 0.114 * bg_color[0]
 
-    # Explicit block background override check
     if block_bg and isinstance(block_bg, str) and block_bg.strip().startswith("#") and len(block_bg.strip()) >= 7:
         try:
             hr = int(block_bg.strip()[1:3], 16)
@@ -260,26 +220,49 @@ def erase_unboxed_text_block(
         except ValueError:
             pass
 
-    # Filter out text stroke pixels touching the edge when measuring background std
     clean_border = border_gray[np.abs(border_gray - bg_lum) < 35.0]
-    border_std = float(np.std(clean_border)) if len(clean_border) > 4 else float(np.std(border_gray))
+    outlier_ratio = 1.0 - (len(clean_border) / max(1, len(border_gray)))
+    raw_border_std = float(np.std(border_gray))
+    border_std = float(np.std(clean_border)) if (len(clean_border) > 4 and outlier_ratio < 0.22) else raw_border_std
 
-    # Uniformity decision: Flat margin, pure white page gutter, or solid dark background
-    is_uniform = (border_std < 18.0) or (bg_lum > 225 and border_std < 25.0) or (bg_lum < 40 and border_std < 25.0)
+    bg_candidates = crop_gray[np.abs(crop_gray.astype(np.float32) - bg_lum) < 35.0]
+    interior_std = float(np.std(bg_candidates)) if len(bg_candidates) > 20 else border_std
 
-    # Text stroke segmentation: Difference against background luminance
-    bg_gray_val = int(round(bg_lum))
-    diff = cv2.absdiff(crop_gray, bg_gray_val)
-    thresh_val = 18 if is_uniform else 25
-    _, thresh = cv2.threshold(diff, thresh_val, 255, cv2.THRESH_BINARY)
+    is_uniform = (
+        outlier_ratio < 0.22
+        and interior_std < 9.5
+        and ((border_std < 14.0) or (bg_lum > 225 and border_std < 20.0) or (bg_lum < 40 and border_std < 14.0))
+    )
 
-    # Morphological dilation tailored to character scale to ensure full coverage
-    dil_size = max(min_dilation, int(round(char_dim * 0.12)))
-    dil_size = max(2, min(dil_size, 8))
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dil_size * 2 + 1, dil_size * 2 + 1))
-    dilated_mask = cv2.dilate(thresh, kernel)
+    # On non-uniform 3D/CG backgrounds, guarantee at least 10px expansion around OCR box
+    # so white text strokes touching the box edge are never clipped by barrier checks
+    if not is_uniform:
+        exp_x_min = min(exp_x_min, max(0, px_min - 10))
+        exp_y_min = min(exp_y_min, max(0, py_min - 10))
+        exp_x_max = max(exp_x_max, min(w_img, px_max + 10))
+        exp_y_max = max(exp_y_max, min(h_img, py_max + 10))
+        crop = image[exp_y_min:exp_y_max, exp_x_min:exp_x_max].copy()
+        crop_gray = gray_full[exp_y_min:exp_y_max, exp_x_min:exp_x_max]
 
-    # Respect QR code protection mask
+    from app.core.inpaint.color_analyzer import get_stroked_text_mask, get_text_mask
+    stroked_mask = get_stroked_text_mask(crop) if (not is_uniform and crop.ndim == 3) else None
+
+    if stroked_mask is not None:
+        dilated_mask = stroked_mask
+    else:
+        if crop.ndim == 3:
+            thresh = get_text_mask(crop, tuple(bg_color), threshold=18 if is_uniform else 25)
+        else:
+            bg_gray_val = int(round(bg_lum))
+            diff = cv2.absdiff(crop_gray, bg_gray_val)
+            thresh_val = 18 if is_uniform else 25
+            _, thresh = cv2.threshold(diff, thresh_val, 255, cv2.THRESH_BINARY)
+
+        dil_size = max(min_dilation, int(round(char_dim * 0.12)))
+        dil_size = max(2, min(dil_size, 8))
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dil_size * 2 + 1, dil_size * 2 + 1))
+        dilated_mask = cv2.dilate(thresh, kernel)
+
     qr_crop = None
     if qr_mask is not None:
         qr_crop = qr_mask[exp_y_min:exp_y_max, exp_x_min:exp_x_max]

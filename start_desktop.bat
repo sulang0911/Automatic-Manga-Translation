@@ -8,6 +8,16 @@ echo.
 
 cd /d "%~dp0"
 
+:: Enforce single-threaded and low-memory execution on 8GB RAM systems
+set OMP_NUM_THREADS=1
+set OPENBLAS_NUM_THREADS=1
+set MKL_NUM_THREADS=1
+set VECLIB_MAXIMUM_THREADS=1
+set NUMEXPR_NUM_THREADS=1
+set TORCH_NUM_THREADS=1
+set KMP_DUPLICATE_LIB_OK=TRUE
+set PYTHONHASHSEED=0
+
 :: Check Python
 where python >nul 2>nul
 if %errorlevel% neq 0 (
@@ -16,7 +26,7 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-echo [*] Launching AetherLens PyQt6 Desktop Client...
+echo [*] Launching AetherLens PyQt6 Desktop Client in single-thread memory safe mode...
 python "%~dp0run_desktop.py"
 
 if %errorlevel% neq 0 (

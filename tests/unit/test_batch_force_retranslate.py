@@ -96,7 +96,7 @@ def test_page_list_widget_has_both_batch_buttons(qapp):
     assert hasattr(panel, "batch_btn")
     assert hasattr(panel, "retranslate_all_btn")
     assert "跳过" in panel.batch_btn.text() or "批量翻译" in panel.batch_btn.text()
-    assert "重新翻译" in panel.retranslate_all_btn.text()
+    assert "重新翻译" in panel.retranslate_all_btn.text() or "全部重译" in panel.retranslate_all_btn.text()
 
     # Enable buttons for click test
     panel.batch_btn.setEnabled(True)

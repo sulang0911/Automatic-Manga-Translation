@@ -53,10 +53,14 @@ class AsyncThumbnailManager:
     _instance: Optional['AsyncThumbnailManager'] = None
 
     def __init__(self):
+        try:
+            QThreadPool.globalInstance().setMaxThreadCount(1)
+        except Exception:
+            pass
         self.signals = ThumbnailSignals()
         self.signals.loaded.connect(self._on_thumbnail_loaded)
         self._cache: Dict[str, QPixmap] = {}
-        self._max_cache = 1500
+        self._max_cache = 80
         self._pending_callbacks: Dict[str, List[Callable[[QPixmap], None]]] = {}
 
     @classmethod
@@ -88,7 +92,7 @@ class AsyncThumbnailManager:
 
         # LRU eviction if cache exceeds capacity
         if len(self._cache) >= self._max_cache:
-            keys_to_remove = list(self._cache.keys())[:300]
+            keys_to_remove = list(self._cache.keys())[:max(1, len(self._cache) - self._max_cache + 15)]
             for k in keys_to_remove:
                 self._cache.pop(k, None)
 

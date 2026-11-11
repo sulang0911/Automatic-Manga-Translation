@@ -67,10 +67,30 @@ class SettingsDialog(QDialog):
         main_layout.setContentsMargins(16, 16, 16, 16)
         main_layout.setSpacing(16)
 
-        # Left Category Navigation List
+        # Left Category Navigation List (macOS System Settings Sidebar)
         self.nav_list = QListWidget(self)
         self.nav_list.setObjectName("settingsNavList")
-        self.nav_list.setFixedWidth(160)
+        self.nav_list.setFixedWidth(172)
+        self.nav_list.setStyleSheet("""
+            #settingsNavList {
+                background-color: rgba(255, 255, 255, 0.03);
+                border: 1px solid rgba(255, 255, 255, 0.07);
+                border-radius: 10px;
+                padding: 6px;
+            }
+            #settingsNavList::item {
+                border-radius: 7px;
+                padding: 8px 10px;
+                margin: 2px 0px;
+                font-size: 12px;
+                font-weight: 500;
+            }
+            #settingsNavList::item:selected {
+                background-color: #0A84FF;
+                color: #FFFFFF;
+                font-weight: 600;
+            }
+        """)
 
         categories = [
             ("🤖 AI 翻译大模型", 0),
@@ -352,8 +372,8 @@ class SettingsDialog(QDialog):
         box_font_layout.addWidget(self.typo_font_combo)
 
         row_checks = QHBoxLayout()
-        self.typo_bold_cb = QCheckBox("粗体 (Bold - 默认开启)")
-        self.typo_bold_cb.setChecked(getattr(self.config.style, "font_bold", True))
+        self.typo_bold_cb = QCheckBox("粗体 (Bold)")
+        self.typo_bold_cb.setChecked(getattr(self.config.style, "font_bold", False))
         self.typo_bold_cb.setStyleSheet("font-weight: 600;")
         row_checks.addWidget(self.typo_bold_cb)
 
@@ -377,21 +397,24 @@ class SettingsDialog(QDialog):
 
         self.typo_scale_slider = QSlider(Qt.Orientation.Horizontal)
         self.typo_scale_slider.setRange(5, 30)
-        self.typo_scale_slider.setValue(int(getattr(self.config.style, "font_size_scale", 1.0) * 10))
+        self.typo_scale_slider.setValue(int(round(getattr(self.config.style, "font_size_scale", 1.0) * 10)))
         self.typo_scale_slider.valueChanged.connect(lambda v: self.typo_scale_lbl.setText(f"{v/10.0:.1f}x"))
         box_font_layout.addWidget(self.typo_scale_slider)
 
         # Line spacing
         spacing_row = QHBoxLayout()
         spacing_row.addWidget(QLabel("行间距比例:"))
-        self.typo_spacing_lbl = QLabel(f"{getattr(self.config.style, 'line_spacing', 1.15):.2f}x")
+        self.typo_spacing_lbl = QLabel(f"{getattr(self.config.style, 'line_spacing', 1.30):.2f}x")
         spacing_row.addWidget(self.typo_spacing_lbl)
         spacing_row.addStretch()
+        self.typo_auto_spacing_cb = QCheckBox("行间距智能识别 (默认开启)")
+        self.typo_auto_spacing_cb.setChecked(getattr(self.config.style, "auto_line_spacing", True))
+        spacing_row.addWidget(self.typo_auto_spacing_cb)
         box_font_layout.addLayout(spacing_row)
 
         self.typo_spacing_slider = QSlider(Qt.Orientation.Horizontal)
         self.typo_spacing_slider.setRange(10, 20)
-        self.typo_spacing_slider.setValue(int(getattr(self.config.style, "line_spacing", 1.15) * 10))
+        self.typo_spacing_slider.setValue(int(round(getattr(self.config.style, "line_spacing", 1.30) * 10)))
         self.typo_spacing_slider.valueChanged.connect(lambda v: self.typo_spacing_lbl.setText(f"{v/10.0:.2f}x"))
         box_font_layout.addWidget(self.typo_spacing_slider)
 
@@ -443,14 +466,17 @@ class SettingsDialog(QDialog):
         # Stroke Width
         row_sw = QHBoxLayout()
         row_sw.addWidget(QLabel("描边粗细 (px):"))
-        self.typo_stroke_w_lbl = QLabel(f"{getattr(self.config.style, 'stroke_width', 2.0):.1f}px")
+        self.typo_stroke_w_lbl = QLabel(f"{getattr(self.config.style, 'stroke_width', 3.5):.1f}px")
         row_sw.addWidget(self.typo_stroke_w_lbl)
         row_sw.addStretch()
+        self.typo_auto_stroke_w_cb = QCheckBox("描边粗细自动识别 (默认开启)")
+        self.typo_auto_stroke_w_cb.setChecked(getattr(self.config.style, "auto_stroke_width", True))
+        row_sw.addWidget(self.typo_auto_stroke_w_cb)
         box_color_layout.addLayout(row_sw)
 
         self.typo_stroke_w_slider = QSlider(Qt.Orientation.Horizontal)
         self.typo_stroke_w_slider.setRange(5, 50)
-        self.typo_stroke_w_slider.setValue(int(getattr(self.config.style, "stroke_width", 2.0) * 10))
+        self.typo_stroke_w_slider.setValue(int(round(getattr(self.config.style, "stroke_width", 3.5) * 10)))
         self.typo_stroke_w_slider.setEnabled(s_idx != 2)
         self.typo_stroke_w_slider.valueChanged.connect(lambda v: self.typo_stroke_w_lbl.setText(f"{v/10.0:.1f}px"))
         box_color_layout.addWidget(self.typo_stroke_w_slider)
@@ -657,10 +683,12 @@ class SettingsDialog(QDialog):
         self.config.style.auto_fit_font_size = self.typo_auto_fit_cb.isChecked()
         self.config.style.font_size_scale = self.typo_scale_slider.value() / 10.0
         self.config.style.line_spacing = self.typo_spacing_slider.value() / 10.0
+        self.config.style.auto_line_spacing = self.typo_auto_spacing_cb.isChecked()
         self.config.style.text_color_mode = self.typo_txt_color_mode.currentData()
         self.config.style.custom_text_color = self._global_custom_text_color
         self.config.style.stroke_mode = self.typo_stroke_mode.currentData()
         self.config.style.stroke_width = self.typo_stroke_w_slider.value() / 10.0
+        self.config.style.auto_stroke_width = self.typo_auto_stroke_w_cb.isChecked()
         self.config.style.bg_color_mode = self.typo_bg_mode.currentData()
         self.config.style.onomatopoeia_mode = self.typo_onoma_combo.currentData()
 

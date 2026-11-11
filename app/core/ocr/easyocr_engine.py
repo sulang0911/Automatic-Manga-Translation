@@ -7,7 +7,10 @@ import logging
 from typing import List, Dict, Any, Optional, Callable, Tuple
 import cv2
 import numpy as np
-import torch
+try:
+    import torch
+except ImportError:
+    torch = None
 
 from app.core.models import TranslationBlock, BlockType, TextDirection
 from app.core.ocr.base import (

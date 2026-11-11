@@ -1,6 +1,6 @@
 """
 app/ui/widgets/progress_pill.py
-Minimalist Apple-style status indicator pill with status dot and progress bar.
+Minimalist Apple macOS-style status indicator pill with status dot and progress bar.
 """
 from typing import Optional
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QLabel, QProgressBar
@@ -35,13 +35,13 @@ class ProgressPill(QWidget):
     Combines status dot, textual description, and miniature progress bar.
     """
     COLORS = {
-        "idle": "#71717A",
-        "ready": "#22C55E",
-        "processing": "#007ACC",
-        "warning": "#EAB308",
-        "completed": "#22C55E",
-        "failed": "#F43F5E",
-        "error": "#F43F5E",
+        "idle": "#8E8E93",
+        "ready": "#30D158",
+        "processing": "#0A84FF",
+        "warning": "#FF9F0A",
+        "completed": "#30D158",
+        "failed": "#FF453A",
+        "error": "#FF453A",
     }
 
     def __init__(self, parent: Optional[QWidget] = None):
@@ -49,26 +49,26 @@ class ProgressPill(QWidget):
         self.setObjectName("progressPill")
         self.setStyleSheet("""
             #progressPill {
-                background-color: rgba(255, 255, 255, 0.03);
-                border: 1px solid #2D2D32;
-                border-radius: 4px;
-                padding: 2px 6px;
+                background-color: rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 12px;
+                padding: 2px 8px;
             }
         """)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(6, 2, 6, 2)
+        layout.setContentsMargins(8, 2, 8, 2)
         layout.setSpacing(6)
 
         self._dot = StatusDot(color=self.COLORS["ready"], size=7, parent=self)
         layout.addWidget(self._dot)
 
         self._label = QLabel("就绪", self)
-        self._label.setStyleSheet("font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 500; color: #ECECEF;")
+        self._label.setStyleSheet("font-size: 11px; font-weight: 500; color: #F5F5F7;")
         layout.addWidget(self._label)
 
         self._progress_bar = QProgressBar(self)
-        self._progress_bar.setFixedSize(60, 5)
+        self._progress_bar.setFixedSize(64, 5)
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setTextVisible(False)
         self._progress_bar.hide()

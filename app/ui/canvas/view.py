@@ -68,32 +68,33 @@ class CanvasZoomHud(QFrame):
         self.setObjectName("canvasZoomHud")
         self.setStyleSheet("""
             #canvasZoomHud {
-                background-color: rgba(24, 24, 28, 0.90);
+                background-color: rgba(28, 28, 32, 0.88);
                 border: 1px solid rgba(255, 255, 255, 0.12);
-                border-radius: 6px;
+                border-radius: 12px;
             }
             QToolButton {
-                color: #ECECEF;
+                color: #F5F5F7;
                 background: transparent;
-                border: 1px solid transparent;
-                padding: 3px 6px;
+                border: none;
+                padding: 4px 8px;
                 font-size: 11px;
                 font-weight: 500;
-                border-radius: 4px;
+                border-radius: 7px;
             }
             QToolButton:hover {
-                background: rgba(255, 255, 255, 0.08);
-                border-color: rgba(255, 255, 255, 0.06);
+                background: rgba(255, 255, 255, 0.10);
                 color: #FFFFFF;
             }
             QToolButton:checked {
                 background: #0A84FF;
-                border-color: #0071E3;
                 color: #FFFFFF;
+                font-weight: 600;
+            }
+            QToolButton:disabled {
+                color: rgba(255, 255, 255, 0.28);
             }
             QLabel {
-                color: #ECECEF;
-                font-family: "JetBrains Mono", "SF Mono", monospace;
+                color: #F5F5F7;
                 font-size: 11px;
                 font-weight: 600;
                 padding: 0 4px;
@@ -101,8 +102,8 @@ class CanvasZoomHud(QFrame):
         """)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(6, 3, 6, 3)
-        layout.setSpacing(4)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(3)
 
         # Draw tool button
         self.btn_draw = QToolButton(self)
@@ -825,7 +826,7 @@ class MangaCanvasView(QGraphicsView):
             self._is_drawing_brush = True
             self._brush_points = [self.mapToScene(event.pos())]
             from PyQt6.QtWidgets import QGraphicsPathItem
-            from PyQt6.QtGui import QPainterPath, QPen
+            from PyQt6.QtGui import QPainterPath
             self._brush_path_item = QGraphicsPathItem()
             pen = QPen(QColor(0, 255, 0, 100), 16, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
             self._brush_path_item.setPen(pen)

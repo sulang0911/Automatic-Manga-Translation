@@ -11,7 +11,10 @@ from typing import List, Dict, Any, Optional, Tuple
 import math
 import numpy as np
 import cv2
-import torch
+try:
+    import torch
+except ImportError:
+    torch = None
 
 from app.core.ocr.base import calculate_polygon_angle
 
@@ -53,24 +56,38 @@ def _has_dark_boundary_barrier_lines(
         x1_min, x1_max = float(a1[:, 0].min()), float(a1[:, 0].max())
         x2_min, x2_max = float(a2[:, 0].min()), float(a2[:, 0].max())
 
-        # If l1 is above l2 in y:
+        # A dark boundary barrier (< 90) only separates two LIGHT speech bubbles.
+        # If the local background around the lines is already dark (< 115), dark pixels in the gap
+        # are the background itself, NOT a bubble outline barrier!
+        bx_min = max(0, int(round(min(x1_min, x2_min))))
+        bx_max = min(w_img_loc, int(round(max(x1_max, x2_max))))
+        by_min = max(0, int(round(min(y1_min, y2_min))))
+        by_max = min(h_img_loc, int(round(max(y1_max, y2_max))))
+        if by_max > by_min and bx_max > bx_min:
+            region_gray = gray[by_min:by_max, bx_min:bx_max]
+            if region_gray.size > 0 and float(np.median(region_gray)) < 115.0:
+                return False
+
+        # Check horizontal overlap strip between l1 and l2 so outer jagged bubble borders are ignored
+        ov_x_start = max(0, int(round(max(x1_min, x2_min))))
+        ov_x_end = min(w_img_loc, int(round(min(x1_max, x2_max))))
+        if ov_x_end <= ov_x_start:
+            ov_x_start = max(0, int(round(min(x1_min, x2_min))))
+            ov_x_end = min(w_img_loc, int(round(max(x1_max, x2_max))))
+
         if y2_min > y1_max:
             y_start = max(0, int(round(y1_max)))
             y_end = min(h_img_loc, int(round(y2_min)))
-            x_start = max(0, int(round(min(x1_min, x2_min))))
-            x_end = min(w_img_loc, int(round(max(x1_max, x2_max))))
-            if y_end > y_start and x_end > x_start:
-                strip = gray[y_start:y_end, x_start:x_end]
-                if strip.size > 0 and float(strip.min()) < luminance_threshold:
+            if y_end > y_start and ov_x_end > ov_x_start:
+                strip = gray[y_start:y_end, ov_x_start:ov_x_end]
+                if strip.size > 0 and bool(np.any(np.mean(strip < luminance_threshold, axis=1) > 0.35)):
                     return True
         elif y1_min > y2_max:
             y_start = max(0, int(round(y2_max)))
             y_end = min(h_img_loc, int(round(y1_min)))
-            x_start = max(0, int(round(min(x1_min, x2_min))))
-            x_end = min(w_img_loc, int(round(max(x1_max, x2_max))))
-            if y_end > y_start and x_end > x_start:
-                strip = gray[y_start:y_end, x_start:x_end]
-                if strip.size > 0 and float(strip.min()) < luminance_threshold:
+            if y_end > y_start and ov_x_end > ov_x_start:
+                strip = gray[y_start:y_end, ov_x_start:ov_x_end]
+                if strip.size > 0 and bool(np.any(np.mean(strip < luminance_threshold, axis=1) > 0.35)):
                     return True
 
         # Ray-casting between centroids
@@ -107,7 +124,7 @@ def _cluster_lines_by_angle(lines_list: List[Any], img_src: Optional[np.ndarray]
             diff = abs(ang - c_ang)
             if diff > 90.0:
                 diff = abs(diff - 180.0)
-            if diff <= 8.0:
+            if diff <= 11.0:
                 clusters[c_idx].append(ln)
                 matched = True
                 break
@@ -126,7 +143,6 @@ def _cluster_lines_by_angle(lines_list: List[Any], img_src: Optional[np.ndarray]
         is_vertical = abs(c_ang) > 45.0
 
         if not is_vertical:
-            # Horizontal / slanted lines: sort top to bottom by ymin
             sorted_lines = sorted(cl_lines, key=lambda ln: np.asarray(ln, dtype=np.float32)[:, 1].min())
             cur_group = [sorted_lines[0]]
             for ln in sorted_lines[1:]:
@@ -147,7 +163,6 @@ def _cluster_lines_by_angle(lines_list: List[Any], img_src: Optional[np.ndarray]
             if cur_group:
                 final_groups.append(cur_group)
         else:
-            # Vertical lines: sort right to left by xmax
             sorted_lines = sorted(cl_lines, key=lambda ln: -np.asarray(ln, dtype=np.float32)[:, 0].max())
             cur_group = [sorted_lines[0]]
             for ln in sorted_lines[1:]:
@@ -188,7 +203,7 @@ class ComicTextDetectorEngine:
         conf_thresh: float = 0.40,
         nms_thresh: float = 0.35,
     ):
-        self.use_gpu = use_gpu and torch.cuda.is_available()
+        self.use_gpu = use_gpu and (torch is not None and torch.cuda.is_available())
         self.device = "cuda" if self.use_gpu else "cpu"
         self.input_size = input_size
         self.conf_thresh = conf_thresh
@@ -247,15 +262,6 @@ class ComicTextDetectorEngine:
             raise
 
     def detect(self, image: np.ndarray) -> Tuple[List[Dict[str, Any]], Optional[np.ndarray]]:
-        """
-        Detects text blocks and lines from a BGR image.
-
-        Returns:
-            Tuple of (raw_boxes, refined_mask) where:
-            - raw_boxes is a list of dicts with keys:
-              xmin, ymin, xmax, ymax, angle, polygon, conf, lines
-            - refined_mask is a numpy uint8 binary/grayscale mask of text strokes (if available)
-        """
         if image is None or image.size == 0:
             return [], None
 
@@ -312,7 +318,6 @@ class ComicTextDetectorEngine:
                         all_line_pts.extend(ln_arr.tolist())
 
                 if len(line_clusters) == 1:
-                    # Retain original block box if no orientation disparity
                     bx1 = int(round(max(0, min(w_img - 1, xyxy[0]))))
                     by1 = int(round(max(0, min(h_img - 1, xyxy[1]))))
                     bx2 = int(round(max(bx1 + 1, min(w_img, xyxy[2]))))
@@ -348,7 +353,7 @@ class ComicTextDetectorEngine:
                     "ymin": by1,
                     "xmax": bx2,
                     "ymax": by2,
-                    "text": "",  # To be filled by recognizer
+                    "text": "",
                     "conf": conf,
                     "polygon": poly,
                     "angle": eff_angle,

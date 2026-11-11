@@ -63,8 +63,10 @@ class PipelineWorker(QThread):
                 self.sig_error.emit("无法解码图像文件，请检查格式。")
                 return
 
-            blocks = self.existing_blocks
-            erased_img = self.existing_erased
+            # When running a full single-page translation ("full"), always re-run OCR and Inpainting
+            # from scratch rather than reusing stale cached blocks or erased images.
+            blocks = None if self.mode == "full" else self.existing_blocks
+            erased_img = None if self.mode in ("full", "inpaint_only") else self.existing_erased
             translated_img = None
 
             cache_mgr = get_cache_manager()
@@ -74,13 +76,12 @@ class PipelineWorker(QThread):
             if blocks is None or self.mode in ["full", "ocr_only"]:
                 if self._is_cancelled:
                     return
-                # Check cache for blocks if available
                 from app.core.pipeline.utils import normalize_source_lang, is_auto_source_lang, source_lang_to_ocr_lang
                 effective_source = self.config.get("source_lang") or self.config.get("ocr", {}).get("lang") or self.config.get("ocr_lang")
                 norm_src = normalize_source_lang(effective_source)
                 reuse_cache = False
 
-                if cache_status["blocks"] and self.mode != "ocr_only":
+                if cache_status["blocks"] and self.mode not in ("full", "ocr_only"):
                     cached_blocks = cache_mgr.load_page_cache(self.image_path, load_images=False)["blocks"]
                     if is_auto_source_lang(norm_src):
                         reuse_cache = True
@@ -121,6 +122,8 @@ class PipelineWorker(QThread):
 
                     blocks = ocr_eng.detect_and_recognize(original_img, progress_callback=ocr_cb)
                     cache_mgr.save_page_cache(self.image_path, blocks=blocks)
+                    # Since OCR produced fresh blocks, force Stage 2 to re-inpaint cleanly
+                    erased_img = None
 
                 ocr_cfg = self.config.get("ocr", {}) if isinstance(self.config.get("ocr"), dict) else {}
                 self.sig_step_done.emit("ocr", blocks)
@@ -135,7 +138,7 @@ class PipelineWorker(QThread):
                     return
 
             # 2. Inpainting Stage
-            if erased_img is None and cache_status["erased"] and self.mode != "inpaint_only":
+            if erased_img is None and cache_status["erased"] and self.mode not in ("full", "inpaint_only"):
                 self.sig_progress.emit(50, "从本地缓存直接载入无字底图(免重复擦除)...")
                 erased_img = cache_mgr.load_page_cache(self.image_path, load_images=True)["erased_img"]
                 self.sig_step_done.emit("inpaint", erased_img)
@@ -264,3 +267,9 @@ class PipelineWorker(QThread):
             import traceback
             traceback.print_exc()
             self.sig_error.emit(f"处理失败: {str(e)}")
+        finally:
+            try:
+                from app.core.hardware import cleanup_gpu_memory
+                cleanup_gpu_memory()
+            except Exception:
+                pass

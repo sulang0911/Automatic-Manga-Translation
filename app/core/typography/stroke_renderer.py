@@ -50,25 +50,25 @@ class StrokeRenderer:
         font_size: float,
         threshold: float = 140.0,
         bg_rgb: Optional[Tuple[int, int, int]] = None,
-        base_stroke_w: Optional[float] = None
+        base_stroke_w: Optional[float] = None,
+        auto_stroke_width: bool = True
     ) -> StrokeStyle:
-        if bg_rgb is not None:
-            bg_lum = cls.calculate_bt709_luminance(*bg_rgb)
-            # On dark backgrounds, stroke must be dark (black) to keep white text clean and crisp
-            if bg_lum < 120:
-                color = (0, 0, 0, 220)
-            else:
-                color = (255, 255, 255, 220)
+        lum = cls.calculate_bt709_luminance(*text_rgb)
+        alpha = 230 if bg_rgb is not None else 217
+        # High luminance (light text, e.g. white/cyan) -> Dark stroke; Low luminance (dark/red text) -> Light stroke
+        if lum > threshold:
+            color = (0, 0, 0, alpha)
         else:
-            lum = cls.calculate_bt709_luminance(*text_rgb)
-            # High luminance (light text) -> Dark stroke; Low luminance (dark text) -> Light stroke
-            if lum > threshold:
-                color = (0, 0, 0, 217)       # 85% black
-            else:
-                color = (255, 255, 255, 217) # 85% white
+            color = (255, 255, 255, alpha)
 
         if base_stroke_w is not None and base_stroke_w > 0:
-            stroke_w = float(base_stroke_w)
+            if auto_stroke_width:
+                # Smart adaptive stroke width: scales with font_size up to base_stroke_w (default 3.5px)
+                # so small 11-16px CJK dialogue stays crisp (1.8-2.2px) while larger 24px+ SFX uses full 3.5px
+                max_cap = max(2.0, float(base_stroke_w))
+                stroke_w = min(max_cap, max(1.6, round(font_size * 0.145, 2)))
+            else:
+                stroke_w = float(base_stroke_w)
         else:
             # 6% of font size clamped to [0.5, 3.5]px
             stroke_w = max(0.5, min(3.5, font_size * 0.06))
@@ -108,7 +108,7 @@ class StrokeRenderer:
         Render text glyph with stroke, bolding, and drop shadow using PIL onto target_image.
         """
         font_size = getattr(font, "size", 20)
-        bold_extra = max(1, int(round(font_size * 0.045))) if is_bold else 0
+        bold_extra = int(round(font_size * 0.035)) if (is_bold and font_size >= 30) else 0
 
         # 1. Drop shadow layer
         if shadow and shadow.enabled:
@@ -129,11 +129,12 @@ class StrokeRenderer:
         # 2. Text with stroke & fill
         draw = ImageDraw.Draw(target_image)
         stroke_w = int(round(stroke.width)) if stroke else 0
+        if stroke_w > 0 and font_size < 16:
+            stroke_w = min(stroke_w, max(1, int(round(font_size * 0.15))))
         stroke_fill = stroke.color_rgba if stroke else None
 
         if is_bold:
             if stroke_w > 0:
-                # Outer stroke layer with faux-bold expansion
                 draw.text(
                     (x, y),
                     text,
@@ -142,7 +143,6 @@ class StrokeRenderer:
                     stroke_width=stroke_w + bold_extra,
                     stroke_fill=stroke_fill
                 )
-                # Inner glyph body stroked in fill color for true bold weight
                 draw.text(
                     (x, y),
                     text,
@@ -152,7 +152,6 @@ class StrokeRenderer:
                     stroke_fill=fill_rgba
                 )
             else:
-                # No stroke, bold text body
                 draw.text(
                     (x, y),
                     text,

@@ -166,17 +166,34 @@ class BatchWorker(QThread):
 
                 self.sig_batch_progress.emit(idx + 1, total, filename, 100, "完成")
                 self.sig_item_completed.emit(img_id, {
-                    "original_img": original_img,
                     "blocks": blocks,
-                    "erased_img": erased_img,
-                    "translated_img": translated_img,
                     "export_path": export_path
                 })
                 success_count += 1
+
+                # Clean memory per page immediately
+                del original_img
+                del erased_img
+                del translated_img
+                try:
+                    from app.core.hardware import cleanup_gpu_memory
+                    cleanup_gpu_memory()
+                except Exception:
+                    pass
 
             except Exception as e:
                 print(f"[-] Batch item failed: {filename}: {e}")
                 self.sig_item_failed.emit(img_id, str(e))
                 fail_count += 1
+                try:
+                    from app.core.hardware import cleanup_gpu_memory
+                    cleanup_gpu_memory()
+                except Exception:
+                    pass
 
+        try:
+            from app.core.hardware import cleanup_gpu_memory
+            cleanup_gpu_memory()
+        except Exception:
+            pass
         self.sig_batch_finished.emit(success_count, fail_count)

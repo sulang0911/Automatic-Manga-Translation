@@ -1,6 +1,6 @@
 """
 app/ui/widgets/segmented_control.py
-Apple-inspired segmented pill control for switching view modes and states.
+Apple macOS NSSegmentedControl-inspired pill control for switching view modes and states.
 """
 from typing import Dict, Optional
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QToolButton, QButtonGroup, QWidget
@@ -20,10 +20,10 @@ class SegmentedControl(QFrame):
         self.setObjectName("segmentedControl")
         self.setStyleSheet("""
             #segmentedControl {
-                background-color: #18181B;
-                border: 1px solid #2D2D32;
-                border-radius: 3px;
-                padding: 1px;
+                background-color: rgba(0, 0, 0, 0.28);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
+                padding: 2px;
             }
         """)
 

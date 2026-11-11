@@ -1,7 +1,7 @@
 """
 app/ui/theme/icons.py
 Resolution-independent vector SVG icon provider for Apple HIG interface.
-Renders crisp icons at any high-DPI scaling factor with dynamic tinting.
+Renders crisp SF Symbols-inspired icons at any high-DPI scaling factor with dynamic tinting.
 """
 from typing import Dict, Optional
 from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor
@@ -9,182 +9,196 @@ from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtCore import QByteArray, QSize, Qt
 
 
-# Minimalist 24x24 SVG path definitions
+# Minimalist 24x24 SF Symbols-inspired SVG path definitions
 SVG_TEMPLATES: Dict[str, str] = {
+    "sidebar_left": """
+        <rect x="3" y="4" width="18" height="16" rx="2.5" stroke="{color}" stroke-width="1.75" fill="none"/>
+        <line x1="9" y1="4" x2="9" y2="20" stroke="{color}" stroke-width="1.75"/>
+        <line x1="5.5" y1="8" x2="7" y2="8" stroke="{color}" stroke-width="1.5" stroke-linecap="round"/>
+        <line x1="5.5" y1="11" x2="7" y2="11" stroke="{color}" stroke-width="1.5" stroke-linecap="round"/>
+    """,
+    "sidebar_right": """
+        <rect x="3" y="4" width="18" height="16" rx="2.5" stroke="{color}" stroke-width="1.75" fill="none"/>
+        <line x1="15" y1="4" x2="15" y2="20" stroke="{color}" stroke-width="1.75"/>
+        <line x1="17" y1="8" x2="18.5" y2="8" stroke="{color}" stroke-width="1.5" stroke-linecap="round"/>
+        <line x1="17" y1="11" x2="18.5" y2="11" stroke="{color}" stroke-width="1.5" stroke-linecap="round"/>
+    """,
+    "edit": """
+        <path d="M12 20h9" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    """,
     "split": """
-        <path d="M12 3v18M8 8l-4 4 4 4M16 8l4 4-4 4" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M12 3v18M8 8l-4 4 4 4M16 8l4 4-4 4" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
     """,
     "columns": """
-        <rect x="3" y="4" width="8" height="16" rx="2" stroke="{color}" stroke-width="2" fill="none"/>
-        <rect x="13" y="4" width="8" height="16" rx="2" stroke="{color}" stroke-width="2" fill="none"/>
+        <rect x="3" y="4" width="8" height="16" rx="2" stroke="{color}" stroke-width="1.75" fill="none"/>
+        <rect x="13" y="4" width="8" height="16" rx="2" stroke="{color}" stroke-width="1.75" fill="none"/>
     """,
     "eye": """
-        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" stroke="{color}" stroke-width="2" fill="none"/>
-        <circle cx="12" cy="12" r="3" stroke="{color}" stroke-width="2" fill="none"/>
+        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" stroke="{color}" stroke-width="1.75" fill="none"/>
+        <circle cx="12" cy="12" r="3" stroke="{color}" stroke-width="1.75" fill="none"/>
     """,
     "sparkles": """
         <path d="M12 2l2.4 5.6L20 10l-5.6 2.4L12 18l-2.4-5.6L4 10l5.6-2.4L12 2zM19 16l1.2 2.8L23 20l-2.8 1.2L19 24l-1.2-2.8L15 20l2.8-1.2L19 16z" fill="{color}"/>
     """,
     "eraser": """
-        <path d="M20 20H7L3 16c-1-1-1-2.5 0-3.5l10-10c1-1 2.5-1 3.5 0l4 4c1 1 1 2.5 0 3.5L13 18" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M20 20H7L3 16c-1-1-1-2.5 0-3.5l10-10c1-1 2.5-1 3.5 0l4 4c1 1 1 2.5 0 3.5L13 18" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
     """,
     "zoom_in": """
-        <circle cx="11" cy="11" r="8" stroke="{color}" stroke-width="2" fill="none"/>
-        <line x1="21" y1="21" x2="16.65" y2="16.65" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
-        <line x1="11" y1="8" x2="11" y2="14" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
-        <line x1="8" y1="11" x2="14" y2="11" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+        <circle cx="11" cy="11" r="8" stroke="{color}" stroke-width="1.75" fill="none"/>
+        <line x1="21" y1="21" x2="16.65" y2="16.65" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
+        <line x1="11" y1="8" x2="11" y2="14" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
+        <line x1="8" y1="11" x2="14" y2="11" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
     """,
     "zoom_out": """
-        <circle cx="11" cy="11" r="8" stroke="{color}" stroke-width="2" fill="none"/>
-        <line x1="21" y1="21" x2="16.65" y2="16.65" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
-        <line x1="8" y1="11" x2="14" y2="11" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+        <circle cx="11" cy="11" r="8" stroke="{color}" stroke-width="1.75" fill="none"/>
+        <line x1="21" y1="21" x2="16.65" y2="16.65" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
+        <line x1="8" y1="11" x2="14" y2="11" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
     """,
     "fit_window": """
-        <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
     """,
     "actual_size": """
-        <rect x="3" y="3" width="18" height="18" rx="2" stroke="{color}" stroke-width="2" fill="none"/>
+        <rect x="3" y="3" width="18" height="18" rx="2.5" stroke="{color}" stroke-width="1.75" fill="none"/>
         <text x="12" y="16" font-size="10" font-family="sans-serif" font-weight="bold" fill="{color}" text-anchor="middle">1:1</text>
     """,
     "play": """
-        <polygon points="5 3 19 12 5 21 5 3" fill="{color}"/>
+        <polygon points="6 4 19 12 6 20 6 4" fill="{color}"/>
     """,
     "settings": """
-        <circle cx="12" cy="12" r="3" stroke="{color}" stroke-width="2" fill="none"/>
-        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" stroke="{color}" stroke-width="2" fill="none"/>
+        <circle cx="12" cy="12" r="3" stroke="{color}" stroke-width="1.75" fill="none"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" stroke="{color}" stroke-width="1.75" fill="none"/>
     """,
     "sun": """
-        <circle cx="12" cy="12" r="5" stroke="{color}" stroke-width="2" fill="none"/>
-        <line x1="12" y1="1" x2="12" y2="3" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
-        <line x1="12" y1="21" x2="12" y2="23" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
-        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
-        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
-        <line x1="1" y1="12" x2="3" y2="12" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
-        <line x1="21" y1="12" x2="23" y2="12" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
-        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
-        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+        <circle cx="12" cy="12" r="5" stroke="{color}" stroke-width="1.75" fill="none"/>
+        <line x1="12" y1="1" x2="12" y2="3" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
+        <line x1="12" y1="21" x2="12" y2="23" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
+        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
+        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
+        <line x1="1" y1="12" x2="3" y2="12" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
+        <line x1="21" y1="12" x2="23" y2="12" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
+        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
+        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
     """,
     "moon": """
-        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
     """,
     "folder_open": """
-        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
     """,
     "trash": """
-        <polyline points="3 6 5 6 21 6" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <polyline points="3 6 5 6 21 6" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
     """,
     "chevron_left": """
-        <polyline points="15 18 9 12 15 6" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <polyline points="15 18 9 12 15 6" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
     """,
     "chevron_right": """
-        <polyline points="9 18 15 12 9 6" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <polyline points="9 18 15 12 9 6" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
     """,
     "layers": """
-        <polygon points="12 2 2 7 12 12 22 7 12 2" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-        <polyline points="2 17 12 22 22 17" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-        <polyline points="2 12 12 17 22 12" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <polygon points="12 2 2 7 12 12 22 7 12 2" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <polyline points="2 17 12 22 22 17" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <polyline points="2 12 12 17 22 12" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
     """,
     "check": """
-        <polyline points="20 6 9 17 4 12" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <polyline points="20 6 9 17 4 12" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
     """,
     "alert": """
-        <circle cx="12" cy="12" r="10" stroke="{color}" stroke-width="2" fill="none"/>
-        <line x1="12" y1="8" x2="12" y2="12" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
-        <line x1="12" y1="16" x2="12.01" y2="16" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+        <circle cx="12" cy="12" r="10" stroke="{color}" stroke-width="1.75" fill="none"/>
+        <line x1="12" y1="8" x2="12" y2="12" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
+        <line x1="12" y1="16" x2="12.01" y2="16" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
     """,
     "download": """
-        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-        <polyline points="7 10 12 15 17 10" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-        <line x1="12" y1="15" x2="12" y2="3" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <polyline points="7 10 12 15 17 10" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <line x1="12" y1="15" x2="12" y2="3" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
     """,
     "play_all": """
         <polygon points="4 4 14 12 4 20 4 4" fill="{color}"/>
         <polygon points="12 4 22 12 12 20 12 4" fill="{color}"/>
     """,
     "refresh": """
-        <path d="M23 4v6h-6M1 20v-6h6" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M23 4v6h-6M1 20v-6h6" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
     """,
     "undo": """
-        <path d="M3 7v6h6" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-        <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M3 7v6h6" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
     """,
     "redo": """
-        <path d="M21 7v6h-6" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-        <path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M21 7v6h-6" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
     """,
     "plus": """
-        <line x1="12" y1="5" x2="12" y2="19" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
-        <line x1="5" y1="12" x2="19" y2="12" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+        <line x1="12" y1="5" x2="12" y2="19" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
+        <line x1="5" y1="12" x2="19" y2="12" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
     """,
     "arrow_up": """
-        <line x1="12" y1="19" x2="12" y2="5" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-        <polyline points="5 12 12 5 19 12" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <line x1="12" y1="19" x2="12" y2="5" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+        <polyline points="5 12 12 5 19 12" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
     """,
     "arrow_down": """
-        <line x1="12" y1="5" x2="12" y2="19" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-        <polyline points="19 12 12 19 5 12" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <line x1="12" y1="5" x2="12" y2="19" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+        <polyline points="19 12 12 19 5 12" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
     """,
     "swap": """
-        <polyline points="17 8 21 12 17 16" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-        <line x1="3" y1="12" x2="21" y2="12" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
-        <polyline points="7 16 3 12 7 8" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <polyline points="17 8 21 12 17 16" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <line x1="3" y1="12" x2="21" y2="12" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
+        <polyline points="7 16 3 12 7 8" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
     """,
     "link": """
-        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
     """,
     "crop": """
-        <path d="M6 2v14a2 2 0 0 0 2 2h14" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-        <path d="M18 22V8a2 2 0 0 0-2-2H2" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M6 2v14a2 2 0 0 0 2 2h14" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M18 22V8a2 2 0 0 0-2-2H2" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
     """,
     "text": """
-        <polyline points="4 7 4 4 20 4 20 7" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-        <line x1="12" y1="4" x2="12" y2="20" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
-        <line x1="9" y1="20" x2="15" y2="20" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+        <polyline points="4 7 4 4 20 4 20 7" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <line x1="12" y1="4" x2="12" y2="20" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
+        <line x1="9" y1="20" x2="15" y2="20" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
     """,
     "menu": """
-        <line x1="3" y1="12" x2="21" y2="12" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
-        <line x1="3" y1="6" x2="21" y2="6" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
-        <line x1="3" y1="18" x2="21" y2="18" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+        <rect x="3" y="4" width="18" height="16" rx="2.5" stroke="{color}" stroke-width="1.75" fill="none"/>
+        <line x1="9" y1="4" x2="9" y2="20" stroke="{color}" stroke-width="1.75"/>
     """,
     "close": """
-        <line x1="18" y1="6" x2="6" y2="18" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
-        <line x1="6" y1="6" x2="18" y2="18" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+        <line x1="18" y1="6" x2="6" y2="18" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
+        <line x1="6" y1="6" x2="18" y2="18" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
     """,
     "keyboard": """
-        <rect x="2" y="4" width="20" height="16" rx="2" stroke="{color}" stroke-width="2" fill="none"/>
-        <line x1="6" y1="8" x2="6.01" y2="8" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
-        <line x1="10" y1="8" x2="10.01" y2="8" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
-        <line x1="14" y1="8" x2="14.01" y2="8" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
-        <line x1="18" y1="8" x2="18.01" y2="8" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
-        <line x1="6" y1="12" x2="6.01" y2="12" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
-        <line x1="18" y1="12" x2="18.01" y2="12" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
-        <line x1="7" y1="16" x2="17" y2="16" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+        <rect x="2" y="4" width="20" height="16" rx="2.5" stroke="{color}" stroke-width="1.75" fill="none"/>
+        <line x1="6" y1="8" x2="6.01" y2="8" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
+        <line x1="10" y1="8" x2="10.01" y2="8" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
+        <line x1="14" y1="8" x2="14.01" y2="8" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
+        <line x1="18" y1="8" x2="18.01" y2="8" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
+        <line x1="6" y1="12" x2="6.01" y2="12" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
+        <line x1="18" y1="12" x2="18.01" y2="12" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
+        <line x1="7" y1="16" x2="17" y2="16" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
     """,
     "help": """
-        <circle cx="12" cy="12" r="10" stroke="{color}" stroke-width="2" fill="none"/>
-        <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
-        <line x1="12" y1="17" x2="12.01" y2="17" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+        <circle cx="12" cy="12" r="9.5" stroke="{color}" stroke-width="1.75" fill="none"/>
+        <path d="M9.2 9a2.8 2.8 0 0 1 5.45 1c0 1.85-2.65 2.75-2.65 2.75" stroke="{color}" stroke-width="1.75" stroke-linecap="round" fill="none"/>
+        <line x1="12" y1="16.8" x2="12.01" y2="16.8" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
     """,
     "direction_vertical": """
-        <line x1="12" y1="3" x2="12" y2="21" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
-        <polyline points="7 16 12 21 17 16" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <line x1="12" y1="3" x2="12" y2="21" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
+        <polyline points="7 16 12 21 17 16" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
         <rect x="15" y="4" width="4" height="4" rx="1" stroke="{color}" stroke-width="1.5" fill="none"/>
         <rect x="15" y="10" width="4" height="4" rx="1" stroke="{color}" stroke-width="1.5" fill="none"/>
     """,
     "direction_horizontal": """
-        <line x1="3" y1="12" x2="21" y2="12" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
-        <polyline points="16 7 21 12 16 17" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <line x1="3" y1="12" x2="21" y2="12" stroke="{color}" stroke-width="1.75" stroke-linecap="round"/>
+        <polyline points="16 7 21 12 16 17" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
         <rect x="4" y="5" width="4" height="4" rx="1" stroke="{color}" stroke-width="1.5" fill="none"/>
         <rect x="10" y="5" width="4" height="4" rx="1" stroke="{color}" stroke-width="1.5" fill="none"/>
     """,
     "upload_cloud": """
-        <path d="M16 16l-4-4-4 4" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-        <path d="M12 12v9" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-        <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-        <path d="M16 16l-4-4-4 4" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M16 16l-4-4-4 4" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M12 12v9" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
     """,
 }
 

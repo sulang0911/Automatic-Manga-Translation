@@ -1,6 +1,8 @@
 """
 app/ui/inspector/inspector_panel.py
-Apple HIG Inspector Panel for speech bubble metadata, typography styling, and live re-rendering.
+Apple macOS Pages / Pixelmator Pro-inspired Inspector Panel for speech bubble editing,
+per-bubble typography overrides, and page-level actions.
+Designed with flat section dividers and zero nested box clutter.
 """
 from typing import Optional, List, Dict, Any
 from PyQt6.QtWidgets import (
@@ -33,8 +35,10 @@ class BubbleTextEdit(QTextEdit):
 
 class InspectorPanel(QFrame):
     """
-    Inspector Panel Card conforming to Apple HIG.
-    Features 3-tab layout: Bubble Editor, Typography Styles, and Quick Actions.
+    macOS-styled Inspector Sidebar featuring a 3-segment pill tab bar:
+    - 气泡 (Bubble List & Quick Editor)
+    - 样式 (Per-Bubble Typography Overrides)
+    - 页面 (Page Actions & Pipeline Utilities)
     """
     sig_re_render_requested = pyqtSignal()
     sig_translate_page_requested = pyqtSignal()
@@ -57,179 +61,216 @@ class InspectorPanel(QFrame):
         self._block_custom_color = "#000000"
 
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(6, 6, 6, 6)
-        main_layout.setSpacing(4)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(8)
 
-        # Tabs
+        # Segmented Inspector Tabs
         self.tab_widget = QTabWidget(self)
+        self.tab_widget.tabBar().setExpanding(True)
         main_layout.addWidget(self.tab_widget)
 
         # 1. Bubble Editor Tab
         self.bubble_tab = self._create_bubble_tab()
-        self.tab_widget.addTab(self.bubble_tab, "气泡编辑")
+        self.tab_widget.addTab(self.bubble_tab, "气泡")
 
         # 2. Typography Tab (Single block overrides)
         self.style_tab = self._create_style_tab()
-        self.tab_widget.addTab(self.style_tab, "单气泡样式")
+        self.tab_widget.addTab(self.style_tab, "样式")
 
         # 3. Actions Tab
         self.action_tab = self._create_action_tab()
-        self.tab_widget.addTab(self.action_tab, "页面工具")
+        self.tab_widget.addTab(self.action_tab, "页面")
 
     def _create_bubble_tab(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.setContentsMargins(2, 4, 2, 4)
-        layout.setSpacing(4)
+        layout.setContentsMargins(0, 6, 0, 0)
+        layout.setSpacing(6)
 
         splitter = QSplitter(Qt.Orientation.Vertical, widget)
         splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(1)
 
         # Top section: Bubble selector list
         top_container = QWidget(splitter)
         top_layout = QVBoxLayout(top_container)
-        top_layout.setContentsMargins(2, 2, 2, 2)
-        top_layout.setSpacing(4)
+        top_layout.setContentsMargins(2, 0, 2, 4)
+        top_layout.setSpacing(6)
 
         top_header = QHBoxLayout()
-        self.bubble_count_lbl = QLabel("气泡列表 (共 0 个):", top_container)
-        self.bubble_count_lbl.setStyleSheet("font-weight: 600; font-size: 11px;")
+        top_header.setContentsMargins(2, 0, 2, 0)
+        self.bubble_count_lbl = QLabel("对话气泡 (0)", top_container)
+        self.bubble_count_lbl.setStyleSheet("font-weight: 600; font-size: 12px; color: #98989D;")
         top_header.addWidget(self.bubble_count_lbl)
         top_header.addStretch()
 
-        self.btn_add_bubble = QPushButton("新建气泡", top_container)
+        self.btn_add_bubble = QPushButton("新建", top_container)
         self.btn_add_bubble.setIcon(get_icon("plus", color="#0A84FF", size=12))
-        self.btn_add_bubble.setToolTip("手动添加新气泡 (也可在画布按快捷键 R 框选)")
+        self.btn_add_bubble.setToolTip("手动框选新建气泡 (快捷键: R)")
         self.btn_add_bubble.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_add_bubble.setStyleSheet("font-size: 11px; padding: 2px 8px;")
+        self.btn_add_bubble.setFixedHeight(24)
+        self.btn_add_bubble.setStyleSheet("font-size: 11px; padding: 2px 8px; border-radius: 6px;")
         self.btn_add_bubble.clicked.connect(self.sig_add_bubble_requested.emit)
         top_header.addWidget(self.btn_add_bubble)
         top_layout.addLayout(top_header)
 
         self.bubble_list = QListWidget(top_container)
-        self.bubble_list.setMinimumHeight(85)
+        self.bubble_list.setMinimumHeight(90)
+        self.bubble_list.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
         self.bubble_list.itemClicked.connect(self._on_bubble_list_clicked)
         self.bubble_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.bubble_list.customContextMenuRequested.connect(self._on_bubble_list_context_menu)
 
-        # Delete shortcut on list
         del_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Delete), self.bubble_list)
         del_shortcut.activated.connect(self._on_delete_block)
 
         top_layout.addWidget(self.bubble_list)
         splitter.addWidget(top_container)
 
-        # Bottom section: Selected Bubble Details
+        # Bottom section: Selected Bubble Details (Flat macOS Inspector Layout)
         self.detail_frame = QFrame(splitter)
         self.detail_frame.setObjectName("detailFrame")
         detail_layout = QVBoxLayout(self.detail_frame)
-        detail_layout.setContentsMargins(6, 6, 6, 6)
-        detail_layout.setSpacing(4)
+        detail_layout.setContentsMargins(2, 8, 2, 2)
+        detail_layout.setSpacing(6)
+
+        # Unified Header Row: Bubble Title + Type Combo + Delete Icon Button
+        header_row = QHBoxLayout()
+        header_row.setSpacing(6)
 
         self.block_title = QLabel("未选中任何气泡", self.detail_frame)
         self.block_title.setObjectName("blockTitle")
-        self.block_title.setStyleSheet("font-family: 'JetBrains Mono', 'SF Mono', monospace; font-weight: 600; font-size: 11px; color: #0A84FF;")
-        detail_layout.addWidget(self.block_title)
+        self.block_title.setStyleSheet("font-weight: 600; font-size: 12px; color: #0A84FF;")
+        header_row.addWidget(self.block_title)
 
-        detail_layout.addWidget(QLabel("原文 (OCR):", self.detail_frame))
+        header_row.addStretch()
+
+        self.type_combo = QComboBox(self.detail_frame)
+        self.type_combo.addItems(["bubble", "onomatopoeia", "other"])
+        self.type_combo.setToolTip("气泡类型 (bubble: 对话框 / onomatopoeia: 拟声词 / other: 其他)")
+        self.type_combo.setFixedWidth(104)
+        self.type_combo.currentTextChanged.connect(self._on_type_changed)
+        header_row.addWidget(self.type_combo)
+
+        self.delete_block_btn = QPushButton("", self.detail_frame)
+        self.delete_block_btn.setProperty("class", "icon-action-btn")
+        self.delete_block_btn.setIcon(get_icon("trash", color="#FF453A", size=14))
+        self.delete_block_btn.setFixedSize(26, 26)
+        self.delete_block_btn.setToolTip("删除当前选中气泡 (Delete)")
+        self.delete_block_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.delete_block_btn.clicked.connect(self._on_delete_block)
+        header_row.addWidget(self.delete_block_btn)
+
+        detail_layout.addLayout(header_row)
+
+        # Force erase checkbox (visible only for onomatopoeia)
+        self.force_erase_cb = QCheckBox("强制抹除背景并渲染译文", self.detail_frame)
+        self.force_erase_cb.stateChanged.connect(self._on_force_erase_changed)
+        self.force_erase_cb.setVisible(False)
+        self.force_erase_cb.setToolTip("选中后将抹除此拟声词并显示翻译")
+        detail_layout.addWidget(self.force_erase_cb)
+
+        # OCR Source Text
+        orig_lbl = QLabel("原文", self.detail_frame)
+        orig_lbl.setStyleSheet("font-size: 11px; font-weight: 500; color: #98989D;")
+        detail_layout.addWidget(orig_lbl)
+
         self.orig_text_edit = QTextEdit(self.detail_frame)
-        self.orig_text_edit.setMinimumHeight(38)
-        self.orig_text_edit.setMaximumHeight(80)
+        self.orig_text_edit.setPlaceholderText("OCR 识别原文...")
+        self.orig_text_edit.setMinimumHeight(40)
+        self.orig_text_edit.setMaximumHeight(64)
         self.orig_text_edit.textChanged.connect(self._on_orig_text_changed)
         detail_layout.addWidget(self.orig_text_edit)
 
-        detail_layout.addWidget(QLabel("译文 (按 Ctrl+Enter 提交并跳下一条):", self.detail_frame))
+        # Translated Text
+        trans_lbl = QLabel("译文", self.detail_frame)
+        trans_lbl.setStyleSheet("font-size: 11px; font-weight: 500; color: #98989D;")
+        detail_layout.addWidget(trans_lbl)
+
         self.trans_text_edit = BubbleTextEdit(self.detail_frame)
-        self.trans_text_edit.setMinimumHeight(50)
+        self.trans_text_edit.setPlaceholderText("输入译文，按 Ctrl+Enter 应用并跳至下一条...")
+        self.trans_text_edit.setMinimumHeight(56)
         self.trans_text_edit.textChanged.connect(self._on_trans_text_changed)
         self.trans_text_edit.sig_ctrl_enter.connect(self._on_apply_and_next_clicked)
         detail_layout.addWidget(self.trans_text_edit, 1)
 
-        # Block Type & Delete
-        row_type = QHBoxLayout()
-        row_type.addWidget(QLabel("类型:", self.detail_frame))
-        self.type_combo = QComboBox(self.detail_frame)
-        self.type_combo.addItems(["bubble", "onomatopoeia", "other"])
-        self.type_combo.currentTextChanged.connect(self._on_type_changed)
-        row_type.addWidget(self.type_combo, 1)
-
-        self.force_erase_cb = QCheckBox("强制消除并翻译", self.detail_frame)
-        self.force_erase_cb.stateChanged.connect(self._on_force_erase_changed)
-        self.force_erase_cb.setVisible(False)
-        self.force_erase_cb.setToolTip("选中后将抹除此拟声词并显示翻译")
-        row_type.addWidget(self.force_erase_cb)
-
-        self.delete_block_btn = QPushButton("删除气泡", self.detail_frame)
-        self.delete_block_btn.setIcon(get_icon("trash", color="#EF4444", size=12))
-        self.delete_block_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.delete_block_btn.clicked.connect(self._on_delete_block)
-        row_type.addWidget(self.delete_block_btn)
-        detail_layout.addLayout(row_type)
-
-        # Streamlined Reorder & Merge Group (Unified Pro Layout)
-        swap_group = QGroupBox("气泡对调与合并纠偏", self.detail_frame)
-        swap_layout = QVBoxLayout(swap_group)
-        swap_layout.setContentsMargins(4, 4, 4, 4)
-        swap_layout.setSpacing(3)
+        # Compact Order & Merge Strip (Flat, no bulky nested QGroupBox)
+        adjust_lbl = QLabel("顺序对调与合并", self.detail_frame)
+        adjust_lbl.setStyleSheet("font-size: 11px; font-weight: 500; color: #98989D; margin-top: 2px;")
+        detail_layout.addWidget(adjust_lbl)
 
         row_actions = QHBoxLayout()
         row_actions.setSpacing(4)
-        self.swap_prev_btn = QPushButton("上移对调", swap_group)
-        self.swap_prev_btn.setIcon(get_icon("arrow_up", color="#A1A1AA", size=11))
-        self.swap_prev_btn.setToolTip("与上一气泡互换翻译")
+        compact_btn_qss = "QPushButton { padding: 4px 6px; font-size: 11px; border-radius: 6px; }"
+
+        self.swap_prev_btn = QPushButton("↑ 对调", self.detail_frame)
+        self.swap_prev_btn.setStyleSheet(compact_btn_qss)
+        self.swap_prev_btn.setToolTip("与上一气泡互换译文")
+        self.swap_prev_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.swap_prev_btn.clicked.connect(self._on_swap_prev_clicked)
         row_actions.addWidget(self.swap_prev_btn)
 
-        self.swap_next_btn = QPushButton("下移对调", swap_group)
-        self.swap_next_btn.setIcon(get_icon("arrow_down", color="#A1A1AA", size=11))
-        self.swap_next_btn.setToolTip("与下一气泡互换翻译")
+        self.swap_next_btn = QPushButton("↓ 对调", self.detail_frame)
+        self.swap_next_btn.setStyleSheet(compact_btn_qss)
+        self.swap_next_btn.setToolTip("与下一气泡互换译文")
+        self.swap_next_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.swap_next_btn.clicked.connect(self._on_swap_next_clicked)
         row_actions.addWidget(self.swap_next_btn)
 
-        self.merge_prev_btn = QPushButton("与上合并", swap_group)
-        self.merge_prev_btn.setIcon(get_icon("link", color="#A1A1AA", size=11))
-        self.merge_prev_btn.setToolTip("将当前气泡与上一气泡合并为一个整体（合并坐标与文字）")
+        self.merge_prev_btn = QPushButton("↑ 合并", self.detail_frame)
+        self.merge_prev_btn.setStyleSheet(compact_btn_qss)
+        self.merge_prev_btn.setToolTip("与上一气泡合并坐标与文本")
+        self.merge_prev_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.merge_prev_btn.clicked.connect(self._on_merge_prev_clicked)
         row_actions.addWidget(self.merge_prev_btn)
 
-        self.merge_next_btn = QPushButton("与下合并", swap_group)
-        self.merge_next_btn.setIcon(get_icon("link", color="#A1A1AA", size=11))
-        self.merge_next_btn.setToolTip("将当前气泡与下一气泡合并为一个整体（合并坐标与文字）")
+        self.merge_next_btn = QPushButton("↓ 合并", self.detail_frame)
+        self.merge_next_btn.setStyleSheet(compact_btn_qss)
+        self.merge_next_btn.setToolTip("与下一气泡合并坐标与文本")
+        self.merge_next_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.merge_next_btn.clicked.connect(self._on_merge_next_clicked)
         row_actions.addWidget(self.merge_next_btn)
-        swap_layout.addLayout(row_actions)
+        detail_layout.addLayout(row_actions)
 
         row_swap_target = QHBoxLayout()
-        row_swap_target.setSpacing(4)
-        self.swap_target_combo = QComboBox(swap_group)
+        row_swap_target.setSpacing(6)
+        self.swap_target_combo = QComboBox(self.detail_frame)
+        self.swap_target_combo.setToolTip("选择要互换译文的目标气泡")
         row_swap_target.addWidget(self.swap_target_combo, 1)
-        self.swap_target_btn = QPushButton("指定互换", swap_group)
-        self.swap_target_btn.setIcon(get_icon("swap", color="#A1A1AA", size=11))
+
+        self.swap_target_btn = QPushButton("互换", self.detail_frame)
+        self.swap_target_btn.setIcon(get_icon("swap", color="#98989D", size=12))
+        self.swap_target_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.swap_target_btn.clicked.connect(self._on_swap_target_clicked)
         row_swap_target.addWidget(self.swap_target_btn)
-        swap_layout.addLayout(row_swap_target)
+        detail_layout.addLayout(row_swap_target)
 
-        detail_layout.addWidget(swap_group)
-
-        # Action Buttons Row: Apply and Single-Block OCR Translate
+        # Primary Action Row: Apply & Re-OCR
         row_apply_actions = QHBoxLayout()
-        row_apply_actions.setSpacing(4)
-        self.apply_block_btn = QPushButton("应用修改 (Ctrl+Enter)", self.detail_frame)
+        row_apply_actions.setSpacing(6)
+        row_apply_actions.setContentsMargins(0, 4, 0, 0)
+
+        self.apply_block_btn = QPushButton("应用并下一条", self.detail_frame)
         self.apply_block_btn.setProperty("class", "primaryBtn")
         self.apply_block_btn.setIcon(get_icon("check", color="#FFFFFF", size=13))
-        self.apply_block_btn.setToolTip("快捷键: Ctrl+Enter 提交当前修改并自动跳转至下一个气泡")
+        self.apply_block_btn.setFixedHeight(30)
+        self.apply_block_btn.setToolTip("提交当前译文修改并自动跳转至下一个气泡 (Ctrl+Enter)")
+        self.apply_block_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.apply_block_btn.clicked.connect(self._on_apply_and_next_clicked)
-        row_apply_actions.addWidget(self.apply_block_btn, 1)
+        row_apply_actions.addWidget(self.apply_block_btn, 3)
 
         self.ocr_translate_block_btn = QPushButton("重译此框", self.detail_frame)
-        self.ocr_translate_block_btn.setIcon(get_icon("sparkles", color="#0A84FF", size=13))
-        self.ocr_translate_block_btn.setToolTip("对当前框选区域重新运行 OCR 识别与大模型翻译")
+        self.ocr_translate_block_btn.setIcon(get_icon("sparkles", color="#0A84FF", size=12))
+        self.ocr_translate_block_btn.setFixedHeight(30)
+        self.ocr_translate_block_btn.setToolTip("对该气泡区域重新执行 OCR 识别与 AI 翻译")
+        self.ocr_translate_block_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.ocr_translate_block_btn.clicked.connect(self._on_ocr_translate_block_clicked)
-        row_apply_actions.addWidget(self.ocr_translate_block_btn, 1)
+        row_apply_actions.addWidget(self.ocr_translate_block_btn, 2)
+
         detail_layout.addLayout(row_apply_actions)
 
         splitter.addWidget(self.detail_frame)
-        splitter.setSizes([120, 260])
+        splitter.setSizes([140, 320])
 
         layout.addWidget(splitter)
         return widget
@@ -241,28 +282,28 @@ class InspectorPanel(QFrame):
 
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(8)
+        layout.setContentsMargins(2, 8, 2, 8)
+        layout.setSpacing(10)
 
         # Target block header
         self.style_block_title = QLabel("当前气泡: 未选中任何气泡", widget)
-        self.style_block_title.setStyleSheet("font-family: 'JetBrains Mono', 'Cascadia Code', monospace; font-weight: 600; font-size: 11px; color: #007ACC;")
+        self.style_block_title.setStyleSheet("font-weight: 600; font-size: 12px; color: #0A84FF;")
         layout.addWidget(self.style_block_title)
 
         # Override toggle
-        self.block_style_override_cb = QCheckBox("为此气泡启用独立样式 (覆盖全局)", widget)
-        self.block_style_override_cb.setStyleSheet("font-weight: 600; font-size: 11px;")
+        self.block_style_override_cb = QCheckBox("为此气泡启用独立样式", widget)
+        self.block_style_override_cb.setStyleSheet("font-weight: 500; font-size: 12px;")
         self.block_style_override_cb.toggled.connect(self._on_block_style_override_toggled)
         layout.addWidget(self.block_style_override_cb)
 
         # Sub-container for style controls
-        self.style_controls_box = QGroupBox("单气泡排版属性", widget)
+        self.style_controls_box = QGroupBox("排版与外观", widget)
         sc_layout = QVBoxLayout(self.style_controls_box)
-        sc_layout.setContentsMargins(6, 6, 6, 6)
-        sc_layout.setSpacing(6)
+        sc_layout.setContentsMargins(10, 12, 10, 10)
+        sc_layout.setSpacing(8)
 
         # Font Family
-        sc_layout.addWidget(QLabel("字体族 (Font Family):"))
+        sc_layout.addWidget(QLabel("字体:"))
         self.block_font_combo = QComboBox(self.style_controls_box)
         for label, _ in FONT_CHOICES:
             self.block_font_combo.addItem(label)
@@ -273,34 +314,35 @@ class InspectorPanel(QFrame):
         row_scale = QHBoxLayout()
         row_scale.addWidget(QLabel("字号缩放:"))
         self.block_size_val_label = QLabel("1.0x", self.style_controls_box)
-        self.block_size_val_label.setStyleSheet("font-family: 'JetBrains Mono', 'Cascadia Code', monospace; font-weight: 600; color: #007ACC;")
+        self.block_size_val_label.setStyleSheet("font-weight: 600; color: #0A84FF;")
         row_scale.addWidget(self.block_size_val_label)
         row_scale.addStretch()
         sc_layout.addLayout(row_scale)
 
         self.block_size_slider = QSlider(Qt.Orientation.Horizontal, self.style_controls_box)
-        self.block_size_slider.setRange(5, 30)  # 0.5x to 3.0x
+        self.block_size_slider.setRange(5, 30)
         self.block_size_slider.setValue(10)
         self.block_size_slider.valueChanged.connect(self._on_block_font_scale_changed)
         sc_layout.addWidget(self.block_size_slider)
 
         # Bold & Italic
         row_style = QHBoxLayout()
-        self.block_bold_cb = QCheckBox("粗体 (Bold)", self.style_controls_box)
+        self.block_bold_cb = QCheckBox("粗体", self.style_controls_box)
         self.block_bold_cb.toggled.connect(self._on_block_bold_toggled)
         row_style.addWidget(self.block_bold_cb)
 
-        self.block_italic_cb = QCheckBox("斜体 (Italic)", self.style_controls_box)
+        self.block_italic_cb = QCheckBox("斜体", self.style_controls_box)
         self.block_italic_cb.toggled.connect(self._on_block_italic_toggled)
         row_style.addWidget(self.block_italic_cb)
+        row_style.addStretch()
         sc_layout.addLayout(row_style)
 
         # Stroke Mode
-        sc_layout.addWidget(QLabel("文字描边模式:"))
+        sc_layout.addWidget(QLabel("描边模式:"))
         self.block_stroke_mode_combo = QComboBox(self.style_controls_box)
-        self.block_stroke_mode_combo.addItem("智能对比度 (auto)", StrokeMode.AUTO.value)
-        self.block_stroke_mode_combo.addItem("自定义描边 (manual)", StrokeMode.MANUAL.value)
-        self.block_stroke_mode_combo.addItem("关闭描边 (off)", StrokeMode.OFF.value)
+        self.block_stroke_mode_combo.addItem("智能对比度 (Auto)", StrokeMode.AUTO.value)
+        self.block_stroke_mode_combo.addItem("自定义描边", StrokeMode.MANUAL.value)
+        self.block_stroke_mode_combo.addItem("无描边", StrokeMode.OFF.value)
         self.block_stroke_mode_combo.currentIndexChanged.connect(self._on_block_stroke_mode_changed)
         sc_layout.addWidget(self.block_stroke_mode_combo)
 
@@ -308,6 +350,7 @@ class InspectorPanel(QFrame):
         row_sw = QHBoxLayout()
         row_sw.addWidget(QLabel("描边粗细:"))
         self.block_stroke_w_lbl = QLabel("2.0px", self.style_controls_box)
+        self.block_stroke_w_lbl.setStyleSheet("font-weight: 600; color: #98989D;")
         row_sw.addWidget(self.block_stroke_w_lbl)
         row_sw.addStretch()
         sc_layout.addLayout(row_sw)
@@ -319,23 +362,24 @@ class InspectorPanel(QFrame):
         sc_layout.addWidget(self.block_stroke_w_slider)
 
         # Text Color Presets + Custom
+        sc_layout.addWidget(QLabel("文字颜色:"))
         row_color = QHBoxLayout()
-        row_color.addWidget(QLabel("文字颜色:"))
+        row_color.setSpacing(6)
 
-        self.btn_color_black = QPushButton("⚫ 黑字", self.style_controls_box)
-        self.btn_color_black.setToolTip("设为纯黑文字 (#000000) 适用于白底")
+        self.btn_color_black = QPushButton("黑字", self.style_controls_box)
+        self.btn_color_black.setToolTip("设为纯黑文字 (#000000)")
         self.btn_color_black.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_color_black.clicked.connect(lambda: self._set_quick_text_color("#000000"))
         row_color.addWidget(self.btn_color_black)
 
-        self.btn_color_white = QPushButton("⚪ 白字", self.style_controls_box)
-        self.btn_color_white.setToolTip("设为纯白文字 (#FFFFFF) 适用于黑底/暗色背景")
+        self.btn_color_white = QPushButton("白字", self.style_controls_box)
+        self.btn_color_white.setToolTip("设为纯白文字 (#FFFFFF)")
         self.btn_color_white.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_color_white.clicked.connect(lambda: self._set_quick_text_color("#FFFFFF"))
         row_color.addWidget(self.btn_color_white)
 
-        self.block_color_btn = QPushButton("🎨 自定义...", self.style_controls_box)
-        self.block_color_btn.setToolTip("在调色板中选择任意文字颜色")
+        self.block_color_btn = QPushButton("自定义...", self.style_controls_box)
+        self.block_color_btn.setToolTip("选择任意文字颜色")
         self.block_color_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.block_color_btn.clicked.connect(self._pick_block_color)
         row_color.addWidget(self.block_color_btn)
@@ -343,9 +387,9 @@ class InspectorPanel(QFrame):
 
         # Rotation Angle
         row_angle = QHBoxLayout()
-        row_angle.addWidget(QLabel("文字倾斜旋转:"))
+        row_angle.addWidget(QLabel("旋转角度:"))
         self.block_angle_lbl = QLabel("0.0°", self.style_controls_box)
-        self.block_angle_lbl.setStyleSheet("font-weight: 600; color: #8B5CF6;")
+        self.block_angle_lbl.setStyleSheet("font-weight: 600; color: #0A84FF;")
         row_angle.addWidget(self.block_angle_lbl)
         row_angle.addStretch()
         sc_layout.addLayout(row_angle)
@@ -358,22 +402,29 @@ class InspectorPanel(QFrame):
 
         # Quick angle buttons
         row_quick_angle = QHBoxLayout()
-        self.btn_angle_0 = QPushButton("0° 水平", self.style_controls_box)
+        row_quick_angle.setSpacing(4)
+        angle_qss = "QPushButton { padding: 3px 6px; font-size: 11px; border-radius: 6px; }"
+
+        self.btn_angle_0 = QPushButton("0°", self.style_controls_box)
+        self.btn_angle_0.setStyleSheet(angle_qss)
         self.btn_angle_0.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_angle_0.clicked.connect(lambda: self._set_quick_angle(0.0))
         row_quick_angle.addWidget(self.btn_angle_0)
 
-        self.btn_angle_m15 = QPushButton("↺ -15°", self.style_controls_box)
+        self.btn_angle_m15 = QPushButton("-15°", self.style_controls_box)
+        self.btn_angle_m15.setStyleSheet(angle_qss)
         self.btn_angle_m15.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_angle_m15.clicked.connect(lambda: self._set_quick_angle(-15.0))
         row_quick_angle.addWidget(self.btn_angle_m15)
 
-        self.btn_angle_p15 = QPushButton("↻ +15°", self.style_controls_box)
+        self.btn_angle_p15 = QPushButton("+15°", self.style_controls_box)
+        self.btn_angle_p15.setStyleSheet(angle_qss)
         self.btn_angle_p15.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_angle_p15.clicked.connect(lambda: self._set_quick_angle(15.0))
         row_quick_angle.addWidget(self.btn_angle_p15)
 
-        self.btn_angle_p30 = QPushButton("↻ +30°", self.style_controls_box)
+        self.btn_angle_p30 = QPushButton("+30°", self.style_controls_box)
+        self.btn_angle_p30.setStyleSheet(angle_qss)
         self.btn_angle_p30.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_angle_p30.clicked.connect(lambda: self._set_quick_angle(30.0))
         row_quick_angle.addWidget(self.btn_angle_p30)
@@ -383,13 +434,18 @@ class InspectorPanel(QFrame):
 
         # Bottom Buttons
         btn_layout = QHBoxLayout()
-        self.btn_reset_block_style = QPushButton("🔄 恢复继承", widget)
-        self.btn_reset_block_style.setToolTip("清除本气泡独立样式，恢复继承全局/页面排版")
+        btn_layout.setSpacing(6)
+        self.btn_reset_block_style = QPushButton("恢复默认", widget)
+        self.btn_reset_block_style.setIcon(get_icon("refresh", color="#98989D", size=12))
+        self.btn_reset_block_style.setFixedHeight(30)
+        self.btn_reset_block_style.setToolTip("清除此气泡独立样式，恢复跟随页面/全局设置")
         self.btn_reset_block_style.clicked.connect(self._on_reset_block_style_clicked)
         btn_layout.addWidget(self.btn_reset_block_style)
 
-        self.btn_apply_block_style = QPushButton("✨ 重绘气泡", widget)
+        self.btn_apply_block_style = QPushButton("立即重绘", widget)
         self.btn_apply_block_style.setProperty("class", "primaryBtn")
+        self.btn_apply_block_style.setIcon(get_icon("sparkles", color="#FFFFFF", size=12))
+        self.btn_apply_block_style.setFixedHeight(30)
         self.btn_apply_block_style.clicked.connect(self.sig_re_render_requested.emit)
         btn_layout.addWidget(self.btn_apply_block_style)
         layout.addLayout(btn_layout)
@@ -401,35 +457,43 @@ class InspectorPanel(QFrame):
     def _create_action_tab(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.setContentsMargins(6, 8, 6, 8)
+        layout.setContentsMargins(4, 10, 4, 8)
         layout.setSpacing(8)
 
-        self.btn_export = QPushButton("导出当前页面", widget)
+        lbl_export = QLabel("导出与文件")
+        lbl_export.setStyleSheet("font-size: 11px; font-weight: 600; color: #98989D;")
+        layout.addWidget(lbl_export)
+
+        self.btn_export = QPushButton("导出当前页面...", widget)
         self.btn_export.setProperty("class", "primaryBtn")
         self.btn_export.setIcon(get_icon("download", color="#FFFFFF", size=13))
+        self.btn_export.setFixedHeight(32)
         self.btn_export.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_export.clicked.connect(self.sig_export_page_requested.emit)
         layout.addWidget(self.btn_export)
 
-        self.btn_open_folder = QPushButton("打开导出目录", widget)
-        self.btn_open_folder.setIcon(get_icon("folder_open", color="#A1A1AA", size=13))
+        self.btn_open_folder = QPushButton("在访达/资源管理器中打开导出目录", widget)
+        self.btn_open_folder.setIcon(get_icon("folder_open", color="#98989D", size=13))
+        self.btn_open_folder.setFixedHeight(30)
         self.btn_open_folder.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_open_folder.clicked.connect(self.sig_open_export_dir_requested.emit)
         layout.addWidget(self.btn_open_folder)
 
-        layout.addSpacing(6)
-        lbl_pipeline = QLabel("分步处理工具:")
-        lbl_pipeline.setStyleSheet("font-size: 11px; font-weight: 600; color: #71717A;")
+        layout.addSpacing(8)
+        lbl_pipeline = QLabel("单步执行工具")
+        lbl_pipeline.setStyleSheet("font-size: 11px; font-weight: 600; color: #98989D;")
         layout.addWidget(lbl_pipeline)
 
-        self.btn_translate = QPushButton("仅重译文本 (LLM)", widget)
+        self.btn_translate = QPushButton("仅重新翻译文本 (LLM)", widget)
         self.btn_translate.setIcon(get_icon("sparkles", color="#0A84FF", size=13))
+        self.btn_translate.setFixedHeight(30)
         self.btn_translate.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_translate.clicked.connect(self.sig_translate_page_requested.emit)
         layout.addWidget(self.btn_translate)
 
-        self.btn_erase = QPushButton("仅重新抹字 (Inpaint)", widget)
-        self.btn_erase.setIcon(get_icon("eraser", color="#A1A1AA", size=13))
+        self.btn_erase = QPushButton("仅重新擦除背景文字 (Inpaint)", widget)
+        self.btn_erase.setIcon(get_icon("eraser", color="#98989D", size=13))
+        self.btn_erase.setFixedHeight(30)
         self.btn_erase.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_erase.clicked.connect(self.sig_erase_page_requested.emit)
         layout.addWidget(self.btn_erase)
@@ -448,14 +512,15 @@ class InspectorPanel(QFrame):
         ]
         self.bubble_list.clear()
         count = len(self.current_blocks)
-        self.bubble_count_lbl.setText(f"气泡列表 (共 {count} 个):")
+        self.bubble_count_lbl.setText(f"对话气泡 ({count})")
 
         for idx, b in enumerate(self.current_blocks):
-            b_id = b.get("id", f"b{idx}")
-            orig = b.get("original_text", "").replace("\n", " ")[:16]
-            trans = b.get("translated_text", "").replace("\n", " ")[:16]
-            display_txt = trans if trans else orig
-            item = QListWidgetItem(f"#{idx+1:02d} [{b.get('type', 'bubble')}]: {display_txt}")
+            orig = b.get("original_text", "").replace("\n", " ")[:18]
+            trans = b.get("translated_text", "").replace("\n", " ")[:18]
+            display_txt = trans if trans else (orig if orig else "(空文本)")
+            btype = b.get("type", "bubble")
+            prefix = f"#{idx+1:02d}" if btype == "bubble" else f"#{idx+1:02d} · 拟声"
+            item = QListWidgetItem(f"{prefix}   {display_txt}")
             item.setData(Qt.ItemDataRole.UserRole, b)
             self.bubble_list.addItem(item)
 
@@ -481,16 +546,14 @@ class InspectorPanel(QFrame):
     def _populate_detail(self, block: Dict[str, Any]):
         self.selected_block = block
         b_id = block.get("id", "Unknown")
-        xmin = block.get("xmin", 0)
-        ymin = block.get("ymin", 0)
 
         idx = -1
         for i, b in enumerate(self.current_blocks):
             if b is block or b.get("id") == block.get("id"):
                 idx = i
                 break
-        idx_str = f"#{idx+1:02d}" if idx >= 0 else ""
-        self.block_title.setText(f"气泡 {idx_str} · ID: {str(b_id)[:6]} · [{xmin:.1f}%, {ymin:.1f}%]")
+        idx_str = f"#{idx+1:02d}" if idx >= 0 else f"#{str(b_id)[:4]}"
+        self.block_title.setText(f"气泡 {idx_str}")
 
         self.orig_text_edit.blockSignals(True)
         self.orig_text_edit.setText(block.get("original_text", ""))
@@ -501,10 +564,10 @@ class InspectorPanel(QFrame):
         self.trans_text_edit.blockSignals(False)
 
         btype = block.get("type", "bubble")
-        idx = self.type_combo.findText(btype)
-        if idx >= 0:
+        t_idx = self.type_combo.findText(btype)
+        if t_idx >= 0:
             self.type_combo.blockSignals(True)
-            self.type_combo.setCurrentIndex(idx)
+            self.type_combo.setCurrentIndex(t_idx)
             self.type_combo.blockSignals(False)
 
         if btype == "onomatopoeia":
@@ -515,18 +578,16 @@ class InspectorPanel(QFrame):
         else:
             self.force_erase_cb.setVisible(False)
 
-
         # Populate swap target combo
         self.swap_target_combo.blockSignals(True)
         self.swap_target_combo.clear()
-        for other in self.current_blocks:
+        for other_i, other in enumerate(self.current_blocks):
             other_id = other.get("id")
             if other_id and str(other_id) != str(b_id):
-                preview = other.get("original_text", "").replace("\n", " ")[:12]
-                self.swap_target_combo.addItem(f"#{str(other_id)[:4]}: {preview}", other_id)
+                preview = (other.get("translated_text") or other.get("original_text") or "").replace("\n", " ")[:12]
+                self.swap_target_combo.addItem(f"#{other_i+1:02d}: {preview}", other_id)
         self.swap_target_combo.blockSignals(False)
 
-        # Also populate style tab
         self._populate_style_tab(block)
 
     def _clear_detail(self):
@@ -563,7 +624,6 @@ class InspectorPanel(QFrame):
         self.block_style_override_cb.blockSignals(False)
         self.style_controls_box.setEnabled(has_override)
 
-        # Font family
         cur_font = block.get("font_family_override") or getattr(self.config.style, "font_family", "霞鹜文楷")
         selected_idx = 0
         for i, (label, real_font) in enumerate(FONT_CHOICES):
@@ -574,7 +634,6 @@ class InspectorPanel(QFrame):
         self.block_font_combo.setCurrentIndex(selected_idx)
         self.block_font_combo.blockSignals(False)
 
-        # Bold
         is_bold = block.get("font_bold_override")
         if is_bold is None:
             is_bold = getattr(self.config.style, "font_bold", True)
@@ -582,7 +641,6 @@ class InspectorPanel(QFrame):
         self.block_bold_cb.setChecked(bool(is_bold))
         self.block_bold_cb.blockSignals(False)
 
-        # Stroke mode
         sm = block.get("stroke_mode_override") or getattr(self.config.style, "stroke_mode", "auto")
         s_idx = 0
         if sm == StrokeMode.MANUAL.value:
@@ -593,7 +651,6 @@ class InspectorPanel(QFrame):
         self.block_stroke_mode_combo.setCurrentIndex(s_idx)
         self.block_stroke_mode_combo.blockSignals(False)
 
-        # Stroke width
         sw = block.get("stroke_width_override")
         if sw is None:
             sw = getattr(self.config.style, "stroke_width", 2.0)
@@ -602,12 +659,11 @@ class InspectorPanel(QFrame):
         self.block_stroke_w_lbl.setText(f"{sw:.1f}px")
         self.block_stroke_w_slider.blockSignals(False)
 
-        # Text color
         tc = block.get("text_color_override") or block.get("text_color") or "#000000"
         self._block_custom_color = tc
-        self.block_color_btn.setStyleSheet(f"background-color: {tc}; color: #FFFFFF; font-size: 11px;")
+        text_fg = "#000000" if tc.upper() in ("#FFFFFF", "#FFF") else "#FFFFFF"
+        self.block_color_btn.setStyleSheet(f"background-color: {tc}; color: {text_fg}; font-size: 11px; border-radius: 6px;")
 
-        # Rotation angle
         ang = float(block.get("angle_override", block.get("angle", 0.0)) or 0.0)
         self.block_angle_slider.blockSignals(True)
         self.block_angle_slider.setValue(int(round(ang)))
@@ -627,18 +683,18 @@ class InspectorPanel(QFrame):
             self.selected_block["translated_text"] = self.trans_text_edit.toPlainText()
             self.sig_block_updated.emit(self.selected_block)
 
-            # Update list item display text
             curr_item = self.bubble_list.currentItem()
+            curr_row = self.bubble_list.currentRow()
             if curr_item:
-                b_id = str(self.selected_block.get("id", ""))[:6]
-                trans = self.selected_block.get("translated_text", "").replace("\n", " ")[:14]
-                orig = self.selected_block.get("original_text", "").replace("\n", " ")[:14]
-                display_txt = trans if trans else orig
-                curr_item.setText(f"#{b_id} [{self.selected_block.get('type', 'bubble')}]: {display_txt}")
+                trans = self.selected_block.get("translated_text", "").replace("\n", " ")[:18]
+                orig = self.selected_block.get("original_text", "").replace("\n", " ")[:18]
+                display_txt = trans if trans else (orig if orig else "(空文本)")
+                btype = self.selected_block.get("type", "bubble")
+                prefix = f"#{curr_row+1:02d}" if btype == "bubble" else f"#{curr_row+1:02d} · 拟声"
+                curr_item.setText(f"{prefix}   {display_txt}")
 
         self.sig_re_render_requested.emit()
 
-        # Advance to next bubble if available
         curr_row = self.bubble_list.currentRow()
         if curr_row >= 0 and curr_row + 1 < self.bubble_list.count():
             next_row = curr_row + 1
@@ -663,7 +719,7 @@ class InspectorPanel(QFrame):
     def _on_type_changed(self, new_type: str):
         if self.selected_block:
             self.selected_block["type"] = new_type
-            
+
             if new_type == "onomatopoeia":
                 self.force_erase_cb.setVisible(True)
                 self.force_erase_cb.blockSignals(True)
@@ -671,7 +727,7 @@ class InspectorPanel(QFrame):
                 self.force_erase_cb.blockSignals(False)
             else:
                 self.force_erase_cb.setVisible(False)
-                
+
             self.sig_block_updated.emit(self.selected_block)
 
     def _on_force_erase_changed(self, state: int):
@@ -754,26 +810,26 @@ class InspectorPanel(QFrame):
         menu = QMenu(self)
         b = self.current_blocks[row]
         bid = str(b.get("id", ""))[:6]
-        header = menu.addAction(f"气泡 #{bid}")
+        header = menu.addAction(f"气泡 #{row+1:02d} ({bid})")
         header.setEnabled(False)
         menu.addSeparator()
 
-        act_merge_prev = menu.addAction("🔗 与上一气泡合并 (修复切分)")
+        act_merge_prev = menu.addAction("与上一气泡合并")
         act_merge_prev.setEnabled(row > 0)
 
-        act_merge_next = menu.addAction("🔗 与下一气泡合并 (修复切分)")
+        act_merge_next = menu.addAction("与下一气泡合并")
         act_merge_next.setEnabled(row < len(self.current_blocks) - 1)
 
         menu.addSeparator()
-        act_swap_prev = menu.addAction("⬆️ 与上一气泡互换翻译")
+        act_swap_prev = menu.addAction("与上一气泡互换译文")
         act_swap_prev.setEnabled(row > 0)
 
-        act_swap_next = menu.addAction("⬇️ 与下一气泡互换翻译")
+        act_swap_next = menu.addAction("与下一气泡互换译文")
         act_swap_next.setEnabled(row < len(self.current_blocks) - 1)
 
         menu.addSeparator()
-        act_ocr_trans = menu.addAction("🔍 重新识别并翻译此框")
-        act_del = menu.addAction("🗑️ 删除气泡")
+        act_ocr_trans = menu.addAction("重新识别并翻译此框")
+        act_del = menu.addAction("删除气泡")
 
         action = menu.exec(self.bubble_list.mapToGlobal(pos))
         if action == act_merge_prev:
@@ -850,7 +906,6 @@ class InspectorPanel(QFrame):
         else:
             merged_trans = tt1 or tt2
 
-        # Update first block
         first["xmin"] = merged_xmin
         first["ymin"] = merged_ymin
         first["xmax"] = merged_xmax
@@ -858,11 +913,9 @@ class InspectorPanel(QFrame):
         first["original_text"] = merged_orig
         first["translated_text"] = merged_trans
 
-        # Delete second block
         del_idx = idx2 if first is b1 else idx1
         self.current_blocks.pop(del_idx)
 
-        # Notify & re-render
         self.set_blocks(self.current_blocks)
         self.select_block_by_id(first.get("id"))
         self.sig_blocks_reordered.emit(self.current_blocks)
@@ -876,7 +929,6 @@ class InspectorPanel(QFrame):
         if not self.selected_block:
             return
         if not checked:
-            # Clear overrides
             self.selected_block["font_family_override"] = None
             self.selected_block["font_bold_override"] = None
             self.selected_block["font_size_override"] = None
@@ -885,7 +937,6 @@ class InspectorPanel(QFrame):
             self.selected_block["text_color_override"] = None
             self.selected_block["angle_override"] = None
         else:
-            # Apply current style tab selections to block
             _, real_font = FONT_CHOICES[self.block_font_combo.currentIndex()]
             self.selected_block["font_family_override"] = real_font
             self.selected_block["font_bold_override"] = self.block_bold_cb.isChecked()
@@ -953,7 +1004,7 @@ class InspectorPanel(QFrame):
             self.block_style_override_cb.setChecked(True)
         self._block_custom_color = hex_color
         text_fg = "#000000" if hex_color.upper() in ("#FFFFFF", "#FFF") else "#FFFFFF"
-        self.block_color_btn.setStyleSheet(f"background-color: {hex_color}; color: {text_fg}; font-size: 11px;")
+        self.block_color_btn.setStyleSheet(f"background-color: {hex_color}; color: {text_fg}; font-size: 11px; border-radius: 6px;")
         self.selected_block["text_color_override"] = hex_color
         self.sig_block_updated.emit(self.selected_block)
         self.sig_re_render_requested.emit()
@@ -964,7 +1015,8 @@ class InspectorPanel(QFrame):
         color = QColorDialog.getColor(QColor(self._block_custom_color), self, "选择气泡文字颜色")
         if color.isValid():
             self._block_custom_color = color.name()
-            self.block_color_btn.setStyleSheet(f"background-color: {self._block_custom_color}; color: #FFFFFF; font-size: 11px;")
+            text_fg = "#000000" if self._block_custom_color.upper() in ("#FFFFFF", "#FFF") else "#FFFFFF"
+            self.block_color_btn.setStyleSheet(f"background-color: {self._block_custom_color}; color: {text_fg}; font-size: 11px; border-radius: 6px;")
             self.selected_block["text_color_override"] = self._block_custom_color
             self.sig_block_updated.emit(self.selected_block)
             self.sig_re_render_requested.emit()

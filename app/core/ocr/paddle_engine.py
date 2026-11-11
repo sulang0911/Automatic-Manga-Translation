@@ -10,7 +10,10 @@ import numpy as np
 import cv2
 
 # CRITICAL WINDOWS DLL PROTECTION: Must import torch before paddle
-import torch
+try:
+    import torch
+except ImportError:
+    torch = None
 
 from app.core.models import TranslationBlock, BlockType, TextDirection
 from app.core.ocr.base import (
@@ -69,7 +72,7 @@ class PaddleOCREngine(BaseOCREngine):
                 "lang": self.lang,
                 "ocr_version": "PP-OCRv3",  # 默认使用轻量级 Mobile 模型 (~150MB)，防止内存耗尽导致系统假死或崩溃
                 "device": device_str,
-                "cpu_threads": 2,
+                "cpu_threads": 1,
                 "use_textline_orientation": True,
                 "enable_mkldnn": False,
                 "use_doc_orientation_classify": False,

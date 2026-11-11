@@ -10,6 +10,42 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# Matches a speaker prefix at the start of a line or mid-line after sentence/quote punctuation:
+# e.g. (Suk), (Jun), [Yuna], (锡), （锡）, (俊), （俊）, [由奈], 【由奈】
+SPEAKER_LINE_RE = re.compile(
+    r'^\s*[\(\[\{（【〔][A-Za-z0-9\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af_.\- ]{1,14}[\)\]\}）】〕]'
+)
+SPEAKER_SPLIT_RE = re.compile(
+    r'(?:^|(?<=[。！？!?.”"」』）】〕\s]))[ \t]*(?=[\(\[\{（【〔][^)\]\}）】〕\n]{1,14}[\)\]\}）】〕]\s*[“"「『（\(]?)'
+)
+
+
+def format_speaker_dialogue(text: str, original_text: str = "") -> Tuple[str, int]:
+    """
+    Ensures multi-speaker dialogue lines (e.g. '(Suk) "..." (Jun) "..."' or '(锡)「...」(俊)「...」')
+    are cleanly separated onto individual lines with '\\n' rather than merged into one paragraph.
+    Returns (formatted_text, speaker_turn_count).
+    """
+    if not text:
+        return text, 0
+
+    norm = SPEAKER_SPLIT_RE.sub("\n", text.strip())
+    lines = [ln.strip() for ln in norm.split("\n") if ln.strip()]
+    speaker_cnt = sum(1 for ln in lines if SPEAKER_LINE_RE.match(ln))
+    if speaker_cnt >= 2:
+        return "\n".join(lines), speaker_cnt
+
+    if original_text:
+        orig_norm = SPEAKER_SPLIT_RE.sub("\n", original_text.strip())
+        orig_lines = [ln.strip() for ln in orig_norm.split("\n") if ln.strip()]
+        orig_spk = sum(1 for ln in orig_lines if SPEAKER_LINE_RE.match(ln))
+        t_lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+        if orig_spk >= 2 and len(t_lines) >= 2:
+            return "\n".join(t_lines), len(t_lines)
+
+    return text, speaker_cnt
+
+
 # Domain slang and abbreviations dictionary for manga / comic translation
 DOMAIN_SLANG_MAP: Dict[str, str] = {
     "GF": "girlfriend",
@@ -45,13 +81,9 @@ def normalize_domain_slang(text: str) -> str:
     if not text:
         return ""
     
-    # 1. GF -> girlfriend (when used as standalone noun)
     normalized = re.sub(r'\bGF\b', 'girlfriend', text)
-    # 2. BF's -> boyfriend's
     normalized = re.sub(r"\bBF['’]s\b", "boyfriend's", normalized)
-    # 3. BF -> boyfriend
     normalized = re.sub(r'\bBF\b', 'boyfriend', normalized)
-    # 4. no-fap / nofap variations
     normalized = re.sub(r'\b(no[-_ ]?fap)\b', 'no-fap', normalized, flags=re.IGNORECASE)
     
     return normalized
@@ -59,56 +91,40 @@ def normalize_domain_slang(text: str) -> str:
 
 def clean_ocr_syntax(text: str) -> str:
     """
-    Sanitizes OCR-detected English text:
-    - Removes spurious mid-sentence colons inserted before fragmented words (e.g. '2 weeks: dress' -> '2 weeks dress')
-    - Removes trailing colons at the end of speech bubbles (e.g. 'sisters:' -> 'sisters')
-    - Eliminates orphan brackets or misdetected symbols (e.g. 'What naught》' -> 'What naughty')
+    Sanitizes OCR-detected English text while preserving speaker-turn line breaks ('\\n').
     """
     if not text:
         return ""
     
     t = text.strip()
-    
-    # Fix spurious colon/semicolon before word: e.g. "2 weeks: dress" -> "2 weeks dress", "again: days" -> "again days"
     t = re.sub(r'(\b\w+)\s*[:;]\s*([a-zA-Z]+)\b', r'\1 \2', t)
-    
-    # Fix trailing colon or semicolon at end of bubble: e.g. "sisters:" -> "sisters"
     t = re.sub(r'[:;]\s*$', '', t)
-    
-    # Remove spurious CJK brackets/quotes falsely recognized from English punctuation
     t = t.replace('》', '!').replace('《', '').replace('「', '"').replace('」', '"')
     
-    # Normalize double spaces
-    t = re.sub(r'\s{2,}', ' ', t).strip()
-    
+    # Normalize horizontal double spaces while preserving '\n' line breaks
+    raw_lines = [re.sub(r'[ \t]{2,}', ' ', ln).strip() for ln in t.splitlines() if ln.strip()]
+    t = "\n".join(raw_lines)
+    t, _ = format_speaker_dialogue(t)
     return t
 
 
 def clean_translation_syntax(translated_text: str, original_text: str = "") -> str:
     """
-    Cleans up translation post-processing artifacts and syntax errors:
-    - Strips ungrammatical trailing colons or broken words (e.g. "：衣服", "：天", "：裙子")
-      caused by OCR line fragment displacement.
-    - Strips orphan trailing punctuation (e.g. "这件新裙子也是你姐姐的：")
-    - Fixes slang translations when needed.
+    Cleans up translation post-processing artifacts and preserves line-by-line speaker turns.
     """
     if not translated_text:
         return ""
     
     t = translated_text.strip()
-    
-    # 1. Remove trailing colon with orphan fragment word: e.g. "……在家具上射精：衣服" -> "……在家具上射精"
     t = re.sub(r'[：:]\s*[\u4e00-\u9fa5a-zA-Z]{1,4}\s*$', '', t)
-    
-    # 2. Remove trailing colons, semicolons, or broken hyphens at the very end
     t = re.sub(r'[：:;；\-_]\s*$', '', t)
     
-    # 3. Fix slang if translated as untranslated abbreviation
     if "BF" in t:
         t = re.sub(r'\bBF\b', '男朋友', t)
     if "GF" in t:
         t = re.sub(r'\bGF\b', '女朋友', t)
-        
+
+    t, _ = format_speaker_dialogue(t, original_text)
     return t.strip()
 
 
@@ -124,20 +140,11 @@ def prioritize_english_routing(
     image: Optional[np.ndarray] = None,
     sample_text: Optional[str] = None
 ) -> bool:
-    """
-    Determines whether the execution pipeline should prioritize English language OCR routing (EasyOCR)
-    and strictly gate out Japanese-only engines (Manga-OCR).
-    
-    Returns True if:
-    1. source_lang is explicitly English ('en', 'english', etc.)
-    2. source_lang is 'auto' / '自动识别' and sample text or image shows English predominance.
-    """
     if source_lang:
         norm = normalize_source_lang(source_lang)
         if norm == "en":
             return True
         if norm != "auto":
-            # Explicit non-English language requested by user (ja, ko, chs, cht)
             return False
 
     if sample_text:
@@ -152,11 +159,6 @@ def prioritize_english_routing(
 
 
 def post_process_translation_blocks(blocks: List[Any]) -> List[Any]:
-    """
-    Post-processes translation results across a list of TranslationBlock objects or dicts:
-    - Cleans up trailing colons or broken words (e.g. "：衣服", "：天")
-    - Fixes ungrammatical trailing punctuation
-    """
     for b in blocks:
         if isinstance(b, dict):
             trans = b.get("translated_text", "")

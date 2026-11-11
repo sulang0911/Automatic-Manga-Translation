@@ -11,7 +11,12 @@ import logging
 from typing import List, Optional, Callable
 import cv2
 import numpy as np
-import torch
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    torch = None
+    HAS_TORCH = False
 from PIL import Image as PILImage
 
 from app.core.models import TranslationBlock, StyleConfig, OnomatopoeiaMode
@@ -57,13 +62,11 @@ def blend_inpainted_image(
     blended = inpainted_img.astype(np.float32) * alpha_3d + original_img.astype(np.float32) * (1.0 - alpha_3d)
     blended = np.clip(blended, 0, 255).astype(np.uint8)
 
-    # Inverted dark background protection:
-    # Ensure Gaussian alpha feathering does NOT bleed original white text edge pixels into dark/black regions
-    # (preventing gray halos/smudges in dark boxes)
+    # Inverted dark/mid-tone background protection:
     orig_gray = cv2.cvtColor(original_img, cv2.COLOR_BGR2GRAY)
     inpaint_gray = cv2.cvtColor(inpainted_img, cv2.COLOR_BGR2GRAY)
-    dark_inpaint = inpaint_gray < 60
-    bright_orig = orig_gray > (inpaint_gray + 20)
+    dark_inpaint = inpaint_gray < 140
+    bright_orig = orig_gray > (inpaint_gray + 15)
     bleed_mask = (alpha > 0.05) & dark_inpaint & bright_orig
     blended[bleed_mask] = inpainted_img[bleed_mask]
 
@@ -174,12 +177,10 @@ class LaMaInpainter(BaseInpainter):
             r, g, b = get_background_color_rgb(crop)
             bg_bgr = (b, g, r)
 
-            # Local polygon mask
             local_poly = poly_pts - np.array([px_min, py_min], dtype=np.int32)
             poly_mask = np.zeros((h, w), dtype=np.uint8)
             cv2.fillPoly(poly_mask, [local_poly], 255)
 
-            # Adaptive morphological dilation based on polygon minor axis (min_dim * 0.08, clamped [2, 8]px)
             if len(poly_pts) >= 4:
                 side1 = float(np.linalg.norm(poly_pts[1] - poly_pts[0]))
                 side2 = float(np.linalg.norm(poly_pts[3] - poly_pts[0]))
@@ -192,11 +193,10 @@ class LaMaInpainter(BaseInpainter):
 
             text_mask = get_text_mask(crop, bg_bgr)
             text_mask = cv2.bitwise_and(text_mask, poly_mask)
-            uniform = is_background_uniform(crop, std_thresh=15.0)
+            uniform = is_background_uniform(crop, std_thresh=16.0)
 
             qr_mask_crop = qr_mask[py_min:py_max, px_min:px_max]
 
-            # Check block's stored bg_color
             block_bg = getattr(block, "bg_color_override", None) or getattr(block, "bg_color", None)
             if isinstance(block, dict):
                 block_bg = block.get("bg_color_override") or block.get("bg_color")
@@ -242,45 +242,60 @@ class LaMaInpainter(BaseInpainter):
             if isinstance(block, dict):
                 block_type = block.get("type", "bubble")
 
-            if is_dark_bg or (block_type == "bubble" and uniform):
-                # Instant flat-fill for solid dialogue bubbles and inverted dark background boxes
+            explicit_black_box = bool(block_bg and isinstance(block_bg, str) and block_bg.strip().lower() == "#000000")
+            if explicit_black_box or (is_dark_bg and uniform) or (block_type == "bubble" and uniform):
                 fill_color = target_bg_bgr if is_dark_bg else bg_bgr
                 dilated = dilate_mask(text_mask, adaptive_dil)
                 if np.sum(text_mask) == 0:
                     dilated = dilate_mask(poly_mask, adaptive_dil)
-                # Ensure QR regions are NOT overwritten
                 crop[(dilated == 255) & (qr_mask_crop == 0)] = fill_color
                 erased_img[py_min:py_max, px_min:px_max] = crop
             else:
-                # Accumulate for neural inpainting
-                dilated = dilate_mask(text_mask, adaptive_dil)
-                if np.sum(text_mask) == 0:
-                    dilated = dilate_mask(poly_mask, adaptive_dil)
-                inpaint_mask[py_min:py_max, px_min:px_max] = cv2.bitwise_or(
-                    inpaint_mask[py_min:py_max, px_min:px_max], dilated
-                )
+                from app.core.inpaint.color_analyzer import get_stroked_text_mask
+                pad_s = 10
+                epx_min = max(0, px_min - pad_s)
+                epy_min = max(0, py_min - pad_s)
+                epx_max = min(w_img, px_max + pad_s)
+                epy_max = min(h_img, py_max + pad_s)
+                exp_crop = erased_img[epy_min:epy_max, epx_min:epx_max]
+                stroked_mask = get_stroked_text_mask(exp_crop)
+                if stroked_mask is not None:
+                    qr_exp = qr_mask[epy_min:epy_max, epx_min:epx_max]
+                    stroked_mask[qr_exp > 0] = 0
+                    inpaint_mask[epy_min:epy_max, epx_min:epx_max] = cv2.bitwise_or(
+                        inpaint_mask[epy_min:epy_max, epx_min:epx_max], stroked_mask
+                    )
+                else:
+                    dilated = dilate_mask(text_mask, adaptive_dil)
+                    if np.sum(text_mask) == 0:
+                        dilated = dilate_mask(poly_mask, adaptive_dil)
+                    inpaint_mask[py_min:py_max, px_min:px_max] = cv2.bitwise_or(
+                        inpaint_mask[py_min:py_max, px_min:px_max], dilated
+                    )
 
         # Explicitly zero out QR code regions from inpaint_mask
         inpaint_mask[qr_mask > 0] = 0
-        # Re-ensure any flat-fill never touched QR regions
         erased_img[qr_mask > 0] = image[qr_mask > 0]
 
         if np.sum(inpaint_mask) > 0:
             if progress_callback:
                 progress_callback(45, "正在执行 Simple-LaMa 深度图像修复...")
 
+            telea_inpainted = cv2.inpaint(erased_img, inpaint_mask, 4, cv2.INPAINT_TELEA)
+            telea_inpainted[qr_mask > 0] = image[qr_mask > 0]
+            telea_gray = cv2.cvtColor(telea_inpainted, cv2.COLOR_BGR2GRAY)
+
             inpainted = None
             try:
-                # VRAM Safety Check: if image dimension > 2048px, downscale for LaMa inference
                 scale_factor = 1.0
                 if base_dim > 2048:
                     scale_factor = 2048.0 / base_dim
                     infer_w = int(w_img * scale_factor)
                     infer_h = int(h_img * scale_factor)
-                    infer_img = cv2.resize(erased_img, (infer_w, infer_h), interpolation=cv2.INTER_AREA)
+                    infer_img = cv2.resize(telea_inpainted, (infer_w, infer_h), interpolation=cv2.INTER_AREA)
                     infer_mask = cv2.resize(inpaint_mask, (infer_w, infer_h), interpolation=cv2.INTER_NEAREST)
                 else:
-                    infer_img = erased_img
+                    infer_img = telea_inpainted
                     infer_mask = inpaint_mask
 
                 img_rgb = cv2.cvtColor(infer_img, cv2.COLOR_BGR2RGB)
@@ -292,36 +307,33 @@ class LaMaInpainter(BaseInpainter):
                 res_rgb = np.array(res_pil)
                 res_bgr = cv2.cvtColor(res_rgb, cv2.COLOR_RGB2BGR)
 
-                # Compensate for LaMa multiple-of-8 padding
                 infer_h_actual, infer_w_actual = infer_img.shape[:2]
                 res_bgr = res_bgr[:infer_h_actual, :infer_w_actual]
 
-                # Rescale back if downsampled
                 if scale_factor < 1.0:
                     inpainted = cv2.resize(res_bgr, (w_img, h_img), interpolation=cv2.INTER_CUBIC)
                 else:
                     inpainted = res_bgr
+
+                dark_or_mid = np.expand_dims(telea_gray < 185, axis=2)
+                inpainted = np.where(dark_or_mid, np.minimum(inpainted, telea_inpainted), inpainted)
 
                 logger.info("LaMa neural inpainting completed successfully.")
             except Exception as e:
                 logger.error(f"LaMa execution encountered error: {e}. Falling back to OpenCV Telea.", exc_info=True)
                 inpainted = None
             finally:
-                # Explicit VRAM garbage collection
-                if torch.cuda.is_available():
+                if HAS_TORCH and torch.cuda.is_available():
                     torch.cuda.empty_cache()
                 gc.collect()
 
-            # Automatic OpenCV Telea Fallback
             if inpainted is None:
                 if progress_callback:
                     progress_callback(60, "LaMa 资源受限，正在回退使用 OpenCV Telea 算法...")
-                inpainted = cv2.inpaint(erased_img, inpaint_mask, 3, cv2.INPAINT_TELEA)
+                inpainted = telea_inpainted
 
-            # Bilateral filter and feathered blend
             filtered = cv2.bilateralFilter(inpainted, 5, 50, 50)
-            erased_img = blend_inpainted_image(erased_img, filtered, inpaint_mask, feather_radius)
-            # Guarantee zero-pixel modification on QR code areas
+            erased_img = blend_inpainted_image(telea_inpainted, filtered, inpaint_mask, feather_radius)
             erased_img[qr_mask > 0] = image[qr_mask > 0]
 
         if progress_callback:

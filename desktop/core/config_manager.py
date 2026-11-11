@@ -43,6 +43,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "auto_fit_font_size": True,
     "font_bold": False,
     "font_italic": False,
+    "line_spacing": 1.30,
+    "auto_line_spacing": True,
     "text_color": "#000000",
     "text_color_mode": "original",  # "custom" | "original"
     "bg_color": "#FFFFFF",
@@ -50,7 +52,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "bg_opacity": 0.95,
     "stroke_mode": "auto",  # "auto" | "manual" | "off"
     "stroke_color": "#FFFFFF",
-    "stroke_width": 2,
+    "stroke_width": 3.5,
+    "auto_stroke_width": True,
     "text_orientation": "auto",  # "auto" | "horizontal" | "vertical"
     "onomatopoeia_mode": "normal",  # "normal" | "transparent" | "ignore"
 

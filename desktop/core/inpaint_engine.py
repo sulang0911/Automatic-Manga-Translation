@@ -18,11 +18,12 @@ def get_background_color_rgb(crop: np.ndarray) -> List[int]:
     median_color = np.median(border_pixels, axis=0).astype(int)
     return [int(c) for c in median_color]
 
-def get_text_mask(crop: np.ndarray, bg_color: List[int]) -> np.ndarray:
-    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-    bg_gray = int(0.299 * bg_color[2] + 0.587 * bg_color[1] + 0.114 * bg_color[0])
-    diff = cv2.absdiff(gray, bg_gray)
-    _, thresh = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
+def get_text_mask(crop: np.ndarray, bg_color: List[int], threshold: int = 20) -> np.ndarray:
+    if crop is None or crop.size == 0:
+        return np.zeros((1, 1), dtype=np.uint8)
+    diff = np.abs(crop.astype(np.int32) - np.array(bg_color, dtype=np.int32))
+    max_diff = np.max(diff, axis=2).astype(np.uint8)
+    _, thresh = cv2.threshold(max_diff, threshold, 255, cv2.THRESH_BINARY)
     return thresh
 
 def dilate_mask(mask: np.ndarray, dilation_pixels: int = 4) -> np.ndarray:
@@ -49,17 +50,18 @@ def blend_inpainted_image(original_img: np.ndarray, inpainted_img: np.ndarray, m
     blended = inpainted_img.astype(np.float32) * alpha_3d + original_img.astype(np.float32) * (1.0 - alpha_3d)
     blended = np.clip(blended, 0, 255).astype(np.uint8)
 
-    # Inverted dark background protection:
-    # Ensure Gaussian alpha feathering does NOT bleed original white text edge pixels into dark/black regions
-    # (preventing gray halos/smudges in dark boxes)
+    # Inverted dark/mid-tone background protection:
+    # Ensure Gaussian alpha feathering does NOT bleed original bright text edge pixels into dark/mid-tone regions
     orig_gray = cv2.cvtColor(original_img, cv2.COLOR_BGR2GRAY)
     inpaint_gray = cv2.cvtColor(inpainted_img, cv2.COLOR_BGR2GRAY)
-    dark_inpaint = inpaint_gray < 60
-    bright_orig = orig_gray > (inpaint_gray + 20)
+    dark_inpaint = inpaint_gray < 140
+    bright_orig = orig_gray > (inpaint_gray + 15)
     bleed_mask = (alpha > 0.05) & dark_inpaint & bright_orig
     blended[bleed_mask] = inpainted_img[bleed_mask]
 
     return blended
+
+_GLOBAL_SIMPLE_LAMA = None
 
 class InpaintEngine:
     def __init__(self, mode: str = "auto"):
@@ -69,12 +71,18 @@ class InpaintEngine:
         self._init_lama()
 
     def _init_lama(self):
+        global _GLOBAL_SIMPLE_LAMA
+        if _GLOBAL_SIMPLE_LAMA is not None:
+            self._lama = _GLOBAL_SIMPLE_LAMA
+            self._lama_available = True
+            return
         try:
             from simple_lama_inpainting import SimpleLama
             import torch
             has_cuda = torch.cuda.is_available()
             print(f"[*] Loading Simple-LaMa inpainter (CUDA: {has_cuda})...")
-            self._lama = SimpleLama()
+            _GLOBAL_SIMPLE_LAMA = SimpleLama()
+            self._lama = _GLOBAL_SIMPLE_LAMA
             self._lama_available = True
             print("[+] Simple-LaMa inpainter loaded successfully.")
         except Exception as e:
@@ -103,7 +111,6 @@ class InpaintEngine:
                 qr_mask = np.zeros((h_img, w_img), dtype=np.uint8)
 
         if manual_mask is not None:
-            # Combine manual mask with qr_mask
             qr_mask = cv2.bitwise_or(qr_mask, manual_mask)
 
         erased_img = image.copy()
@@ -125,7 +132,6 @@ class InpaintEngine:
             # Only skip if explicitly configured to ignore onomatopoeia AND not forced to erase AND has no translation
             if block_type == "onomatopoeia" and onomatopoeia_mode == "ignore" and not erase_override and not has_trans:
                 continue
-
 
             if is_unboxed_text_block(block, erased_img):
                 erased_img, unboxed_mask = erase_unboxed_text_block(
@@ -180,7 +186,6 @@ class InpaintEngine:
             poly_mask = np.zeros((h, w), dtype=np.uint8)
             cv2.fillPoly(poly_mask, [local_poly], 255)
 
-            # Adaptive morphological dilation based on polygon minor axis (min_dim * 0.08, clamped [2, 8]px)
             if len(poly_pts) >= 4:
                 side1 = float(np.linalg.norm(poly_pts[1] - poly_pts[0]))
                 side2 = float(np.linalg.norm(poly_pts[3] - poly_pts[0]))
@@ -193,20 +198,8 @@ class InpaintEngine:
 
             text_mask = cv2.bitwise_and(text_mask, poly_mask)
 
-            # Check background uniformity
-            h_c, w_c = crop.shape[:2]
-            border_pixels = []
-            if h_c > 0 and w_c > 0:
-                border_pixels.extend(crop[0, :])
-                border_pixels.extend(crop[h_c - 1, :])
-                if h_c > 2:
-                    border_pixels.extend(crop[1:h_c - 1, 0])
-                    border_pixels.extend(crop[1:h_c - 1, w_c - 1])
-            border_pixels = np.array(border_pixels)
-            is_uniform = True
-            if len(border_pixels) > 0:
-                border_gray = 0.299 * border_pixels[:, 2] + 0.587 * border_pixels[:, 1] + 0.114 * border_pixels[:, 0]
-                is_uniform = np.std(border_gray) < 16.0
+            from app.core.inpaint.color_analyzer import is_background_uniform, get_stroked_text_mask
+            is_uniform = is_background_uniform(crop, std_thresh=16.0)
 
             qr_mask_crop = qr_mask[py_min:py_max, px_min:px_max]
 
@@ -249,7 +242,8 @@ class InpaintEngine:
                 text_mask = cv2.bitwise_and(text_mask, poly_mask)
 
             block_type = block.get("type", "bubble") if isinstance(block, dict) else getattr(block, "type", "bubble")
-            if is_dark_bg or is_uniform or (block_type == "bubble" and is_uniform):
+            explicit_black_box = bool(block_bg and isinstance(block_bg, str) and block_bg.strip().lower() == "#000000")
+            if explicit_black_box or is_uniform or (block_type == "bubble" and is_uniform):
                 fill_color = target_bg_color if is_dark_bg else bg_color
                 dilated = dilate_mask(text_mask, adaptive_dil)
                 if np.sum(text_mask) == 0:
@@ -257,26 +251,45 @@ class InpaintEngine:
                 crop[(dilated == 255) & (qr_mask_crop == 0)] = fill_color
                 erased_img[py_min:py_max, px_min:px_max] = crop
             else:
-                dilated = dilate_mask(text_mask, adaptive_dil)
-                if np.sum(text_mask) == 0:
-                    dilated = dilate_mask(poly_mask, adaptive_dil)
-                inpaint_mask[py_min:py_max, px_min:px_max] = cv2.bitwise_or(
-                    inpaint_mask[py_min:py_max, px_min:px_max], dilated
-                )
+                pad_s = 10
+                epx_min = max(0, px_min - pad_s)
+                epy_min = max(0, py_min - pad_s)
+                epx_max = min(w_img, px_max + pad_s)
+                epy_max = min(h_img, py_max + pad_s)
+                exp_crop = erased_img[epy_min:epy_max, epx_min:epx_max]
+                stroked_mask = get_stroked_text_mask(exp_crop)
+                if stroked_mask is not None:
+                    qr_exp = qr_mask[epy_min:epy_max, epx_min:epx_max]
+                    stroked_mask[qr_exp > 0] = 0
+                    inpaint_mask[epy_min:epy_max, epx_min:epx_max] = cv2.bitwise_or(
+                        inpaint_mask[epy_min:epy_max, epx_min:epx_max], stroked_mask
+                    )
+                else:
+                    dilated = dilate_mask(text_mask, adaptive_dil)
+                    if np.sum(text_mask) == 0:
+                        dilated = dilate_mask(poly_mask, adaptive_dil)
+                    inpaint_mask[py_min:py_max, px_min:px_max] = cv2.bitwise_or(
+                        inpaint_mask[py_min:py_max, px_min:px_max], dilated
+                    )
 
         # Explicitly zero out QR code regions from inpaint_mask
         inpaint_mask[qr_mask > 0] = 0
-        # Re-ensure any flat-fill never touched QR regions
         erased_img[qr_mask > 0] = image[qr_mask > 0]
 
         if np.sum(inpaint_mask) > 0:
             if progress_callback:
                 progress_callback(50, "正在执行深度智能背景修复与羽化消除...")
 
+            inpaint_flag = cv2.INPAINT_NS if self.mode == "opencv_ns" else cv2.INPAINT_TELEA
+            telea_inpainted = cv2.inpaint(erased_img, inpaint_mask, 4, inpaint_flag)
+            telea_inpainted[qr_mask > 0] = image[qr_mask > 0]
+            telea_gray = cv2.cvtColor(telea_inpainted, cv2.COLOR_BGR2GRAY)
+
             inpainted = None
             if self.mode != "opencv_telea" and self.mode != "opencv_ns" and self._lama_available and self._lama:
                 try:
                     from PIL import Image as PILImage
+                    erased_img = telea_inpainted.copy()
                     img_rgb = cv2.cvtColor(erased_img, cv2.COLOR_BGR2RGB)
                     img_pil = PILImage.fromarray(img_rgb)
                     mask_pil = PILImage.fromarray(inpaint_mask)
@@ -285,17 +298,29 @@ class InpaintEngine:
                     inpainted = cv2.cvtColor(inpainted_rgb, cv2.COLOR_RGB2BGR)
                     if inpainted.shape[:2] != (h_img, w_img):
                         inpainted = inpainted[:h_img, :w_img]
+                    # Prevent Simple-LaMa Fourier convolution from hallucinating bright/white ghost smudges
+                    # over dark or mid-tone backgrounds where Telea diffusion is already clean
+                    dark_or_mid = np.expand_dims(telea_gray < 185, axis=2)
+                    inpainted = np.where(dark_or_mid, np.minimum(inpainted, telea_inpainted), inpainted)
                 except Exception as e:
                     print(f"[-] LaMa execution error: {e}. Fallback to OpenCV.")
                     inpainted = None
+                finally:
+                    try:
+                        import torch
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                    except Exception:
+                        pass
+                    import gc
+                    gc.collect()
 
             if inpainted is None:
-                inpaint_flag = cv2.INPAINT_NS if self.mode == "opencv_ns" else cv2.INPAINT_TELEA
-                inpainted = cv2.inpaint(erased_img, inpaint_mask, 3, inpaint_flag)
+                inpainted = telea_inpainted
 
             inpainted_filtered = cv2.bilateralFilter(inpainted, 5, 50, 50)
             dyn_feather = max(2, int(base_dim * 0.003)) if feather_radius <= 0 else feather_radius
-            erased_img = blend_inpainted_image(erased_img, inpainted_filtered, inpaint_mask, dyn_feather)
+            erased_img = blend_inpainted_image(telea_inpainted, inpainted_filtered, inpaint_mask, dyn_feather)
             # Guarantee zero-pixel modification on QR code areas
             erased_img[qr_mask > 0] = image[qr_mask > 0]
 

@@ -1,8 +1,8 @@
 """
 tests/test_typography_settings.py
 Unit tests verifying:
-1. Default font is cute manga font ('霞鹜文楷') and bold is enabled by default.
-2. StrokeRenderer and TypographyEngine bold font rasterization.
+1. Default font is cute manga font ('霞鹜文楷'), bold is False by default, line_spacing=1.30 (auto_line_spacing=True), stroke_width=3.5 (auto_stroke_width=True).
+2. StrokeRenderer and TypographyEngine font rasterization.
 3. PageStyleDialog independent single-page configuration.
 4. SettingsDialog typography page and "apply to all" flag.
 5. MainWindow single-page and global re-render logic.
@@ -29,18 +29,26 @@ def qapp():
 
 
 def test_default_typography_models_and_config():
-    """Verify cute font and bold defaults across StyleConfig and AppConfig."""
+    """Verify cute font, non-bold default, 1.30x smart line spacing, and 3.5px auto stroke width across StyleConfig and AppConfig."""
     cfg = StyleConfig()
     assert cfg.font_family == "霞鹜文楷"
-    assert cfg.font_bold is True
+    assert cfg.font_bold is False
+    assert pytest.approx(cfg.line_spacing, 0.01) == 1.30
+    assert cfg.auto_line_spacing is True
+    assert pytest.approx(cfg.stroke_width, 0.01) == 3.5
+    assert cfg.auto_stroke_width is True
 
     app_cfg = AppConfig()
     assert app_cfg.style.font_family == "霞鹜文楷"
-    assert app_cfg.style.font_bold is True
+    assert app_cfg.style.font_bold is False
+    assert pytest.approx(app_cfg.style.line_spacing, 0.01) == 1.30
+    assert app_cfg.style.auto_line_spacing is True
+    assert pytest.approx(app_cfg.style.stroke_width, 0.01) == 3.5
+    assert app_cfg.style.auto_stroke_width is True
 
 
 def test_typography_engine_bold_rendering():
-    """Verify typography engine renders bold text without clipping or exception."""
+    """Verify typography engine renders bold and regular text without clipping or exception."""
     engine = TypographyEngine()
     canvas = np.full((300, 300, 3), 255, dtype=np.uint8)
 
@@ -51,14 +59,14 @@ def test_typography_engine_bold_rendering():
         xmax=90.0,
         ymax=90.0,
         original_text="テストです！",
-        translated_text="这是可爱的加粗测试文字！",
+        translated_text="这是可爱的默认测试文字！",
     )
 
     style = StyleConfig(
         font_family="霞鹜文楷",
-        font_bold=True,
+        font_bold=False,
         stroke_mode=StrokeMode.AUTO.value,
-        stroke_width=2.5,
+        stroke_width=3.5,
     )
 
     out_img = engine.render_page(canvas, [block], style)
@@ -72,13 +80,13 @@ def test_page_style_dialog_lifecycle(qapp):
     """Verify PageStyleDialog creates correctly, handles overrides and resets."""
     from app.ui.settings.page_style_dialog import PageStyleDialog
 
-    global_style = StyleConfig(font_family="霞鹜文楷", font_bold=True, font_size_scale=1.0)
+    global_style = StyleConfig(font_family="霞鹜文楷", font_bold=False, font_size_scale=1.0)
     item_data = {"id": "p1", "path": "sample_page_01.png"}
 
     # Case 1: Initialized with no override (inherits global)
     dlg = PageStyleDialog(item_data, global_style, current_page_style=None)
     assert dlg.override_cb.isChecked() is False
-    assert dlg.bold_cb.isChecked() is True
+    assert dlg.bold_cb.isChecked() is False
     assert dlg.font_combo.isEnabled() is False
 
     # Toggle override
@@ -87,12 +95,12 @@ def test_page_style_dialog_lifecycle(qapp):
     assert dlg.bold_cb.isEnabled() is True
 
     # Change settings
-    dlg.bold_cb.setChecked(False)
+    dlg.bold_cb.setChecked(True)
     dlg.scale_slider.setValue(15)  # 1.5x
     dlg._on_apply()
 
     assert dlg.applied_style is not None
-    assert dlg.applied_style.font_bold is False
+    assert dlg.applied_style.font_bold is True
     assert dlg.applied_style.font_size_scale == 1.5
 
     # Case 2: Reset to global
@@ -100,13 +108,13 @@ def test_page_style_dialog_lifecycle(qapp):
     assert dlg2.override_cb.isChecked() is True
     dlg2._reset_to_global()
     assert dlg2.override_cb.isChecked() is False
-    assert dlg2.bold_cb.isChecked() is True
+    assert dlg2.bold_cb.isChecked() is False
     dlg2._on_apply()
     assert dlg2.applied_style is None  # Inherit global
 
 
 def test_settings_dialog_typography_page(qapp):
-    """Verify SettingsDialog has typography tab, default bold, and apply-all trigger."""
+    """Verify SettingsDialog has typography tab, default non-bold, and apply-all trigger."""
     from app.ui.settings.settings_dialog import SettingsDialog
 
     app_cfg = AppConfig()
@@ -119,13 +127,17 @@ def test_settings_dialog_typography_page(qapp):
 
     # Switch to typography tab
     dlg.nav_list.setCurrentRow(typo_index)
-    assert dlg.typo_bold_cb.isChecked() is True
+    assert dlg.typo_bold_cb.isChecked() is False
+    assert dlg.typo_auto_spacing_cb.isChecked() is True
+    assert dlg.typo_auto_stroke_w_cb.isChecked() is True
     assert "霞鹜文楷" in dlg.typo_font_combo.currentText()
 
     # Click apply all
     dlg._on_apply_all()
     assert dlg.re_render_all_requested is True
-    assert dlg.config.style.font_bold is True
+    assert dlg.config.style.font_bold is False
+    assert pytest.approx(dlg.config.style.line_spacing, 0.01) == 1.30
+    assert pytest.approx(dlg.config.style.stroke_width, 0.01) == 3.5
 
 
 def test_main_window_re_render_all_and_single_page(qapp, tmp_path):
@@ -166,4 +178,3 @@ def test_main_window_re_render_all_and_single_page(qapp, tmp_path):
     assert win.page_list.items_data[1].get("translated_img") is not None
 
     win.close()
-

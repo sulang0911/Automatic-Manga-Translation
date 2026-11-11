@@ -67,7 +67,7 @@ class AppConfig:
     cache_dir: str = "translation_cache"
     export_dir: str = "exported_chapter"
     auto_save_cache: bool = True
-    max_concurrent_workers: int = 2
+    max_concurrent_workers: int = 1
     glossary: Dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:

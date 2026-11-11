@@ -1,6 +1,7 @@
 """
 app/ui/sidebar/drop_zone.py
-Drag-and-drop file and chapter folder import zone adhering to Apple HIG.
+Apple macOS Finder-inspired drag-and-drop file and chapter folder import zone.
+Automatically collapses into a slim 28px action strip once pages are loaded.
 """
 from typing import Optional, List
 from PyQt6.QtWidgets import (
@@ -28,13 +29,13 @@ class DropZoneWidget(QFrame):
         self._is_drag_over = False
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 16, 12, 16)
-        layout.setSpacing(6)
+        layout.setContentsMargins(10, 12, 10, 12)
+        layout.setSpacing(5)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         # Icon
         self.icon_label = QLabel(self)
-        self.icon_label.setPixmap(get_icon("folder_open", color="#007ACC", size=24).pixmap(24, 24))
+        self.icon_label.setPixmap(get_icon("folder_open", color="#0A84FF", size=22).pixmap(22, 22))
         self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.icon_label)
 
@@ -45,7 +46,7 @@ class DropZoneWidget(QFrame):
         layout.addWidget(self.title_label)
 
         # Subtitle
-        self.sub_label = QLabel("可拖入或点击导入", self)
+        self.sub_label = QLabel("支持 JPG / PNG / WebP / ZIP", self)
         self.sub_label.setObjectName("dropZoneSub")
         self.sub_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.sub_label)
@@ -55,48 +56,54 @@ class DropZoneWidget(QFrame):
         btn_layout.setSpacing(6)
         btn_layout.setContentsMargins(0, 4, 0, 0)
 
-        self.btn_import_files = QPushButton("📄 选图片", self)
+        self.btn_import_files = QPushButton("选择图片", self)
+        self.btn_import_files.setIcon(get_icon("plus", color="#98989D", size=12))
         self.btn_import_files.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_import_files.setFixedHeight(26)
         self.btn_import_files.clicked.connect(self._open_file_dialog)
         btn_layout.addWidget(self.btn_import_files)
 
-        self.btn_import_folder = QPushButton("📁 选文件夹", self)
+        self.btn_import_folder = QPushButton("选择文件夹", self)
+        self.btn_import_folder.setIcon(get_icon("folder_open", color="#0A84FF", size=12))
         self.btn_import_folder.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_import_folder.setFixedHeight(26)
         self.btn_import_folder.clicked.connect(self._open_folder_dialog)
         btn_layout.addWidget(self.btn_import_folder)
 
         layout.addLayout(btn_layout)
 
     def set_compact(self, compact: bool):
-        """Switches between expanded landing zone and compact banner when pages exist."""
+        """Switches between expanded landing card and slim 28px bar when pages exist."""
         if compact:
+            self.icon_label.hide()
             self.sub_label.hide()
             self.btn_import_files.hide()
             self.btn_import_folder.hide()
-            self.title_label.setText("拖入或点击添加更多页面")
-            self.title_label.setStyleSheet("font-size: 11px; font-weight: 500;")
-            self.icon_label.setPixmap(get_icon("folder_open", color="#007ACC", size=16).pixmap(16, 16))
-            self.layout().setContentsMargins(6, 4, 6, 4)
-            self.layout().setSpacing(3)
+            self.title_label.setText("＋ 拖入或点击继续添加页面")
+            self.title_label.setStyleSheet("font-size: 11px; font-weight: 500; color: #98989D;")
+            self.layout().setContentsMargins(8, 5, 8, 5)
+            self.layout().setSpacing(0)
+            self.setMaximumHeight(30)
         else:
+            self.setMaximumHeight(16777215)
+            self.icon_label.show()
             self.sub_label.show()
             self.btn_import_files.show()
             self.btn_import_folder.show()
             self.title_label.setText("拖入图片或漫画文件夹")
             self.title_label.setStyleSheet("")
-            self.icon_label.setPixmap(get_icon("folder_open", color="#007ACC", size=24).pixmap(24, 24))
+            self.icon_label.setPixmap(get_icon("folder_open", color="#0A84FF", size=22).pixmap(22, 22))
             self.layout().setContentsMargins(10, 12, 10, 12)
-            self.layout().setSpacing(6)
+            self.layout().setSpacing(5)
             self.btn_import_files.setFixedHeight(26)
             self.btn_import_folder.setFixedHeight(26)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            # Show a choice menu when clicking blank area
             menu = QMenu(self)
-            action_files = menu.addAction(get_icon("eye", color="#007ACC", size=14), "选择漫画图片文件...")
-            action_folder = menu.addAction(get_icon("folder_open", color="#007ACC", size=14), "选择漫画文件夹 (自动扫描所有页面)...")
-            
+            action_files = menu.addAction(get_icon("plus", color="#0A84FF", size=14), "选择漫画图片文件...")
+            action_folder = menu.addAction(get_icon("folder_open", color="#0A84FF", size=14), "选择漫画文件夹 (自动扫描页面)...")
+
             chosen = menu.exec(self.mapToGlobal(event.pos()))
             if chosen == action_files:
                 self._open_file_dialog()

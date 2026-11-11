@@ -277,8 +277,10 @@ class QueuePanel(QFrame):
         for it in self.items_data:
             if it["id"] == img_id:
                 it["blocks"] = results.get("blocks")
-                it["erased_img"] = results.get("erased_img")
-                it["translated_img"] = results.get("translated_img")
+                if "export_path" in results:
+                    it["export_path"] = results.get("export_path")
+                it["erased_img"] = None
+                it["translated_img"] = None
                 break
 
     def _on_start_batch(self):

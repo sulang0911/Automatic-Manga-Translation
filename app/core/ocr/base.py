@@ -286,12 +286,23 @@ def has_dark_boundary_barrier(
         y2_min = max(0, min(int(round(min(b2["ymin"], b2["ymax"]))), h_img - 1))
         y2_max = max(y2_min + 1, min(int(round(max(b2["ymin"], b2["ymax"]))), h_img))
 
-        # Check if both boxes are dark/inverted containers (e.g. black boxes)
-        c1 = b1.get("bg_color")
-        c2 = b2.get("bg_color")
-        is_dark1 = (c1 in ("#000000", "#111111", "#222222"))
-        is_dark2 = (c2 in ("#000000", "#111111", "#222222"))
-        if is_dark1 and is_dark2:
+        # Check if boxes are on dark/inverted backgrounds (where < 90 in the gap is the background itself, not a bubble border)
+        def _box_lum(bx_dict, x0, y0, x1, y1):
+            col = bx_dict.get("bg_color")
+            if isinstance(col, str) and col.startswith("#") and len(col) >= 7:
+                try:
+                    r_v = int(col[1:3], 16)
+                    g_v = int(col[3:5], 16)
+                    b_v = int(col[5:7], 16)
+                    return 0.299 * r_v + 0.587 * g_v + 0.114 * b_v
+                except Exception:
+                    pass
+            sub_g = gray[y0:y1, x0:x1]
+            return float(np.median(sub_g)) if sub_g.size > 0 else 255.0
+
+        lum1 = _box_lum(b1, x1_min, y1_min, x1_max, y1_max)
+        lum2 = _box_lum(b2, x2_min, y2_min, x2_max, y2_max)
+        if lum1 < 115.0 and lum2 < 115.0:
             return False
 
         # Ray-casting between centroids
@@ -464,7 +475,10 @@ def can_merge_pair(
             rgb2 = _parse_color(c2)
             if rgb1 and rgb2:
                 dist = math.sqrt(sum((x - y) ** 2 for x, y in zip(rgb1, rgb2)))
-                max_color_dist = 150.0 if is_collinear_slanted else 60.0
+                lum_c1 = 0.299 * rgb1[0] + 0.587 * rgb1[1] + 0.114 * rgb1[2]
+                lum_c2 = 0.299 * rgb2[0] + 0.587 * rgb2[1] + 0.114 * rgb2[2]
+                both_dark = (lum_c1 < 115.0 and lum_c2 < 115.0)
+                max_color_dist = 150.0 if is_collinear_slanted else (115.0 if both_dark else 60.0)
                 if dist > max_color_dist:
                     return False
         except Exception:
@@ -572,16 +586,18 @@ def can_merge_pair(
             px_x = max(0, min(W_lbl - 1, px_x))
             px_y = max(0, min(H_lbl - 1, px_y))
             lbl = int(bubble_labels[px_y, px_x])
-            if lbl == 0:
-                # Text stroke fallback: sample non-zero mode inside box interior
-                x1_cl = max(0, min(W_lbl - 1, x1_p))
-                y1_cl = max(0, min(H_lbl - 1, y1_p))
-                x2_cl = max(x1_cl + 1, min(W_lbl, x2_p))
-                y2_cl = max(y1_cl + 1, min(H_lbl, y2_p))
-                patch = bubble_labels[y1_cl:y2_cl, x1_cl:x2_cl]
-                pos = patch[patch > 0]
-                if pos.size > 0:
-                    lbl = int(np.bincount(pos).argmax())
+            x1_cl = max(0, min(W_lbl - 1, x1_p))
+            y1_cl = max(0, min(H_lbl - 1, y1_p))
+            x2_cl = max(x1_cl + 1, min(W_lbl, x2_p))
+            y2_cl = max(y1_cl + 1, min(H_lbl, y2_p))
+            patch = bubble_labels[y1_cl:y2_cl, x1_cl:x2_cl]
+            pos = patch[patch > 0]
+            # Only treat as a light speech bubble closure if >= 45% of the box area is light (>= 215).
+            # White-stroked text on a dark background has < 35% light pixels and is NOT a white bubble closure!
+            if patch.size > 0 and (pos.size / float(patch.size)) < 0.45:
+                return 0
+            if lbl == 0 and pos.size > 0:
+                lbl = int(np.bincount(pos).argmax())
             return lbl
 
         lbl1 = _sample_label(x1_min, y1_min, x1_max, y1_max, mid_x1, mid_y1)

@@ -192,9 +192,9 @@ class MainWindow(QMainWindow):
         self.inspector_panel.sig_ocr_translate_block_requested.connect(self._on_inspector_ocr_translate_block)
         self.splitter.addWidget(self.inspector_panel)
 
-        # Set balanced initial proportions [sidebar, canvas, inspector]
-        self.splitter.setSizes([260, 840, 280])
-        self._saved_sidebar_width = 260
+        # Set sleek macOS proportions [sidebar, canvas, inspector]
+        self.splitter.setSizes([220, 880, 280])
+        self._saved_sidebar_width = 220
         main_layout.addWidget(self.splitter, 1)
 
         # 4. Status Bar
@@ -202,21 +202,22 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.status_bar_widget)
 
     def _create_sidebar(self) -> QWidget:
-        """Constructs the sidebar combining NavRail, Chapter PageList, and DropZone."""
+        """Constructs the macOS Finder/Preview-style left thumbnail sidebar."""
         container = QWidget(self)
         container.setProperty("class", "sidebar")
         layout = QHBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Navigation Rail
+        # Auxiliary Navigation Rail (kept instantiated for API/tests, hidden by default to avoid double-column bloat)
         self.nav_rail = NavRail(container)
+        self.nav_rail.setVisible(False)
         layout.addWidget(self.nav_rail)
 
-        # Drawer container
+        # Clean single-column macOS Sidebar Drawer
         self.sidebar_drawer = QWidget(container)
         drawer_layout = QVBoxLayout(self.sidebar_drawer)
-        drawer_layout.setContentsMargins(8, 8, 8, 8)
+        drawer_layout.setContentsMargins(10, 10, 10, 10)
         drawer_layout.setSpacing(8)
 
         # Drop Zone
@@ -257,36 +258,54 @@ class MainWindow(QMainWindow):
         return container
 
     def _create_toolbar(self) -> QWidget:
-        """Constructs the top action command bar conforming to Apple HIG & Pro Dev layout."""
+        """Constructs the unified Apple macOS Sonoma/Sequoia window toolbar."""
         toolbar = QFrame(self)
         toolbar.setProperty("class", "toolbar")
-        toolbar.setFixedHeight(42)
+        toolbar.setFixedHeight(48)
 
         layout = QHBoxLayout(toolbar)
-        layout.setContentsMargins(10, 3, 10, 3)
-        layout.setSpacing(6)
+        layout.setContentsMargins(14, 6, 14, 6)
+        layout.setSpacing(8)
 
-        # 1. Left Cluster: Sidebar Toggle & Breadcrumb
+        # 1. Left Cluster: Native Sidebar Toggle, Document Title & History
         self.sidebar_toggle_btn = QToolButton(toolbar)
         self.sidebar_toggle_btn.setProperty("class", "icon-action-btn")
-        self.sidebar_toggle_btn.setIcon(get_icon("menu", color="#A1A1AA", size=15))
-        self.sidebar_toggle_btn.setToolTip("切换侧边栏展开/折叠 (Ctrl+B)")
+        self.sidebar_toggle_btn.setIcon(get_icon("sidebar_left", color="#98989D", size=16))
+        self.sidebar_toggle_btn.setToolTip("显示/隐藏左侧页面栏 (Ctrl+B)")
         self.sidebar_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.sidebar_toggle_btn.clicked.connect(lambda: self.toggle_sidebar())
         layout.addWidget(self.sidebar_toggle_btn)
 
         self.breadcrumb_label = QLabel("📂 工作区", toolbar)
         self.breadcrumb_label.setStyleSheet(
-            "font-family: 'JetBrains Mono', 'SF Mono', monospace;"
-            "font-size: 11px; font-weight: 600; color: #ECECEF; padding: 3px 8px;"
-            "background: rgba(255, 255, 255, 0.05); border-radius: 4px; border: 1px solid rgba(255, 255, 255, 0.08);"
+            "font-size: 13px; font-weight: 600; color: #F5F5F7; padding: 2px 6px;"
+            "background: transparent; border: none;"
         )
         self.breadcrumb_label.setMaximumWidth(200)
         layout.addWidget(self.breadcrumb_label)
 
-        layout.addSpacing(6)
+        # Subtle Undo & Redo buttons right beside the document title
+        self.undo_btn = QToolButton(toolbar)
+        self.undo_btn.setProperty("class", "icon-action-btn")
+        self.undo_btn.setIcon(get_icon("undo", color="#98989D", size=14))
+        self.undo_btn.setToolTip("撤销 (Ctrl+Z)")
+        self.undo_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.undo_btn.setEnabled(False)
+        self.undo_btn.clicked.connect(self._undo)
+        layout.addWidget(self.undo_btn)
 
-        # 2. Center Cluster: Segmented View Modes Control
+        self.redo_btn = QToolButton(toolbar)
+        self.redo_btn.setProperty("class", "icon-action-btn")
+        self.redo_btn.setIcon(get_icon("redo", color="#98989D", size=14))
+        self.redo_btn.setToolTip("重做 (Ctrl+Y / Ctrl+Shift+Z)")
+        self.redo_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.redo_btn.setEnabled(False)
+        self.redo_btn.clicked.connect(self._redo)
+        layout.addWidget(self.redo_btn)
+
+        layout.addStretch()
+
+        # 2. Center Cluster: Centered macOS NSSegmentedControl + Bubble Overlay Switch
         mode_container = QFrame(toolbar)
         mode_container.setObjectName("segmentedControl")
         mode_layout = QHBoxLayout(mode_container)
@@ -309,8 +328,8 @@ class MainWindow(QMainWindow):
             btn = QToolButton(mode_container)
             btn.setProperty("class", "segment-btn")
             btn.setText(label)
-            btn.setIcon(get_icon(icon_name, color="#A1A1AA", active_color="#FFFFFF", size=13))
-            btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            btn.setIcon(get_icon(icon_name, color="#98989D", active_color="#FFFFFF", size=13))
+            btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
             btn.setCheckable(True)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -327,76 +346,49 @@ class MainWindow(QMainWindow):
         # Bubble overlay toggle checkbox
         self.bubble_cb = QCheckBox("气泡框", toolbar)
         self.bubble_cb.setChecked(True)
-        self.bubble_cb.setToolTip("显示/隐藏画布上的气泡框覆盖层")
+        self.bubble_cb.setToolTip("显示/隐藏画布上的气泡框线")
+        self.bubble_cb.setStyleSheet("font-size: 12px; color: #98989D; margin-left: 4px;")
         self.bubble_cb.toggled.connect(self._on_bubble_cb_toggled)
         layout.addWidget(self.bubble_cb)
 
         layout.addStretch()
 
-        # 3. Right Cluster: Language, History, Style, Export, Settings, Theme, Primary Action
-        lang_lbl = QLabel("源语言:", toolbar)
-        lang_lbl.setStyleSheet("font-size: 11px; font-weight: 500; color: #71717A;")
-        layout.addWidget(lang_lbl)
-
+        # 3. Right Cluster: Source Language, Page Style, Export, Utility Icons & Primary Run
         self.source_lang_combo = QComboBox(toolbar)
-        self.source_lang_combo.setFixedWidth(84)
+        self.source_lang_combo.setFixedWidth(92)
+        self.source_lang_combo.setToolTip("漫画源语言 (默认自动识别)")
         self.source_lang_combo.addItems(["自动识别", "日语", "韩语", "英语", "繁体中文", "简体中文"])
         self.source_lang_combo.setCurrentText(getattr(self.config, "source_lang", "自动识别"))
         self.source_lang_combo.currentTextChanged.connect(self._on_source_lang_changed)
         layout.addWidget(self.source_lang_combo)
 
-        layout.addSpacing(2)
-
-        # Undo & Redo (Icon-only tool buttons conforming to Pro IDE standards)
-        self.undo_btn = QToolButton(toolbar)
-        self.undo_btn.setProperty("class", "icon-action-btn")
-        self.undo_btn.setIcon(get_icon("undo", color="#A1A1AA", size=14))
-        self.undo_btn.setToolTip("撤销 (Ctrl+Z)")
-        self.undo_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.undo_btn.setEnabled(False)
-        self.undo_btn.clicked.connect(self._undo)
-        layout.addWidget(self.undo_btn)
-
-        self.redo_btn = QToolButton(toolbar)
-        self.redo_btn.setProperty("class", "icon-action-btn")
-        self.redo_btn.setIcon(get_icon("redo", color="#A1A1AA", size=14))
-        self.redo_btn.setToolTip("重做 (Ctrl+Y / Ctrl+Shift+Z)")
-        self.redo_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.redo_btn.setEnabled(False)
-        self.redo_btn.clicked.connect(self._redo)
-        layout.addWidget(self.redo_btn)
-
-        layout.addSpacing(4)
-
         # Single Page Typography Style Modal Button
-        self.page_style_btn = QPushButton("排版样式", toolbar)
+        self.page_style_btn = QPushButton("排版", toolbar)
         self.page_style_btn.setIcon(get_icon("sparkles", color="#0A84FF", size=13))
-        self.page_style_btn.setToolTip("当前单页字体与文字排版独立配置")
+        self.page_style_btn.setToolTip("当前单页独立字体与排版样式")
         self.page_style_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.page_style_btn.clicked.connect(self._open_current_page_style_dialog)
         layout.addWidget(self.page_style_btn)
 
         # Export Button (Dropdown with Single Page & Batch Export)
         self.export_btn = QPushButton("导出", toolbar)
-        self.export_btn.setIcon(get_icon("download", color="#A1A1AA", size=13))
-        self.export_btn.setToolTip("导出已翻译漫画 (点击展开单页或全本导出)")
+        self.export_btn.setIcon(get_icon("download", color="#98989D", size=13))
+        self.export_btn.setToolTip("导出当前页或批量导出全本")
         self.export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
         export_menu = QMenu(self)
         act_export_curr = export_menu.addAction(get_icon("download", color="#0A84FF", size=14), "导出当前页面 (PNG / JPG / WebP / PDF)...")
         act_export_curr.triggered.connect(self._export_current_page)
-        act_export_all = export_menu.addAction(get_icon("folder_open", color="#22C55E", size=14), "批量导出全本已翻译页面...")
+        act_export_all = export_menu.addAction(get_icon("folder_open", color="#30D158", size=14), "批量导出全本已翻译页面...")
         act_export_all.triggered.connect(self._export_all_pages)
         self.export_btn.setMenu(export_menu)
         layout.addWidget(self.export_btn)
 
-        layout.addSpacing(2)
-
         # Theme Switcher
         self.theme_btn = QToolButton(toolbar)
         self.theme_btn.setProperty("class", "icon-action-btn")
-        self.theme_btn.setIcon(get_icon("sun" if self._current_theme == "dark" else "moon", color="#A1A1AA", size=14))
-        self.theme_btn.setToolTip("切换明暗模式")
+        self.theme_btn.setIcon(get_icon("sun" if self._current_theme == "dark" else "moon", color="#98989D", size=15))
+        self.theme_btn.setToolTip("切换到亮色模式" if self._current_theme == "dark" else "切换到暗色模式")
         self.theme_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.theme_btn.clicked.connect(self.toggle_theme)
         layout.addWidget(self.theme_btn)
@@ -404,8 +396,8 @@ class MainWindow(QMainWindow):
         # Global Settings
         self.settings_btn = QToolButton(toolbar)
         self.settings_btn.setProperty("class", "icon-action-btn")
-        self.settings_btn.setIcon(get_icon("settings", color="#A1A1AA", size=14))
-        self.settings_btn.setToolTip("全局系统偏好与默认排版设置")
+        self.settings_btn.setIcon(get_icon("settings", color="#98989D", size=15))
+        self.settings_btn.setToolTip("系统偏好设置")
         self.settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.settings_btn.clicked.connect(self._open_settings_dialog)
         layout.addWidget(self.settings_btn)
@@ -413,20 +405,30 @@ class MainWindow(QMainWindow):
         # Shortcuts Cheat Sheet Button
         self.help_btn = QToolButton(toolbar)
         self.help_btn.setProperty("class", "icon-action-btn")
-        self.help_btn.setIcon(get_icon("help", color="#A1A1AA", size=14))
+        self.help_btn.setIcon(get_icon("help", color="#98989D", size=15))
         self.help_btn.setToolTip("键盘快捷键速查 (?)")
         self.help_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.help_btn.clicked.connect(self._open_shortcuts_dialog)
         layout.addWidget(self.help_btn)
 
-        layout.addSpacing(4)
+        # Right Inspector Sidebar Toggle (macOS Preview / Pages style)
+        self.inspector_toggle_btn = QToolButton(toolbar)
+        self.inspector_toggle_btn.setProperty("class", "icon-action-btn")
+        self.inspector_toggle_btn.setIcon(get_icon("sidebar_right", color="#98989D", size=16))
+        self.inspector_toggle_btn.setToolTip("显示/隐藏右侧属性检查器")
+        self.inspector_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.inspector_toggle_btn.clicked.connect(lambda: self._on_nav_rail_changed("inspector"))
+        layout.addWidget(self.inspector_toggle_btn)
+
+        layout.addSpacing(2)
 
         # Primary Action Button: Translate Active Page
         self.run_btn = QPushButton("翻译单页", toolbar)
         self.run_btn.setProperty("class", "primaryBtn")
         self.run_btn.setObjectName("primaryBtn")
-        self.run_btn.setMinimumWidth(88)
-        self.run_btn.setIcon(get_icon("play", color="#FFFFFF", size=13))
+        self.run_btn.setMinimumWidth(86)
+        self.run_btn.setFixedHeight(30)
+        self.run_btn.setIcon(get_icon("play", color="#FFFFFF", size=12))
         self.run_btn.setToolTip("翻译当前选中的漫画单页 (快捷键: Enter)")
         self.run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.run_btn.clicked.connect(self._on_run_clicked)
@@ -443,14 +445,14 @@ class MainWindow(QMainWindow):
         return toolbar
 
     def _create_status_bar(self) -> QWidget:
-        """Constructs the bottom IDE status bar widget."""
+        """Constructs the slim macOS Finder-style bottom status bar."""
         status_bar = QFrame(self)
         status_bar.setObjectName("statusBar")
-        status_bar.setFixedHeight(26)
+        status_bar.setFixedHeight(24)
 
         layout = QHBoxLayout(status_bar)
-        layout.setContentsMargins(10, 1, 10, 1)
-        layout.setSpacing(10)
+        layout.setContentsMargins(14, 0, 14, 0)
+        layout.setSpacing(14)
 
         self.status_label = QLabel("就绪", status_bar)
         self.status_label.setObjectName("statusLabel")
@@ -459,7 +461,7 @@ class MainWindow(QMainWindow):
         layout.addStretch()
 
         self.progress_bar = QProgressBar(status_bar)
-        self.progress_bar.setFixedSize(120, 6)
+        self.progress_bar.setFixedSize(110, 5)
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.progress_bar.setTextVisible(False)
@@ -467,20 +469,16 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.progress_bar)
 
         self.status_page_label = QLabel("PAGE: --", status_bar)
-        self.status_page_label.setStyleSheet("font-family: 'JetBrains Mono', 'Cascadia Code', monospace; font-size: 11px; color: #A1A1AA;")
+        self.status_page_label.setStyleSheet("font-size: 11px; color: #98989D;")
         layout.addWidget(self.status_page_label)
 
         self.status_bubble_label = QLabel("0 BUBBLES", status_bar)
-        self.status_bubble_label.setStyleSheet("font-family: 'JetBrains Mono', 'Cascadia Code', monospace; font-size: 11px; color: #A1A1AA;")
+        self.status_bubble_label.setStyleSheet("font-size: 11px; color: #98989D;")
         layout.addWidget(self.status_bubble_label)
 
         self.status_zoom_label = QLabel("100%", status_bar)
-        self.status_zoom_label.setStyleSheet("font-family: 'JetBrains Mono', 'Cascadia Code', monospace; font-size: 11px; color: #A1A1AA;")
+        self.status_zoom_label.setStyleSheet("font-size: 11px; color: #98989D;")
         layout.addWidget(self.status_zoom_label)
-
-        encoding_label = QLabel("UTF-8", status_bar)
-        encoding_label.setStyleSheet("font-family: 'JetBrains Mono', 'Cascadia Code', monospace; font-size: 11px; color: #71717A;")
-        layout.addWidget(encoding_label)
 
         return status_bar
 
@@ -1318,29 +1316,27 @@ class MainWindow(QMainWindow):
             return
 
         sizes = self.splitter.sizes()
-        nav_w = self.nav_rail.width() if hasattr(self, "nav_rail") and self.nav_rail.isVisible() else 46
-        if nav_w <= 0:
-            nav_w = 46
+        nav_w = self.nav_rail.width() if (hasattr(self, "nav_rail") and self.nav_rail.isVisible()) else 0
 
         if not new_state:
-            # Collapsing: save current sidebar width and shrink queue_panel to nav_rail width
-            current_total_w = sizes[0] if sizes else 260
+            # Collapsing: save current sidebar width and collapse sidebar cleanly
+            current_total_w = sizes[0] if sizes else 220
             if current_total_w > nav_w + 50:
                 self._saved_sidebar_width = current_total_w
             else:
-                self._saved_sidebar_width = getattr(self, "_saved_sidebar_width", 260)
+                self._saved_sidebar_width = getattr(self, "_saved_sidebar_width", 220)
 
             self.sidebar_drawer.setVisible(False)
             self.queue_panel.setFixedWidth(nav_w)
             reclaimed = max(0, current_total_w - nav_w)
-            canvas_w = sizes[1] if len(sizes) > 1 else 800
+            canvas_w = sizes[1] if len(sizes) > 1 else 840
             insp_w = sizes[2] if len(sizes) > 2 else 280
             self.splitter.setSizes([nav_w, canvas_w + reclaimed, insp_w])
             self.nav_rail.set_collapsed_icon(True)
             self.status_label.setText("已折叠页面列表（沉浸画布模式）")
         else:
             # Expanding: restore full drawer
-            target_w = getattr(self, "_saved_sidebar_width", 260)
+            target_w = getattr(self, "_saved_sidebar_width", 220)
             target_w = max(target_w, nav_w + 180)
             self.queue_panel.setMinimumWidth(0)
             self.queue_panel.setMaximumWidth(16777215)
@@ -1576,7 +1572,16 @@ class MainWindow(QMainWindow):
         if hasattr(self, "undo_btn"):
             self.undo_btn.setIcon(get_icon("undo", color=tokens.text_secondary, size=16))
         if hasattr(self, "redo_btn"):
-            self.redo_btn.setIcon(get_icon("redo", color=tokens.text_secondary, size=16))
+            self.redo_btn.setIcon(get_icon("redo", color=tokens.text_secondary, size=14))
+        if hasattr(self, "sidebar_toggle_btn"):
+            self.sidebar_toggle_btn.setIcon(get_icon("sidebar_left", color=tokens.text_secondary, size=16))
+        if hasattr(self, "inspector_toggle_btn"):
+            self.inspector_toggle_btn.setIcon(get_icon("sidebar_right", color=tokens.text_secondary, size=16))
+        if hasattr(self, "breadcrumb_label"):
+            self.breadcrumb_label.setStyleSheet(
+                f"font-size: 13px; font-weight: 600; color: {tokens.text_primary}; padding: 2px 6px;"
+                "background: transparent; border: none;"
+            )
         self.canvas_view.setBackgroundBrush(QColor(tokens.canvas_bg))
         self.canvas_view.scene.setBackgroundBrush(QColor(tokens.canvas_bg))
 
@@ -1838,8 +1843,8 @@ class MainWindow(QMainWindow):
         self.progress_bar.show()
         self.progress_bar.setValue(0)
 
-        blocks = self.current_image_data.get("blocks")
-        erased = self.current_image_data.get("erased_img")
+        blocks = None if mode == "full" else self.current_image_data.get("blocks")
+        erased = None if mode in ("full", "inpaint_only") else self.current_image_data.get("erased_img")
 
         self.active_worker = PipelineWorker(
             image_path=path,

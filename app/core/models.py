@@ -173,9 +173,7 @@ class TranslationBlock:
             rad = math.radians(eff_angle)
             cos_a = math.cos(rad)
             sin_a = math.sin(rad)
-            # Unit vector along text baseline (left to right)
             u_x, u_y = cos_a, sin_a
-            # Unit vector along line height (top to bottom, orthogonal to baseline)
             v_x, v_y = -sin_a, cos_a
 
             hw, hh = w / 2.0, h / 2.0
@@ -260,7 +258,8 @@ class StyleConfig:
     auto_fit_font_size: bool = True
     min_font_size: int = 8
     max_font_size: int = 72
-    line_spacing: float = 1.15
+    line_spacing: float = 1.30
+    auto_line_spacing: bool = True
     text_color_mode: str = TextColorMode.ORIGINAL.value
     custom_text_color: str = "#000000"
     bg_color_mode: str = BgColorMode.ORIGINAL.value
@@ -272,8 +271,9 @@ class StyleConfig:
     text_stroke: bool = True
     stroke_mode: str = StrokeMode.AUTO.value
     stroke_color: str = "#FFFFFF"
-    stroke_width: float = 2.0
-    font_bold: bool = True
+    stroke_width: float = 3.5
+    auto_stroke_width: bool = True
+    font_bold: bool = False
     font_italic: bool = False
     onomatopoeia_mode: str = OnomatopoeiaMode.NORMAL.value
     reading_direction: str = ReadingOrderMode.MANGA_RTL.value

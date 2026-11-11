@@ -1,6 +1,7 @@
 """
 app/ui/sidebar/page_list.py
-Chapter page thumbnail list with natural alphanumeric sorting and status dot indicators.
+Apple macOS Preview-inspired page thumbnail sidebar with natural alphanumeric sorting
+and subtle status indicators.
 """
 import os
 import re
@@ -75,7 +76,6 @@ def is_ignored_cache_or_export(file_path: str, base_dir: Optional[str] = None) -
     if fname.endswith(".blocks.json"):
         return True
 
-    # Intermediate cached files: .erased.*, .rendered.*, _erased.*, _translated.*
     if ".erased." in fname or fname.endswith(".erased"):
         return True
     if ".rendered." in fname or fname.endswith(".rendered"):
@@ -89,7 +89,7 @@ def is_ignored_cache_or_export(file_path: str, base_dir: Optional[str] = None) -
 
 
 class PageItemWidget(QWidget):
-    """Custom item renderer for each manga page in the queue."""
+    """macOS Preview-inspired thumbnail row for each manga page in the sidebar."""
     sig_remove = pyqtSignal(str)
     sig_edit_style = pyqtSignal(dict)
 
@@ -99,12 +99,8 @@ class PageItemWidget(QWidget):
         self.item_id = item_data["id"]
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setContentsMargins(6, 4, 4, 4)
         layout.setSpacing(8)
-
-        # Status Dot
-        self.status_dot = StatusDot(color="#71717A", size=8, parent=self)
-        layout.addWidget(self.status_dot)
 
         # Thumbnail (Click to open page-level style dialog)
         self.thumb_label = QLabel(self)
@@ -112,22 +108,22 @@ class PageItemWidget(QWidget):
         self.thumb_label.setFixedSize(36, 48)
         self.thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.thumb_label.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.thumb_label.setToolTip("点击修改此页文字排版与样式配置")
+        self.thumb_label.setToolTip("点击单独配置本页字体与排版样式")
         self.thumb_label.setStyleSheet(
             "background-color: rgba(255, 255, 255, 0.04);"
-            "border-radius: 4px;"
+            "border-radius: 5px;"
             "border: 1px solid rgba(255, 255, 255, 0.08);"
-            "color: #71717A;"
-            "font-size: 13px;"
+            "color: #8E8E93;"
+            "font-size: 12px;"
         )
         self.thumb_label.setText("📄")
         self._load_thumbnail(item_data["path"], sync=sync_thumb)
         layout.addWidget(self.thumb_label)
 
-        # Text column: filename and status caption
+        # Text column: filename and status row
         text_col = QVBoxLayout()
-        text_col.setContentsMargins(0, 0, 0, 0)
-        text_col.setSpacing(2)
+        text_col.setContentsMargins(0, 2, 0, 2)
+        text_col.setSpacing(3)
 
         self.name_label = QLabel(os.path.basename(item_data["path"]), self)
         self.name_label.setStyleSheet("font-weight: 500; font-size: 12px;")
@@ -136,29 +132,46 @@ class PageItemWidget(QWidget):
             self.name_label.setToolTip(item_data["rel_path"])
         text_col.addWidget(self.name_label)
 
-        self.status_label = QLabel(item_data.get("status_text", "等待中"), self)
-        self.status_label.setStyleSheet("font-size: 11px; opacity: 0.65;")
-        text_col.addWidget(self.status_label)
+        status_row = QHBoxLayout()
+        status_row.setContentsMargins(0, 0, 0, 0)
+        status_row.setSpacing(5)
 
+        self.status_dot = StatusDot(color="#71717A", size=7, parent=self)
+        status_row.addWidget(self.status_dot)
+
+        self.status_label = QLabel(item_data.get("status_text", "等待中"), self)
+        self.status_label.setStyleSheet("font-size: 11px; color: #8E8E93;")
+        status_row.addWidget(self.status_label)
+        status_row.addStretch()
+
+        text_col.addLayout(status_row)
         layout.addLayout(text_col, 1)
 
-        # Style button (palette / sparkles icon)
+        # Subtle Action Buttons
         self.style_btn = QToolButton(self)
-        self.style_btn.setIcon(get_icon("sparkles", color="#3B82F6", size=14))
-        self.style_btn.setToolTip("修改此页文字设置 (排版/字体/粗体)")
+        self.style_btn.setIcon(get_icon("sparkles", color="#8E8E93", size=13))
+        self.style_btn.setToolTip("本页独立排版样式")
         self.style_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.style_btn.setStyleSheet("border: none; background: transparent; padding: 2px;")
+        self.style_btn.setStyleSheet("border: none; background: transparent; padding: 3px; border-radius: 5px;")
         self.style_btn.clicked.connect(lambda: self.sig_edit_style.emit(self.item_data))
         layout.addWidget(self.style_btn)
 
-        # Remove button
         self.remove_btn = QToolButton(self)
-        self.remove_btn.setIcon(get_icon("trash", color="#71717A", size=14))
-        self.remove_btn.setToolTip("从队列中移除")
+        self.remove_btn.setIcon(get_icon("close", color="#636366", size=12))
+        self.remove_btn.setToolTip("从列表中移除")
         self.remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.remove_btn.setStyleSheet("border: none; background: transparent; padding: 2px;")
+        self.remove_btn.setStyleSheet("border: none; background: transparent; padding: 3px; border-radius: 5px;")
         self.remove_btn.clicked.connect(lambda: self.sig_remove.emit(self.item_id))
         layout.addWidget(self.remove_btn)
+
+        # Initialize status dot color from initial item_data status
+        init_status = str(item_data.get("status", "queued")).lower()
+        if init_status in ("completed", "done"):
+            self.status_dot.set_color("#10B981")
+        elif init_status == "processing":
+            self.status_dot.set_color("#3B82F6")
+        elif init_status in ("failed", "error"):
+            self.status_dot.set_color("#EF4444")
 
     def mousePressEvent(self, event):
         super().mousePressEvent(event)
@@ -177,7 +190,7 @@ class PageItemWidget(QWidget):
                     self.thumb_label.setText("")
                     self.thumb_label.setStyleSheet(
                         "background-color: transparent;"
-                        "border-radius: 4px;"
+                        "border-radius: 5px;"
                         "border: 1px solid rgba(255, 255, 255, 0.08);"
                     )
                     self.thumb_label.setPixmap(pix)
@@ -223,8 +236,8 @@ class PageItemWidget(QWidget):
 
 class PageListWidget(QWidget):
     """
-    Queue and page list component supporting chapter import, natural alphanumeric sorting,
-    and progress status tracking.
+    macOS Source List for chapter pages with natural alphanumeric sorting
+    and a compact single-row bottom batch action bar.
     """
     sig_page_selected = pyqtSignal(dict)
     sig_page_removed = pyqtSignal(str)
@@ -246,38 +259,38 @@ class PageListWidget(QWidget):
         self.last_removed_row: int = -1
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(0, 2, 0, 0)
         layout.setSpacing(6)
 
-        # Header Bar (IDE Explorer Header)
+        # Clean macOS Section Header
         header = QWidget(self)
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(6, 4, 6, 4)
+        header_layout.setContentsMargins(6, 2, 4, 2)
         header_layout.setSpacing(6)
 
-        title = QLabel("EXPLORER / 章节页面", header)
-        title.setStyleSheet("font-weight: 700; font-size: 11px; color: #A1A1AA; letter-spacing: 0.5px;")
+        title = QLabel("页面列表", header)
+        title.setStyleSheet("font-weight: 600; font-size: 12px; color: #98989D;")
         header_layout.addWidget(title)
 
-        self.count_badge = QLabel("0", header)
+        self.count_badge = QLabel("0 页", header)
         self.count_badge.setObjectName("countBadge")
         header_layout.addWidget(self.count_badge)
         header_layout.addStretch()
 
         # Add Files / Folder Button
         self.add_btn = QToolButton(header)
-        self.add_btn.setIcon(get_icon("folder_open", color="#007ACC", size=14))
-        self.add_btn.setToolTip("添加图片文件或漫画文件夹")
+        self.add_btn.setProperty("class", "icon-action-btn")
+        self.add_btn.setIcon(get_icon("plus", color="#98989D", size=14))
+        self.add_btn.setToolTip("添加漫画图片或文件夹")
         self.add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.add_btn.setStyleSheet("border: none; background: transparent; padding: 2px;")
         self.add_btn.clicked.connect(self._on_add_clicked)
         header_layout.addWidget(self.add_btn)
 
         self.clear_btn = QToolButton(header)
-        self.clear_btn.setIcon(get_icon("trash", color="#A1A1AA", size=14))
+        self.clear_btn.setProperty("class", "icon-action-btn")
+        self.clear_btn.setIcon(get_icon("trash", color="#98989D", size=13))
         self.clear_btn.setToolTip("清空页面列表")
         self.clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.clear_btn.setStyleSheet("border: none; background: transparent; padding: 2px;")
         self.clear_btn.clicked.connect(self.clear_all)
         header_layout.addWidget(self.clear_btn)
 
@@ -294,68 +307,29 @@ class PageListWidget(QWidget):
         self.list_widget.installEventFilter(self)
         layout.addWidget(self.list_widget, 1)
 
-        # Batch Translate Buttons (Pro Developer / Design Action Strip)
-        btn_layout = QVBoxLayout()
-        btn_layout.setContentsMargins(2, 4, 2, 4)
-        btn_layout.setSpacing(5)
+        # Compact Single-Row macOS Batch Action Footer (De-bloated from 2 tall stacked buttons)
+        btn_layout = QHBoxLayout()
+        btn_layout.setContentsMargins(2, 4, 2, 2)
+        btn_layout.setSpacing(6)
 
-        self.batch_btn = QPushButton("批量翻译全部 (跳过已完成)", self)
-        self.batch_btn.setIcon(get_icon("play_all", color="#FFFFFF", size=13))
-        self.batch_btn.setToolTip("批量翻译页面队列中的漫画 (自动快速跳过已经翻译过的页面)")
+        self.batch_btn = QPushButton("批量翻译", self)
+        self.batch_btn.setProperty("class", "primaryBtn")
+        self.batch_btn.setIcon(get_icon("play_all", color="#FFFFFF", size=12))
+        self.batch_btn.setToolTip("批量翻译全部页面 (自动跳过已完成页面)")
         self.batch_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.batch_btn.setEnabled(False)
-        self.batch_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #0A84FF;
-                color: #FFFFFF;
-                border: 1px solid #0071E3;
-                border-radius: 4px;
-                padding: 6px 12px;
-                font-weight: 600;
-                font-size: 11px;
-            }
-            QPushButton:hover {
-                background-color: #0071E3;
-            }
-            QPushButton:pressed {
-                background-color: #0058B6;
-            }
-            QPushButton:disabled {
-                background-color: rgba(255, 255, 255, 0.04);
-                color: #71717A;
-                border-color: rgba(255, 255, 255, 0.06);
-            }
-        """)
+        self.batch_btn.setFixedHeight(30)
         self.batch_btn.clicked.connect(self.sig_start_batch.emit)
-        btn_layout.addWidget(self.batch_btn)
+        btn_layout.addWidget(self.batch_btn, 3)
 
-        self.retranslate_all_btn = QPushButton("全部强制重新翻译 (清除缓存)", self)
-        self.retranslate_all_btn.setIcon(get_icon("refresh", color="#F59E0B", size=12))
-        self.retranslate_all_btn.setToolTip("无论是否翻译过，强制全部重新执行大模型翻译与排版流程并覆盖导出")
+        self.retranslate_all_btn = QPushButton("全部重译", self)
+        self.retranslate_all_btn.setIcon(get_icon("refresh", color="#98989D", size=12))
+        self.retranslate_all_btn.setToolTip("清除缓存并强制重新翻译全部页面")
         self.retranslate_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.retranslate_all_btn.setEnabled(False)
-        self.retranslate_all_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(245, 158, 11, 0.10);
-                color: #F59E0B;
-                border: 1px solid rgba(245, 158, 11, 0.28);
-                border-radius: 4px;
-                padding: 5px 10px;
-                font-weight: 500;
-                font-size: 11px;
-            }
-            QPushButton:hover {
-                background-color: #F59E0B;
-                color: #000000;
-            }
-            QPushButton:disabled {
-                opacity: 0.35;
-                color: #71717A;
-                border-color: rgba(255, 255, 255, 0.06);
-            }
-        """)
+        self.retranslate_all_btn.setFixedHeight(30)
         self.retranslate_all_btn.clicked.connect(self.sig_start_retranslate_all.emit)
-        btn_layout.addWidget(self.retranslate_all_btn)
+        btn_layout.addWidget(self.retranslate_all_btn, 2)
 
         layout.addLayout(btn_layout)
 
@@ -369,7 +343,7 @@ class PageListWidget(QWidget):
         discovered_entries: List[Dict[str, str]] = []
 
         valid_input_paths = [p for p in paths if p and os.path.exists(p)]
-        
+
         # Handle zip/cbz archives
         extracted_paths = []
         for p in list(valid_input_paths):
@@ -416,7 +390,6 @@ class PageListWidget(QWidget):
                     continue
 
                 for root, dirs, files in os.walk(p_abs):
-                    # Prune hidden directories and internal cache directories in-place
                     dirs[:] = [
                         d for d in dirs
                         if not d.startswith(".") and d.lower() not in ("translation_cache", "__pycache__", ".amt_cache")
@@ -436,7 +409,6 @@ class PageListWidget(QWidget):
                                 "root_dir": effective_root,
                             })
 
-        # Deduplicate while preserving order of discovery
         seen_paths = set()
         unique_entries = []
         for entry in discovered_entries:
@@ -445,7 +417,6 @@ class PageListWidget(QWidget):
                 seen_paths.add(p)
                 unique_entries.append(entry)
 
-        # Natural alphanumeric sorting across subdirectories
         unique_entries.sort(key=lambda it: natural_sort_path_key(it["path"]))
 
         existing_paths = {item["path"] for item in self.items_data}
@@ -477,13 +448,12 @@ class PageListWidget(QWidget):
                 new_items.append(item_data)
                 self.items_data.append(item_data)
 
-        # Populate GUI items with bulk updates suspended for maximum performance
         sync_thumbs = len(new_items) <= 3
         self.list_widget.setUpdatesEnabled(False)
         try:
             for data in new_items:
                 list_item = QListWidgetItem(self.list_widget)
-                list_item.setSizeHint(QSize(200, 56))
+                list_item.setSizeHint(QSize(188, 56))
                 widget = PageItemWidget(data, self.list_widget, sync_thumb=sync_thumbs)
                 widget.sig_remove.connect(self.remove_item)
                 widget.sig_edit_style.connect(self.sig_edit_page_style.emit)
@@ -495,7 +465,6 @@ class PageListWidget(QWidget):
 
         self._update_count()
 
-        # Select first item if newly added
         if self.list_widget.count() > 0 and self.list_widget.currentRow() < 0:
             self.list_widget.setCurrentRow(0)
 
@@ -580,18 +549,18 @@ class PageListWidget(QWidget):
         path = data.get("path", "")
 
         menu = QMenu(self)
-        act_style = menu.addAction(get_icon("sparkles", color="#3B82F6", size=14), "🎨 修改此页文字设置...")
-        act_translate = menu.addAction(get_icon("play", color="#3B82F6", size=14), "翻译此页面")
-        act_retranslate_this = menu.addAction(get_icon("refresh", color="#F59E0B", size=14), "🔄 重新翻译此页面 (重译当前页)")
-        act_export = menu.addAction(get_icon("download", color="#10B981", size=14), "导出此页面...")
-        act_export_all = menu.addAction(get_icon("download", color="#3B82F6", size=14), "📦 批量导出全本全部页面...")
+        act_style = menu.addAction(get_icon("sparkles", color="#0A84FF", size=14), "单页文字排版设置...")
+        act_translate = menu.addAction(get_icon("play", color="#0A84FF", size=14), "翻译此页面")
+        act_retranslate_this = menu.addAction(get_icon("refresh", color="#FF9F0A", size=14), "重新翻译此页面")
+        act_export = menu.addAction(get_icon("download", color="#30D158", size=14), "导出此页面...")
+        act_export_all = menu.addAction(get_icon("download", color="#0A84FF", size=14), "批量导出全本页面...")
         menu.addSeparator()
-        act_retranslate_all = menu.addAction(get_icon("play_all", color="#F59E0B", size=14), "🔄 批量全部重新翻译 (重译本章全部页面)...")
+        act_retranslate_all = menu.addAction(get_icon("play_all", color="#FF9F0A", size=14), "批量重新翻译全部页面...")
         menu.addSeparator()
-        act_locate = menu.addAction(get_icon("folder_open", color="#A1A1AA", size=14), "在文件资源管理器中定位")
+        act_locate = menu.addAction(get_icon("folder_open", color="#98989D", size=14), "在访达/资源管理器中显示")
         menu.addSeparator()
-        act_clear_cache = menu.addAction(get_icon("trash", color="#F59E0B", size=14), "清除本页缓存 (.amt_cache)")
-        act_remove = menu.addAction(get_icon("trash", color="#EF4444", size=14), "从列表中移除")
+        act_clear_cache = menu.addAction(get_icon("trash", color="#FF9F0A", size=14), "清除本页缓存")
+        act_remove = menu.addAction(get_icon("trash", color="#FF453A", size=14), "从列表中移除")
 
         chosen = menu.exec(self.list_widget.mapToGlobal(pos))
         if chosen == act_style:
@@ -640,8 +609,8 @@ class PageListWidget(QWidget):
     def _on_add_clicked(self):
         """Displays menu to import images or full chapter folder."""
         menu = QMenu(self)
-        act_files = menu.addAction(get_icon("eye", color="#3B82F6", size=14), "添加图片文件...")
-        act_folder = menu.addAction(get_icon("folder_open", color="#3B82F6", size=14), "添加漫画文件夹 (自动扫描所有页面)...")
+        act_files = menu.addAction(get_icon("plus", color="#0A84FF", size=14), "添加漫画图片文件...")
+        act_folder = menu.addAction(get_icon("folder_open", color="#0A84FF", size=14), "添加漫画文件夹 (自动扫描页面)...")
         chosen = menu.exec(QCursor.pos())
         if chosen == act_files:
             files, _ = QFileDialog.getOpenFileNames(

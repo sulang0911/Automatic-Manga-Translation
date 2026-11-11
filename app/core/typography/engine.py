@@ -5,6 +5,7 @@ vertical RTL layout, and stroke rendering onto manga pages.
 """
 import os
 import sys
+import re
 import math
 import logging
 from typing import List, Dict, Any, Optional, Tuple, Callable
@@ -26,6 +27,67 @@ from app.core.inpaint.color_analyzer import get_background_color_rgb
 
 logger = logging.getLogger(__name__)
 
+SPEAKER_LINE_RE = re.compile(
+    r'^\s*[\(\[\{（【〔][A-Za-z0-9\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af_.\- ]{1,14}[\)\]\}）】〕]'
+)
+SPEAKER_SPLIT_RE = re.compile(
+    r'(?:^|(?<=[。！？!?.”"」』）】〕\s]))[ \t]*(?=[\(\[\{（【〔][^)\]\}）】〕\n]{1,14}[\)\]\}）】〕]\s*[“"「『（\(]?)'
+)
+
+
+def format_speaker_dialogue(text: str, original_text: str = "") -> Tuple[str, int]:
+    """
+    Detects multi-speaker dialogue lines (e.g. '(锡)「...」(俊)「...」' or '(Suk) "..." (Jun) "..."')
+    and splits each speaker turn onto its own line with '\\n'.
+    Returns (formatted_text, speaker_turn_count).
+    """
+    if not text:
+        return text, 0
+
+    norm = SPEAKER_SPLIT_RE.sub("\n", text.strip())
+    lines = [ln.strip() for ln in norm.split("\n") if ln.strip()]
+    speaker_cnt = sum(1 for ln in lines if SPEAKER_LINE_RE.match(ln))
+    if speaker_cnt >= 2:
+        return "\n".join(lines), speaker_cnt
+
+    if original_text:
+        orig_norm = SPEAKER_SPLIT_RE.sub("\n", original_text.strip())
+        orig_lines = [ln.strip() for ln in orig_norm.split("\n") if ln.strip()]
+        orig_spk = sum(1 for ln in orig_lines if SPEAKER_LINE_RE.match(ln))
+        t_lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+        if orig_spk >= 2 and len(t_lines) >= 2:
+            return "\n".join(t_lines), len(t_lines)
+
+    return text, speaker_cnt
+
+
+def compute_smart_line_spacing(
+    lines_count: int,
+    font_size: float,
+    box_h: float,
+    base_spacing: float = 1.30,
+    auto_enabled: bool = True
+) -> float:
+    """
+    Computes optimal line spacing multiplier:
+    - When auto_enabled is False, returns base_spacing (default 1.30x).
+    - When auto_enabled is True, dynamically adapts line spacing around base_spacing (1.30x)
+      based on line count and box vertical headroom so multi-line paragraphs breathe naturally
+      without overflowing tight bounding boxes.
+    """
+    if not auto_enabled:
+        return float(base_spacing)
+    if lines_count <= 1:
+        return 1.15
+    raw_text_h = max(1.0, lines_count * font_size)
+    headroom_ratio = box_h / raw_text_h
+    if lines_count == 2:
+        return max(1.20, min(float(base_spacing), headroom_ratio * 0.96))
+    elif lines_count == 3:
+        return max(1.18, min(float(base_spacing), headroom_ratio * 0.95))
+    else:
+        return max(1.16, min(float(base_spacing), headroom_ratio * 0.94))
+
 
 class PilTextMeasurer(TextWidthMeasurer):
     """Measures text width using PIL FreeType font instances."""
@@ -34,14 +96,12 @@ class PilTextMeasurer(TextWidthMeasurer):
         self.is_bold = is_bold
 
     def measure_width(self, text: str, font_size: float) -> float:
-        bold_pad = (font_size * 0.09) if self.is_bold else 0.0
+        bold_pad = 0.0
         try:
             font = self.font_loader(font_size)
             bbox = font.getbbox(text)
             return float(bbox[2] - bbox[0]) + (bold_pad * len(text))
         except Exception:
-            # Fallback heuristic: 1.0em for CJK, 0.55em for Latin
-            import re
             w = 0.0
             for ch in text:
                 if re.search(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]', ch):
@@ -53,11 +113,23 @@ class PilTextMeasurer(TextWidthMeasurer):
 
 class TypographyLayoutEvaluator:
     """Evaluates whether text at a given font size fits inside width/height bounds."""
-    def __init__(self, font_loader: Callable[[float], ImageFont.FreeTypeFont], line_breaker: LineBreaker, vertical_layout: VerticalLayoutEngine, is_bold: bool = False):
+    def __init__(
+        self,
+        font_loader: Callable[[float], ImageFont.FreeTypeFont],
+        line_breaker: LineBreaker,
+        vertical_layout: VerticalLayoutEngine,
+        is_bold: bool = False,
+        line_spacing: float = 1.30,
+        auto_line_spacing: bool = True,
+        speaker_turn_count: int = 0
+    ):
         self.font_loader = font_loader
         self.line_breaker = line_breaker
         self.vertical_layout = vertical_layout
         self.is_bold = is_bold
+        self.line_spacing = line_spacing
+        self.auto_line_spacing = auto_line_spacing
+        self.speaker_turn_count = speaker_turn_count
 
     def evaluate(self, text: str, font_size: float, max_w: float, max_h: float, is_vertical: bool) -> LayoutResult:
         measurer = PilTextMeasurer(self.font_loader, is_bold=self.is_bold)
@@ -85,11 +157,23 @@ class TypographyLayoutEvaluator:
             )
         else:
             lines = self.line_breaker.wrap_text(text, max_w, font_size, measurer)
-            line_height = font_size * 1.20
+            eff_spacing = compute_smart_line_spacing(
+                len(lines), font_size, max_h,
+                base_spacing=self.line_spacing,
+                auto_enabled=self.auto_line_spacing
+            )
+            line_height = font_size * eff_spacing
             total_h = len(lines) * line_height
             max_line_w = max((measurer.measure_width(line, font_size) for line in lines), default=0.0)
 
             fits = (max_line_w <= max_w) and (total_h <= max_h)
+            # When a block has >= 3 speaker turns (e.g. 4-line top-left conversation),
+            # prevent individual speaker lines from wrapping into extra broken sub-lines if a slightly smaller font fits cleanly
+            if fits and self.speaker_turn_count >= 3 and font_size > 9.0:
+                paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
+                if len(lines) > len(paragraphs):
+                    fits = False
+
             overflow_x = max(0.0, max_line_w - max_w)
             overflow_y = max(0.0, total_h - max_h)
 
@@ -159,12 +243,10 @@ class TypographyEngine:
 
     def resolve_font_path(self, font_family: str) -> Optional[str]:
         """Finds true font file path on system or local assets/fonts directory."""
-        # Strip descriptive suffix if present, e.g. "霞鹜文楷 (日漫萌系)" -> "霞鹜文楷"
         clean_name = font_family.split("(")[0].split("（")[0].strip()
         key = clean_name.lower()
         filename = self.SYSTEM_FONT_MAP.get(key, f"{clean_name}.ttf")
 
-        # 1. Project local assets/fonts folder (for bundled cute fonts like LXGW WenKai / SmileySans)
         repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
         local_candidate = os.path.join(repo_root, "assets", "fonts", filename)
         if os.path.exists(local_candidate):
@@ -174,13 +256,11 @@ class TypographyEngine:
         if os.path.exists(cwd_local):
             return cwd_local
 
-        # 2. Standard Windows fonts path
         win_fonts = os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts")
         candidate = os.path.join(win_fonts, filename)
         if os.path.exists(candidate):
             return candidate
 
-        # 3. Fallback to bundled cute font, msyh.ttc or simhei.ttf
         if os.path.exists(local_candidate):
             return local_candidate
         for fallback in ["LXGWWenKaiLite-Regular.ttf", "msyh.ttc", "simhei.ttf", "arial.ttf"]:
@@ -190,6 +270,15 @@ class TypographyEngine:
             p_win = os.path.join(win_fonts, fallback)
             if os.path.exists(p_win):
                 return p_win
+
+        for p_sys in [
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+            "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc"
+        ]:
+            if os.path.exists(p_sys):
+                return p_sys
         return None
 
     def get_font(self, font_family: str, size: float) -> ImageFont.FreeTypeFont:
@@ -222,10 +311,6 @@ class TypographyEngine:
         style_config: Any = None,
         progress_callback: Optional[Callable[[int, str], None]] = None
     ) -> np.ndarray:
-        """
-        Unified rendering entry point compatible with both dict and TranslationBlock blocks,
-        and full app config dict, nested style dict, or StyleConfig instance.
-        """
         if base_image is None or base_image.size == 0 or not blocks:
             return base_image.copy() if base_image is not None else np.zeros((1, 1, 3), dtype=np.uint8)
 
@@ -237,7 +322,6 @@ class TypographyEngine:
         if isinstance(style_config, StyleConfig):
             cfg = style_config
         elif isinstance(style_config, dict):
-            # Extract nested "style" if passed full config dict
             style_data = style_config.get("style", style_config) if "style" in style_config and isinstance(style_config["style"], dict) else style_config
             cfg = StyleConfig.from_dict(style_data)
         else:
@@ -262,7 +346,6 @@ class TypographyEngine:
         cfg = style_config or StyleConfig()
         h_img, w_img = erased_image.shape[:2]
 
-        # QR code detection to avoid drawing text over QR codes
         qr_regions = []
         try:
             from app.core.ocr.qr_filter import QRCodeFilter
@@ -271,7 +354,6 @@ class TypographyEngine:
         except Exception:
             qr_regions = []
 
-        # Convert to PIL RGBA image for high-quality antialiased text drawing
         rgb_img = cv2.cvtColor(erased_image, cv2.COLOR_BGR2RGB)
         pil_img = Image.fromarray(rgb_img).convert("RGBA")
 
@@ -287,13 +369,10 @@ class TypographyEngine:
             if block.type == "onomatopoeia" and cfg.onomatopoeia_mode == OnomatopoeiaMode.IGNORE.value:
                 continue
 
-
-            # Compute pixel bounding box
             x, y, w, h = block.to_pixel_rect(w_img, h_img)
             if w <= 4 or h <= 4:
                 continue
 
-            # Prevent drawing text over detected QR code boundaries
             if qr_regions:
                 cx_check = x + w / 2.0
                 cy_check = y + h / 2.0
@@ -303,7 +382,6 @@ class TypographyEngine:
                     if qx1 <= cx_check <= qx2 and qy1 <= cy_check <= qy2:
                         is_over_qr = True
                         break
-                    # Area overlap check
                     ix1 = max(x, qx1)
                     iy1 = max(y, qy1)
                     ix2 = min(x + w, qx2)
@@ -316,7 +394,6 @@ class TypographyEngine:
                 if is_over_qr:
                     continue
 
-            # Check rotation angle
             effective_angle = block.get_effective_angle() if hasattr(block, "get_effective_angle") else (
                 block.angle_override if block.angle_override is not None else getattr(block, "angle", 0.0)
             )
@@ -326,7 +403,6 @@ class TypographyEngine:
             cx = x + w / 2.0
             cy = y + h / 2.0
 
-            # Compute oriented baseline dimensions (L, H)
             poly = block.to_pixel_polygon(w_img, h_img) if hasattr(block, "to_pixel_polygon") else None
             if is_rotated and poly and len(poly) >= 4:
                 pts = np.array(poly, dtype=np.float32)
@@ -357,47 +433,43 @@ class TypographyEngine:
             else:
                 L, H = float(w), float(h)
 
-            # Determine text direction
-            # Key fix: OCR records direction from ORIGINAL (Japanese/source) text layout.
-            # When rendering translated Chinese text, we re-evaluate based on the rendered
-            # box shape and target text language, NOT the OCR source-direction flag.
-            # A box is only treated as vertical if it is clearly taller than wide (ratio > 1.5)
-            # AND the translated text is CJK. Landscape bubbles always use horizontal layout.
             text_is_cjk = LineBreaker.is_cjk(text)
             box_is_tall = (H > L * 1.5) if is_rotated else (h > w * 1.5)
             if block.direction == TextDirection.VERTICAL.value:
-                # Override: if the box is landscape or text is not CJK, switch to horizontal
                 is_vertical = box_is_tall and text_is_cjk
             elif block.direction == TextDirection.HORIZONTAL.value:
                 is_vertical = False
             else:
-                # AUTO: conservative vertical only when box is clearly portrait + CJK text
                 is_vertical = box_is_tall and text_is_cjk
 
-            # Orientation-aware dimension for layout and auto-fit:
             box_w_eff = L if not is_vertical else H
             box_h_eff = H if not is_vertical else L
 
-            # Reflow fix: for horizontal CJK bubbles, strip source-language newlines.
-            # LLM translations often echo the original text's line-break structure
-            # (e.g. English dialogue broken into short phrases). Each \n-separated
-            # segment becomes its own "paragraph" in wrap_text, yielding many
-            # short lines (2-5 chars each). Fix: join all segments into one
-            # continuous string so line_breaker can reflow to fit the bubble width.
-            render_text = text
-            if not is_vertical and text_is_cjk:
-                segs = [s.strip() for s in text.split("\n") if s.strip()]
+            # Detect multi-speaker dialogue turns (e.g. (Suk) "..." / (Jun) "..." or (锡)「...」 / (俊)「...」)
+            # If the block contains >= 2 speaker turns, preserve '\n' between every speaker turn!
+            # Only join '\n' into a single paragraph when it is a single-speaker speech bubble.
+            formatted_text, speaker_turn_count = format_speaker_dialogue(text, block.original_text or "")
+            render_text = formatted_text
+            if not is_vertical and text_is_cjk and speaker_turn_count < 2:
+                segs = [s.strip() for s in render_text.split("\n") if s.strip()]
                 if len(segs) > 1:
                     render_text = "".join(segs)
 
-            # Font styling resolution
             font_family = block.font_family_override or cfg.font_family
             is_bold = bool(block.font_bold_override if block.font_bold_override is not None else cfg.font_bold)
             font_loader = lambda fs: self.get_font(font_family, fs)
+            auto_ls = getattr(cfg, "auto_line_spacing", True)
 
-            evaluator = TypographyLayoutEvaluator(font_loader, self.line_breaker, self.vertical_layout, is_bold=is_bold)
+            evaluator = TypographyLayoutEvaluator(
+                font_loader,
+                self.line_breaker,
+                self.vertical_layout,
+                is_bold=is_bold,
+                line_spacing=cfg.line_spacing,
+                auto_line_spacing=auto_ls,
+                speaker_turn_count=speaker_turn_count
+            )
 
-            # Font size calculation along oriented baseline dimensions
             if block.font_size_override is not None:
                 font_size = float(block.font_size_override)
             elif cfg.auto_fit_font_size:
@@ -416,7 +488,6 @@ class TypographyEngine:
 
             font = self.get_font(font_family, font_size)
 
-            # Prioritize stored block.bg_color (and override)
             stored_bg_hex = getattr(block, "bg_color_override", None) or getattr(block, "bg_color", None)
             if isinstance(block, dict):
                 stored_bg_hex = block.get("bg_color_override") or block.get("bg_color")
@@ -435,7 +506,6 @@ class TypographyEngine:
                     except ValueError:
                         pass
 
-            # Sample background color and luminance underneath this bubble from erased_image
             sampled_rgb = (255, 255, 255)
             sampled_lum = 255.0
             bx1, by1 = max(0, int(x)), max(0, int(y))
@@ -445,9 +515,6 @@ class TypographyEngine:
                 sampled_rgb = get_background_color_rgb(crop)
                 sampled_lum = 0.299 * sampled_rgb[0] + 0.587 * sampled_rgb[1] + 0.114 * sampled_rgb[2]
 
-            # Prevent noisy perimeter re-sampling on erased_image from mistaking a dark box
-            # touching the image border (e.g. x=0) as light:
-            # Prioritize the stored block.bg_color!
             is_stored_dark = (
                 (stored_bg_hex and str(stored_bg_hex).strip().lower() == "#000000") or
                 (stored_bg_lum is not None and stored_bg_lum < 60.0)
@@ -469,36 +536,30 @@ class TypographyEngine:
 
             is_dark_bg_block = is_stored_dark or (bg_lum < 60.0)
 
-            # Color resolution
+            cand_hex = block.text_color or "#000000"
+            cr = int(cand_hex[1:3], 16) if len(cand_hex) >= 7 else 0
+            cg = int(cand_hex[3:5], 16) if len(cand_hex) >= 7 else 0
+            cb = int(cand_hex[5:7], 16) if len(cand_hex) >= 7 else 0
+            cand_lum = 0.299 * cr + 0.587 * cg + 0.114 * cb
+            max_c = max(cr, cg, cb)
+            min_c = min(cr, cg, cb)
+            sat = (max_c - min_c) if max_c > 0 else 0
+            lum_diff = abs(cand_lum - bg_lum)
+
             if block.text_color_override:
                 text_color_hex = block.text_color_override
             elif cfg.text_color_mode == TextColorMode.CUSTOM.value:
                 text_color_hex = cfg.custom_text_color
+            elif sat >= 85 and max_c >= 135:
+                text_color_hex = cand_hex
             elif is_dark_bg_block:
-                # If block.bg_color is dark (luminance < 60), automatically select white text
                 text_color_hex = "#FFFFFF"
             else:
-                # Automatic / original mode: check candidate color
-                cand_hex = block.text_color or "#000000"
-                cr = int(cand_hex[1:3], 16) if len(cand_hex) >= 7 else 0
-                cg = int(cand_hex[3:5], 16) if len(cand_hex) >= 7 else 0
-                cb = int(cand_hex[5:7], 16) if len(cand_hex) >= 7 else 0
-                cand_lum = 0.299 * cr + 0.587 * cg + 0.114 * cb
-
-                # Saturation and contrast analysis
-                max_c = max(cr, cg, cb)
-                min_c = min(cr, cg, cb)
-                sat = (max_c - min_c) if max_c > 0 else 0
-                lum_diff = abs(cand_lum - bg_lum)
-
-                # High-contrast intelligent quantization:
-                # 1. If luminance contrast against background is low (< 125)
-                # 2. Or if candidate text is muddy grayscale (sat < 35 and 35 < cand_lum < 220)
                 if lum_diff < 125.0 or (sat < 35 and 35 < cand_lum < 220):
                     if bg_lum < 128.0:
-                        text_color_hex = "#FFFFFF"  # High contrast crisp white on dark
+                        text_color_hex = "#FFFFFF"
                     else:
-                        text_color_hex = "#000000"  # High contrast crisp black on light
+                        text_color_hex = "#000000"
                 else:
                     text_color_hex = cand_hex
 
@@ -513,27 +574,29 @@ class TypographyEngine:
             # Stroke resolution
             stroke_mode = block.stroke_mode_override or cfg.stroke_mode
             stroke = None
+            has_block_sw = block.stroke_width_override is not None
+            auto_sw = False if has_block_sw else getattr(cfg, "auto_stroke_width", True)
+            sw_param = block.stroke_width_override if has_block_sw else cfg.stroke_width
             if stroke_mode == StrokeMode.AUTO.value:
-                sw_param = block.stroke_width_override if block.stroke_width_override is not None else cfg.stroke_width
-                if is_dark_bg_block:
-                    # Contrasting dark outline (stroke_color = "#000000") for dark boxes
-                    sw = float(sw_param) if sw_param is not None else max(1.5, font_size * 0.08)
-                    stroke = StrokeStyle(color_rgba=(0, 0, 0, 255), width=float(sw))
-                else:
-                    stroke = StrokeRenderer.get_auto_contrast_stroke((r, g, b), font_size, bg_rgb=bg_rgb, base_stroke_w=sw_param)
+                stroke = StrokeRenderer.get_auto_contrast_stroke(
+                    (r, g, b),
+                    font_size,
+                    bg_rgb=bg_rgb,
+                    base_stroke_w=sw_param,
+                    auto_stroke_width=auto_sw
+                )
             elif stroke_mode == StrokeMode.MANUAL.value:
                 stroke_hex = block.stroke_color_override or cfg.stroke_color
                 sr = int(stroke_hex[1:3], 16) if len(stroke_hex) >= 7 else 255
                 sg = int(stroke_hex[3:5], 16) if len(stroke_hex) >= 7 else 255
                 sb = int(stroke_hex[5:7], 16) if len(stroke_hex) >= 7 else 255
-                sw = block.stroke_width_override if block.stroke_width_override is not None else cfg.stroke_width
-                stroke = StrokeStyle(color_rgba=(sr, sg, sb, 217), width=float(sw))
+                eff_sw = min(float(sw_param), max(1.6, round(font_size * 0.145, 2))) if auto_sw else float(sw_param)
+                stroke = StrokeStyle(color_rgba=(sr, sg, sb, 217), width=eff_sw)
 
             # Drop shadow
             shadow = StrokeRenderer.get_drop_shadow_params(font_size, enabled=cfg.text_shadow)
 
             if is_rotated:
-                # Render onto local transparent canvas with padding margin
                 pad_margin = int(font_size * 0.5) + 12
                 canvas_w = int(math.ceil(box_w_eff)) + 2 * pad_margin
                 canvas_h = int(math.ceil(box_h_eff)) + 2 * pad_margin
@@ -545,7 +608,6 @@ class TypographyEngine:
                 rel_x, rel_y = float(x), float(y)
                 draw_box_w, draw_box_h = float(w), float(h)
 
-            # Draw onto PIL Image / draw_target
             if is_vertical:
                 cols, tot_w, tot_h = self.vertical_layout.compute_layout(
                     text=render_text,
@@ -557,7 +619,6 @@ class TypographyEngine:
                 )
                 for col in cols:
                     for glyph in col.glyphs:
-                        # Draw glyph centered at (x, y)
                         gx = glyph.x + glyph.offset_x - font_size * 0.45
                         gy = glyph.y + glyph.offset_y - font_size * 0.50
                         StrokeRenderer.render_text_pil(
@@ -575,14 +636,28 @@ class TypographyEngine:
                 measurer = PilTextMeasurer(font_loader, is_bold=is_bold)
                 px, py = self.auto_fit_engine.calculate_padding(draw_box_w, draw_box_h)
                 avail_w = max(4.0, draw_box_w - 2 * px)
+                avail_h = max(4.0, draw_box_h - 2 * py)
                 lines = self.line_breaker.wrap_text(render_text, avail_w, font_size, measurer)
-                line_h = font_size * cfg.line_spacing
+                eff_line_spacing = compute_smart_line_spacing(
+                    len(lines),
+                    font_size,
+                    avail_h,
+                    base_spacing=cfg.line_spacing,
+                    auto_enabled=auto_ls
+                )
+                line_h = font_size * eff_line_spacing
                 tot_h = len(lines) * line_h
                 start_y = rel_y + (draw_box_h - tot_h) / 2.0
 
+                # Multi-speaker dialogue blocks (e.g. (Suk)... / (Jun)...) or [Yuna] narration blocks are left-aligned
+                is_left_aligned_dialogue = (speaker_turn_count >= 2) or bool(SPEAKER_LINE_RE.match(render_text))
+
                 for i, line in enumerate(lines):
                     line_w = measurer.measure_width(line, font_size)
-                    line_x = rel_x + (draw_box_w - line_w) / 2.0
+                    if is_left_aligned_dialogue:
+                        line_x = rel_x + px
+                    else:
+                        line_x = rel_x + (draw_box_w - line_w) / 2.0
                     line_y = start_y + i * line_h
                     StrokeRenderer.render_text_pil(
                         target_image=draw_target,
@@ -597,7 +672,6 @@ class TypographyEngine:
                     )
 
             if is_rotated:
-                # Rotate by -effective_angle (clockwise in image coords) and paste centered
                 rotated_layer = draw_target.rotate(
                     -effective_angle,
                     resample=Image.Resampling.BICUBIC,
@@ -607,7 +681,6 @@ class TypographyEngine:
                 paste_y = int(round(cy - rotated_layer.height / 2.0))
                 pil_img.paste(rotated_layer, (paste_x, paste_y), rotated_layer)
 
-        # Convert back to OpenCV BGR
         res_rgb = np.array(pil_img.convert("RGB"))
         res_bgr = cv2.cvtColor(res_rgb, cv2.COLOR_RGB2BGR)
 

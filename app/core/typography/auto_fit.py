@@ -55,6 +55,10 @@ class AutoFitEngine:
         Calculate safety padding to prevent text from touching speech bubble borders.
         For elliptical bubbles, padding is larger to stay within the inscribed ellipse.
         """
+        if bubble_shape != "ellipse" and (box_w > box_h * 2.5 or box_h < 65):
+            px = max(2.0, min(8.0, box_w * 0.03))
+            py = max(1.0, min(4.0, box_h * 0.05))
+            return px, py
         ratio = self.padding_ratio if bubble_shape != "ellipse" else 0.15
         px = max(2.0, min(28.0, box_w * ratio))
         py = max(2.0, min(28.0, box_h * ratio))
@@ -87,7 +91,7 @@ class AutoFitEngine:
 
         # Upper bound calculation: cap by dimension and font_scale
         major_dim = avail_h if not is_vertical else avail_w
-        high_bound = min(self.max_font_size, max(self.min_font_size, major_dim * 0.75 * font_scale))
+        high_bound = min(self.max_font_size, max(self.min_font_size, major_dim * 0.90 * font_scale))
         low_bound = self.min_font_size
 
         # Check if min_font_size fits

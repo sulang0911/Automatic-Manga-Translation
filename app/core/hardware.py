@@ -5,9 +5,15 @@ GPU capability detection, Pascal/Maxwell architecture hazard detection, and VRAM
 from typing import Dict, Any, Tuple
 import gc
 import logging
-import torch
 
 logger = logging.getLogger(__name__)
+
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    torch = None
+    HAS_TORCH = False
 
 
 def is_legacy_pascal_or_maxwell_gpu() -> bool:
@@ -15,7 +21,7 @@ def is_legacy_pascal_or_maxwell_gpu() -> bool:
     Detects NVIDIA Maxwell (compute capability 5.x) or Pascal (compute capability 6.x) GPUs.
     These architectures (e.g. GTX 1080 Ti) have precision or compatibility quirks with newer CUDA 12 runtimes.
     """
-    if not torch.cuda.is_available():
+    if not HAS_TORCH or not torch.cuda.is_available():
         return False
     try:
         cap = torch.cuda.get_device_capability(0)
@@ -34,8 +40,7 @@ def is_legacy_pascal_or_maxwell_gpu() -> bool:
 
 def get_gpu_info() -> Dict[str, Any]:
     """Queries and returns GPU availability, device name, compute capability, and VRAM status."""
-    available = torch.cuda.is_available()
-    if not available:
+    if not HAS_TORCH or not torch.cuda.is_available():
         return {
             "cuda_available": False,
             "device_name": "None",
@@ -80,7 +85,7 @@ def is_vram_constrained(min_free_mb: float = 1200.0) -> bool:
 def cleanup_gpu_memory() -> None:
     """Explicitly releases cached PyTorch CUDA tensors and triggers garbage collection."""
     try:
-        if torch.cuda.is_available():
+        if HAS_TORCH and torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.ipc_collect()
     except Exception:

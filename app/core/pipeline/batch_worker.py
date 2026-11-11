@@ -364,16 +364,26 @@ class BatchWorker(QThread):
                 })
                 success_count += 1
 
-                # 9. Free heavy arrays from RAM immediately!
+                # 9. Free heavy arrays from RAM and CUDA VRAM immediately after EVERY page!
                 del original_img
                 del erased_img
                 del translated_img
-                if (idx + 1) % 4 == 0:
-                    gc.collect()
+                from app.core.hardware import cleanup_gpu_memory
+                cleanup_gpu_memory()
 
             except Exception as e:
                 print(f"[-] Batch item failed: {filename}: {e}")
                 self.sig_item_failed.emit(img_id, str(e))
                 fail_count += 1
+                try:
+                    from app.core.hardware import cleanup_gpu_memory
+                    cleanup_gpu_memory()
+                except Exception:
+                    pass
 
+        try:
+            from app.core.hardware import cleanup_gpu_memory
+            cleanup_gpu_memory()
+        except Exception:
+            pass
         self.sig_batch_finished.emit(success_count, fail_count)

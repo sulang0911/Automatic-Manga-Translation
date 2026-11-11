@@ -1,14 +1,13 @@
 """
 app/ui/widgets/in_place_editor.py
-In-place floating bubble editor and contextual typography micro-bar for the manga canvas.
-Conforms to Apple HIG and Linear/Figma ergonomics.
+Apple macOS popover-inspired floating bubble editor and contextual typography micro-bar.
 """
 from typing import Optional, Dict, Any
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit,
     QPushButton, QFrame, QToolButton, QComboBox
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QSize
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QCursor, QKeyEvent
 
 from app.ui.theme.icons import get_icon
@@ -16,7 +15,7 @@ from app.ui.theme.icons import get_icon
 
 class ContextualTypographyBar(QFrame):
     """
-    Floating micro-pill toolbar positioned above a selected speech bubble on canvas.
+    Floating macOS micro-pill toolbar positioned above a selected speech bubble on canvas.
     Provides 1-click vertical/horizontal direction toggle, font size stepper, and font selection.
     """
     sig_orientation_toggled = pyqtSignal(dict, str)
@@ -33,40 +32,39 @@ class ContextualTypographyBar(QFrame):
 
         self.setStyleSheet("""
             #contextualTypographyBar {
-                background-color: rgba(24, 24, 28, 0.94);
-                border: 1px solid rgba(255, 255, 255, 0.16);
-                border-radius: 6px;
+                background-color: rgba(28, 28, 32, 0.92);
+                border: 1px solid rgba(255, 255, 255, 0.14);
+                border-radius: 10px;
                 padding: 2px 6px;
             }
             QToolButton {
                 background: transparent;
                 border: none;
-                border-radius: 4px;
-                color: #ECECEF;
-                padding: 3px;
+                border-radius: 6px;
+                color: #F5F5F7;
+                padding: 3px 5px;
             }
             QToolButton:hover {
-                background: rgba(255, 255, 255, 0.1);
+                background: rgba(255, 255, 255, 0.12);
             }
             QLabel {
-                color: #ECECEF;
-                font-family: 'JetBrains Mono', monospace;
+                color: #F5F5F7;
                 font-size: 11px;
                 font-weight: 600;
             }
             QComboBox {
-                background-color: #26262B;
-                color: #ECECEF;
-                border: 1px solid #3A3A40;
-                border-radius: 4px;
+                background-color: rgba(255, 255, 255, 0.08);
+                color: #F5F5F7;
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 6px;
                 font-size: 11px;
-                padding: 1px 4px;
-                max-width: 90px;
+                padding: 1px 6px;
+                max-width: 92px;
             }
         """)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setContentsMargins(6, 2, 6, 2)
         layout.setSpacing(4)
 
         # 1. Orientation toggle
@@ -77,10 +75,9 @@ class ContextualTypographyBar(QFrame):
         self.btn_orient.clicked.connect(self._on_toggle_orientation)
         layout.addWidget(self.btn_orient)
 
-        # Separator
         sep1 = QFrame(self)
         sep1.setFrameShape(QFrame.Shape.VLine)
-        sep1.setStyleSheet("color: rgba(255, 255, 255, 0.15);")
+        sep1.setStyleSheet("color: rgba(255, 255, 255, 0.14);")
         layout.addWidget(sep1)
 
         # 2. Font size stepper
@@ -91,7 +88,7 @@ class ContextualTypographyBar(QFrame):
         layout.addWidget(self.btn_size_down)
 
         self.lbl_size = QLabel("14", self)
-        self.lbl_size.setFixedWidth(20)
+        self.lbl_size.setFixedWidth(22)
         self.lbl_size.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.lbl_size)
 
@@ -101,10 +98,9 @@ class ContextualTypographyBar(QFrame):
         self.btn_size_up.clicked.connect(lambda: self._step_font_size(1))
         layout.addWidget(self.btn_size_up)
 
-        # Separator
         sep2 = QFrame(self)
         sep2.setFrameShape(QFrame.Shape.VLine)
-        sep2.setStyleSheet("color: rgba(255, 255, 255, 0.15);")
+        sep2.setStyleSheet("color: rgba(255, 255, 255, 0.14);")
         layout.addWidget(sep2)
 
         # 3. Quick font dropdown
@@ -116,7 +112,7 @@ class ContextualTypographyBar(QFrame):
         # 4. Rerender action button
         self.btn_rerender = QToolButton(self)
         self.btn_rerender.setIcon(get_icon("sparkles", color="#0A84FF", size=13))
-        self.btn_rerender.setToolTip("所见即所得重新渲染此气泡")
+        self.btn_rerender.setToolTip("即时重新渲染此气泡")
         self.btn_rerender.clicked.connect(self._on_rerender)
         layout.addWidget(self.btn_rerender)
 
@@ -166,7 +162,7 @@ class ContextualTypographyBar(QFrame):
 
 class InPlaceBubbleEditor(QFrame):
     """
-    Floating dialog-like popover card near double-clicked bubble on canvas.
+    Floating macOS popover card near double-clicked bubble on canvas.
     Supports in-place editing, Ctrl+Enter commit and next bubble jump, and Esc cancel.
     """
     sig_commit_and_next = pyqtSignal(dict, str)
@@ -177,34 +173,32 @@ class InPlaceBubbleEditor(QFrame):
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setObjectName("inPlaceBubbleEditor")
-        self.setFixedWidth(330)
+        self.setFixedWidth(320)
         self.block_data: Optional[Dict[str, Any]] = None
         self.hide()
 
         self.setStyleSheet("""
             #inPlaceBubbleEditor {
-                background-color: rgba(24, 24, 28, 0.96);
-                border: 1px solid #0A84FF;
-                border-radius: 10px;
+                background-color: rgba(28, 28, 32, 0.96);
+                border: 1px solid rgba(255, 255, 255, 0.16);
+                border-radius: 12px;
                 padding: 10px 12px;
             }
             QLabel {
-                color: #A1A1AA;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                color: #98989D;
                 font-size: 11px;
             }
             QTextEdit {
-                background-color: #1A1A1D;
-                color: #ECECEF;
-                border: 1px solid #333338;
-                border-radius: 6px;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                background-color: rgba(255, 255, 255, 0.06);
+                color: #F5F5F7;
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 8px;
                 font-size: 13px;
-                padding: 6px;
+                padding: 6px 8px;
             }
             QTextEdit:focus {
                 border-color: #0A84FF;
-                background-color: #202025;
+                background-color: rgba(255, 255, 255, 0.09);
             }
         """)
 
@@ -214,29 +208,29 @@ class InPlaceBubbleEditor(QFrame):
 
         # Header Row
         header = QHBoxLayout()
-        self.title_lbl = QLabel("💬 就地编辑气泡", self)
-        self.title_lbl.setStyleSheet("color: #FFFFFF; font-weight: 600; font-size: 12px;")
+        self.title_lbl = QLabel("气泡编辑", self)
+        self.title_lbl.setStyleSheet("color: #F5F5F7; font-weight: 600; font-size: 12px;")
         header.addWidget(self.title_lbl)
 
         header.addStretch()
 
         self.btn_close = QToolButton(self)
-        self.btn_close.setIcon(get_icon("close", color="#A1A1AA", size=11))
-        self.btn_close.setStyleSheet("background: transparent; border: none; border-radius: 3px;")
+        self.btn_close.setIcon(get_icon("close", color="#98989D", size=11))
+        self.btn_close.setStyleSheet("background: transparent; border: none; border-radius: 5px; padding: 3px;")
         self.btn_close.clicked.connect(self.close_editor)
         header.addWidget(self.btn_close)
         layout.addLayout(header)
 
         # OCR Original text (readonly preview)
         self.ocr_lbl = QLabel("原文: (无)", self)
-        self.ocr_lbl.setStyleSheet("color: #71717A; font-family: 'JetBrains Mono', monospace; font-size: 11px;")
+        self.ocr_lbl.setStyleSheet("color: #8E8E93; font-size: 11px;")
         self.ocr_lbl.setWordWrap(True)
-        self.ocr_lbl.setMaximumHeight(40)
+        self.ocr_lbl.setMaximumHeight(38)
         layout.addWidget(self.ocr_lbl)
 
         # Translation Text Edit
         self.text_edit = QTextEdit(self)
-        self.text_edit.setFixedHeight(70)
+        self.text_edit.setFixedHeight(68)
         self.text_edit.setPlaceholderText("输入译文内容...")
         layout.addWidget(self.text_edit)
 
@@ -244,19 +238,19 @@ class InPlaceBubbleEditor(QFrame):
         action_row = QHBoxLayout()
         action_row.setSpacing(6)
 
-        hint_lbl = QLabel("Ctrl+Enter 提交跳下一条", self)
-        hint_lbl.setStyleSheet("color: #71717A; font-size: 10px;")
+        hint_lbl = QLabel("Ctrl+Enter 下一条", self)
+        hint_lbl.setStyleSheet("color: #636366; font-size: 11px;")
         action_row.addWidget(hint_lbl, 1)
 
-        self.btn_commit = QPushButton("应用修改 (Ctrl+Enter)", self)
+        self.btn_commit = QPushButton("应用修改", self)
         self.btn_commit.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.btn_commit.setStyleSheet("""
             QPushButton {
                 background-color: #0A84FF;
                 color: #FFFFFF;
                 border: none;
-                border-radius: 5px;
-                padding: 4px 10px;
+                border-radius: 7px;
+                padding: 5px 12px;
                 font-size: 11px;
                 font-weight: 600;
             }
@@ -272,7 +266,7 @@ class InPlaceBubbleEditor(QFrame):
     def attach_block(self, block_data: Dict[str, Any], block_idx: int = 1):
         """Loads bubble block data into editor and focuses input."""
         self.block_data = block_data
-        self.title_lbl.setText(f"💬 气泡 #{block_idx:02d}")
+        self.title_lbl.setText(f"气泡 #{block_idx:02d}")
         ocr_text = block_data.get("original_text") or block_data.get("raw_text") or block_data.get("text") or "(无)"
         self.ocr_lbl.setText(f"原文: {ocr_text}")
 

@@ -1,7 +1,10 @@
 import os
 import sys
 import math
-import torch  # CRITICAL WINDOWS DLL PROTECTION: Must import torch before paddle
+try:
+    import torch
+except ImportError:
+    torch = None
 import uuid
 import numpy as np
 import cv2
@@ -111,11 +114,23 @@ def fuse_detected_boxes(
                     matched_idx = idx
 
         if matched_idx >= 0:
-            # Attach secondary detector's text & conf to matched primary box if available
+            # Attach secondary detector's text & conf to matched primary box and expand bounds
             p_box = fused[matched_idx]
-            if "sec_text" not in p_box and s_box.get("text"):
-                p_box["sec_text"] = s_box.get("text", "")
-                p_box["sec_conf"] = float(s_box.get("conf", 0.0))
+            if (best_cov >= coverage_thresh or best_cov > 0.35) and abs(float(p_box.get("angle", 0.0) or 0.0)) < 8.0:
+                p_box["xmin"] = min(int(p_box.get("xmin", 0)), int(s_box.get("xmin", 0)))
+                p_box["ymin"] = min(int(p_box.get("ymin", 0)), int(s_box.get("ymin", 0)))
+                p_box["xmax"] = max(int(p_box.get("xmax", 0)), int(s_box.get("xmax", 0)))
+                p_box["ymax"] = max(int(p_box.get("ymax", 0)), int(s_box.get("ymax", 0)))
+                x1_u, y1_u, x2_u, y2_u = p_box["xmin"], p_box["ymin"], p_box["xmax"], p_box["ymax"]
+                p_box["polygon"] = [[x1_u, y1_u], [x2_u, y1_u], [x2_u, y2_u], [x1_u, y2_u]]
+            if s_box.get("text"):
+                if "sec_text" not in p_box or not p_box["sec_text"]:
+                    p_box["sec_text"] = s_box.get("text", "")
+                    p_box["sec_conf"] = float(s_box.get("conf", 0.0))
+                else:
+                    p_box["sec_text"] = p_box["sec_text"] + " " + s_box.get("text", "")
+                    p_box["sec_conf"] = (float(p_box.get("sec_conf", 0.0)) + float(s_box.get("conf", 0.0))) / 2.0
+                    p_box["_sec_multi"] = True
         else:
             # Recovered box: ensure standard fields
             new_box = dict(s_box)
@@ -179,9 +194,12 @@ def ensemble_recognize_text(
         t2_latin_ratio = latin_letters_cnt2 / max(1, len(t2))
         t1_latin_ratio = latin_letters_cnt1 / max(1, len(t1))
 
+        # If EasyOCR found a genuine multi-word English sentence/phrase with zero CJK, never let MangaOCR hallucinate over it
+        if len(words_sec) >= 2 and cjk_cnt2 == 0 and t2_latin_ratio >= 0.60 and conf_sec >= 0.25:
+            return t2, float(conf_sec)
+
         # If EasyOCR strongly believes it's English (high latin ratio) and it's longer than hallucinated kana
         if t2_latin_ratio >= 0.6 and latin_letters_cnt2 > cjk_cnt1 and conf_sec >= 0.25:
-            # Check if MangaOCR just gave us gibberish kana for English text
             if cjk_cnt1 < latin_letters_cnt2:
                 return t2, float(conf_sec)
 
@@ -352,6 +370,8 @@ def sort_easyocr_fragments_2d(results: List[Any]) -> Tuple[str, float]:
     # Sort rows top-to-bottom by row_ymin
     row_order = sorted(range(len(rows)), key=lambda idx: row_bounds[idx][0])
 
+    import re as _re
+    _spk_re = _re.compile(r"^\s*[\(\[\{（【〔][A-Za-z0-9\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af_.\- ]{1,14}[\)\]\}）】〕]")
     ordered_lines = []
     all_confs = []
     for idx in row_order:
@@ -360,7 +380,16 @@ def sort_easyocr_fragments_2d(results: List[Any]) -> Tuple[str, float]:
             ordered_lines.append(line_text)
             all_confs.extend(it["conf"] for it in rows[idx])
 
-    joined = " ".join(ordered_lines)
+    if not ordered_lines:
+        joined = ""
+    else:
+        parts = [ordered_lines[0]]
+        for ln in ordered_lines[1:]:
+            if _spk_re.match(ln):
+                parts.append("\n" + ln)
+            else:
+                parts.append(" " + ln)
+        joined = "".join(parts)
     avg_conf = float(np.mean(all_confs)) if all_confs else 0.0
     return joined, avg_conf
 
@@ -493,7 +522,7 @@ class OCREngine:
                     "lang": paddle_lang,
                     "ocr_version": "PP-OCRv3",
                     "device": device_str,
-                    "cpu_threads": 2,
+                    "cpu_threads": 1,
                     "use_textline_orientation": True,
                     "enable_mkldnn": False,
                     "use_doc_orientation_classify": False,
@@ -537,38 +566,49 @@ class OCREngine:
                         print(f"[!] Warning: PaddleOCR CPU init failed: {e2}. Fallback to generic init...")
                         self._paddle_ocr = PaddleOCR(lang=paddle_lang)
 
+    _GLOBAL_EASYOCR_CACHE: Dict[str, Any] = {}
+
     def _init_easyocr(self, is_english: bool = False, lang: Optional[str] = None):
         target_norm = "en" if is_english else self.normalize_lang(lang or self.lang)
+        cache_key = f"{target_norm}_{self.use_gpu}"
         if target_norm == "en":
             if getattr(self, "_easyocr_en_reader", None) is not None:
                 return
-            if getattr(self, "_easyocr_reader", None) is not None and "en" not in self._easyocr_readers:
+            if getattr(self, "_easyocr_reader", None) is not None and not self._easyocr_readers:
                 self._easyocr_en_reader = self._easyocr_reader
                 self._easyocr_readers["en"] = self._easyocr_reader
                 return
-            import easyocr
-            print(f"[*] Initializing EasyOCR for English (langs=['en'], gpu={self.use_gpu})...")
-            self._easyocr_en_reader = easyocr.Reader(['en'], gpu=self.use_gpu)
+            if cache_key in OCREngine._GLOBAL_EASYOCR_CACHE:
+                self._easyocr_en_reader = OCREngine._GLOBAL_EASYOCR_CACHE[cache_key]
+            else:
+                import easyocr
+                print(f"[*] Initializing EasyOCR for English (langs=['en'], gpu={self.use_gpu})...")
+                self._easyocr_en_reader = easyocr.Reader(['en'], gpu=self.use_gpu)
+                OCREngine._GLOBAL_EASYOCR_CACHE[cache_key] = self._easyocr_en_reader
             self._easyocr_readers["en"] = self._easyocr_en_reader
             if self._easyocr_reader is None:
                 self._easyocr_reader = self._easyocr_en_reader
         else:
             if target_norm in self._easyocr_readers:
                 return
-            if getattr(self, "_easyocr_reader", None) is not None and (target_norm in ("ja", "auto") or not self._easyocr_readers):
+            if getattr(self, "_easyocr_reader", None) is not None and not self._easyocr_readers:
                 self._easyocr_readers[target_norm] = self._easyocr_reader
                 return
-            import easyocr
-            if target_norm == "ko":
-                langs = ['ko', 'en']
-            elif target_norm == "cht":
-                langs = ['ch_tra', 'en']
-            elif target_norm == "chs":
-                langs = ['ch_sim', 'en']
+            if cache_key in OCREngine._GLOBAL_EASYOCR_CACHE:
+                reader = OCREngine._GLOBAL_EASYOCR_CACHE[cache_key]
             else:
-                langs = ['ja', 'en']
-            print(f"[*] Initializing EasyOCR for {target_norm} (langs={langs}, gpu={self.use_gpu})...")
-            reader = easyocr.Reader(langs, gpu=self.use_gpu)
+                import easyocr
+                if target_norm == "ko":
+                    langs = ['ko', 'en']
+                elif target_norm == "cht":
+                    langs = ['ch_tra', 'en']
+                elif target_norm == "chs":
+                    langs = ['ch_sim', 'en']
+                else:
+                    langs = ['ja', 'en']
+                print(f"[*] Initializing EasyOCR for {target_norm} (langs={langs}, gpu={self.use_gpu})...")
+                reader = easyocr.Reader(langs, gpu=self.use_gpu)
+                OCREngine._GLOBAL_EASYOCR_CACHE[cache_key] = reader
             self._easyocr_readers[target_norm] = reader
             if self._easyocr_reader is None or target_norm in ("ja", "auto"):
                 self._easyocr_reader = reader
@@ -578,7 +618,7 @@ class OCREngine:
         if target_norm == "en":
             if getattr(self, "_easyocr_en_reader", None) is not None:
                 return self._easyocr_en_reader
-            if getattr(self, "_easyocr_reader", None) is not None and getattr(self, "_easyocr_en_reader", None) is None:
+            if getattr(self, "_easyocr_reader", None) is not None and not self._easyocr_readers:
                 # If unit tests mocked _easyocr_reader but not _easyocr_en_reader
                 return self._easyocr_reader
             self._init_easyocr(is_english=True)
@@ -610,6 +650,14 @@ class OCREngine:
         if getattr(self, "is_manual", False):
             # Explicit non-English language requested by user; do NOT override!
             return False, norm_lang
+
+        if candidate_boxes:
+            for b in candidate_boxes:
+                b_t = str(b.get("text", "")).strip()
+                b_cjk = sum(1 for c in b_t if ('\u4e00' <= c <= '\u9fff') or ('\u3040' <= c <= '\u309f') or ('\u30a0' <= c <= '\u30ff'))
+                b_lat = sum(1 for c in b_t if ('a' <= c <= 'z' or 'A' <= c <= 'Z'))
+                if b_cjk >= 3 and b_lat == 0:
+                    return False, str(self.lang)
 
         reader = self._get_easyocr_reader(is_english=False)
         sampled_texts = []
@@ -646,14 +694,8 @@ class OCREngine:
                 if len(r) > 1 and str(r[1]).strip():
                     sampled_texts.append(str(r[1]).strip())
 
-        # If candidate boxes already contain authentic CJK text, it's definitely not English
-        if candidate_boxes:
-            for b in candidate_boxes:
-                b_text = str(b.get("text", ""))
-                if any(('\u4e00' <= c <= '\u9fff') or ('\u3040' <= c <= '\u309f') or ('\u30a0' <= c <= '\u30ff') for c in b_text):
-                    return False, str(self.lang)
-
-        combined_text = " ".join(sampled_texts)
+        box_texts = [str(b.get("text", "")).strip() for b in (candidate_boxes or []) if str(b.get("text", "")).strip()]
+        combined_text = " ".join(sampled_texts + box_texts)
         import re
         latin_words = re.findall(r'[a-zA-Z]{2,}', combined_text)
         distinct_words = set(w.lower() for w in latin_words)
@@ -664,8 +706,17 @@ class OCREngine:
         total_latin = sum(len(w) for w in latin_words)
         total_cjk = len(cjk_chars)
 
-        # Require substantial English evidence and no genuine CJK dialogue (<= 1 char for screentone noise)
-        if total_cjk <= 1 and (
+        # Check if any individual text sample or box is an authentic CJK bubble (>= 3 CJK chars with 0 Latin letters)
+        for s_txt in (sampled_texts + box_texts):
+            s_cjk = sum(1 for c in s_txt if ('\u4e00' <= c <= '\u9fff') or ('\u3040' <= c <= '\u309f') or ('\u30a0' <= c <= '\u30ff'))
+            s_lat = sum(1 for c in s_txt if ('a' <= c <= 'z' or 'A' <= c <= 'Z'))
+            if s_cjk >= 3 and s_lat == 0:
+                return False, str(self.lang)
+            if s_cjk >= 1 and total_latin < 8:
+                return False, str(self.lang)
+
+        # Require substantial English evidence (allowing <= 2 stray CJK noise chars from auto detector when Latin dominates)
+        if (total_cjk <= 2 or total_latin >= total_cjk * 5) and (
             (len(distinct_words) >= 3 and total_latin >= 10) or
             (len(distinct_words) >= 2 and total_latin >= 8 and len(latin_words) >= 3)
         ):
@@ -862,7 +913,8 @@ class OCREngine:
                         by2 = max(by1 + 1, min(box["ymax"], h_img))
                         crop = image[by1:by2, bx1:bx2]
                         if crop.size > 0:
-                            crop = mask_crop_with_lines(crop, box, bx1, by1)
+                            if abs(float(box.get("angle", 0.0) or 0.0)) >= 8.0:
+                                crop = mask_crop_with_lines(crop, box, bx1, by1)
                             txt, conf = self._read_block_easyocr(crop, angle=box.get("angle", 0.0), is_english=True)
                             if txt:
                                 box["text"] = txt
@@ -914,7 +966,7 @@ class OCREngine:
                         bx2 = max(bx1 + 1, min(box["xmax"], w_img))
                         by2 = max(by1 + 1, min(box["ymax"], h_img))
                         crop = image[by1:by2, bx1:bx2]
-                        if crop.size > 0:
+                        if crop.size > 0 and abs(float(box.get("angle", 0.0) or 0.0)) >= 8.0:
                             crop = mask_crop_with_lines(crop, box, bx1, by1)
                         txt_pri = self._manga_ocr.recognize_crop(crop, angle=box.get("angle", 0.0))
                         conf_pri = max(float(box.get("conf", 0.8)), 0.95) if txt_pri else 0.0
@@ -929,11 +981,14 @@ class OCREngine:
                         if need_sec and crop.size > 0:
                             txt_sec = box.get("sec_text", "")
                             conf_sec = float(box.get("sec_conf", 0.0))
-                            if not txt_sec:
+                            if not txt_sec or box.get("_sec_multi") or (by2 - by1) >= 34:
                                 try:
-                                    txt_sec, conf_sec = self._read_block_easyocr(crop, angle=box.get("angle", 0.0), is_english=True)
+                                    fresh_sec, fresh_conf = self._read_block_easyocr(crop, angle=box.get("angle", 0.0), is_english=True)
+                                    if fresh_sec and len(fresh_sec) >= len(txt_sec):
+                                        txt_sec, conf_sec = fresh_sec, fresh_conf
                                 except Exception:
-                                    txt_sec, conf_sec = "", 0.0
+                                    if not txt_sec:
+                                        txt_sec, conf_sec = "", 0.0
 
                             final_t, final_c = ensemble_recognize_text(
                                 txt_pri, conf_pri, txt_sec, conf_sec, target_lang=self.lang
