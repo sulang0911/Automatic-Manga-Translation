@@ -1,74 +1,86 @@
-# Project: Automatic-Manga-Translation End-to-End Quality Optimization
+# 📐 项目技术架构与核心模块规范 (PROJECT.md)
 
-## Architecture
-- **Detection & Bubble Segmentation Layer**:
-  - `app/core/ocr/ctd_engine.py`: Comic Text Detector (DBNet + textline clustering).
-  - `app/core/ocr/base.py`: Connected components (`compute_bubble_labels`), pairwise line merging (`can_merge_pair`, `merge_adjacent_boxes`), ray-casting dark boundary barriers.
-- **OCR & Language Perception Layer**:
-  - `desktop/core/ocr_engine.py`: Integrated desktop OCR pipeline with language routing, CRAFT/EasyOCR detection and recognition.
-  - `app/core/ocr/easyocr_engine.py`: Direct EasyOCR integration with upright polygon rotation and 2D spatial fragment sorting.
-  - `app/core/ocr/mangaocr_engine.py`: Japanese-only OCR engine (gated behind strict language detection).
-  - `app/core/pipeline.py` & `desktop/workers/pipeline_worker.py`: Language auto-detection and execution orchestration.
-- **Inpainting & Mask Layer**:
-  - `app/core/inpaint/opencv_engine.py`, `lama_engine.py`, `desktop/core/inpaint_engine.py`: Mask generation, uniform background flat-fill, Telea/LaMa inpainting without alpha smudge bleeding.
-- **Typography & Layout Layer**:
-  - `app/core/typography/engine.py`: Multiline text layout, contrast-aware font and stroke color selection based on `block.bg_color`, rotated bounding box affine rendering.
-- **E2E Testing & Evaluation Layer**:
-  - `tests/unit/`: 263 baseline unit tests.
-  - `tests/e2e/test_pixiv_10pages.py`: Automated 5-dimension test harness on `D:\baidu\download\baidu\pixiv\test`.
+本文档说明 **AetherLens (Automatic-Manga-Translation)** 的核心架构分层、关键技术特性与模块接口契约。
 
-## Feature Inventory
-| # | Feature | Description | Milestone | Source |
-|---|---------|-------------|-----------|--------|
-| F1 | CTD Spatial & Boundary Line Splitting | Split text lines across vertical gaps ($y\_gap > 1.2 \times avg\_h$) or dark boundary barriers in `ctd_engine.py` | M1 | Survey (Parent, E1) |
-| F2 | Bubble Connected Component Refinement | Reduce closing kernel (7x7) and prevent whole-page merging in `compute_bubble_labels` | M1 | Survey (E1, E3) |
-| F3 | Ray-Casting Dark Boundary Barrier | Direct pixel luminance ray-casting in `can_merge_pair` to reject cross-border merges | M1 | Survey (E1) |
-| F4 | Slanted Handwriting Boundary Protection | Rotated $(u,v)$ frame, vector collinearity fallback for short words, prevent AABB border contamination | M1 | Survey (E1, E2) |
-| F5 | Fast English Pre-Detection & Hard Gating | Detect English pages and hard-disable Manga-OCR to eliminate Japanese kana hallucinations | M2 | Survey (E2) |
-| F6 | EasyOCR 2D Spatial Fragment Sorting | Sort EasyOCR bounding boxes top-to-bottom and left-to-right before joining text lines | M2 | Survey (Parent, E2) |
-| F7 | Slanted Upright Crop Normalization | Affine rotate tilted text crops upright before feeding to EasyOCR | M2 | Survey (E1, E2) |
-| F8 | Translation Context & Punctuation Guard | Filter out stray colons/fragments (e.g. "：衣服", "：天") and inject manga slang glossary | M2 | Survey (E2) |
-| F9 | Aspect-Ratio Onomatopoeia De-biasing | Allow wide rectangular narration banners (aspect > 4.0) to be classified as bubbles/banners | M3 | Survey (E3) |
-| F10 | Inverted Dark Box Instant Flat-Fill | Use solid median fill without Gaussian alpha feathering for uniform black/dark boxes | M3 | Survey (E3) |
-| F11 | Background-Color-Aware Typography | Respect stored `block.bg_color` to select white text with contrasting stroke on dark boxes | M3 | Survey (E3) |
-| F12 | Automated 10-Image E2E Evaluation Suite | Implement complete test script testing all 10 images in `D:\baidu\download\baidu\pixiv\test` | M4 (T1) | Survey (E3) |
-| F13 | Zero-Regression Unit Test Guarantee | Maintain 100% pass rate across all 263 unit tests in `pytest tests/unit` | M4 | Survey (E3) |
+---
 
-## Milestones
-| # | Name | Scope | Dependencies | Status |
-|---|------|-------|-------------|--------|
-| M1 | Bubble Boundary Barrier & Isolation | `ctd_engine.py`, `ocr/base.py` (F1, F2, F3, F4) | none | IN_PROGRESS (Worker: dba9eb96) |
-| M2 | OCR Smart Routing & EasyOCR Sorting | `ocr_engine.py`, `easyocr_engine.py`, `pipeline.py` (F5, F6, F7, F8) | none | IN_PROGRESS (Worker: 09d22ff6) |
-| M3 | Dark Background Inpainting & Typography | `inpaint_engine.py`, `opencv_engine.py`, `typography/engine.py` (F9, F10, F11) | none | IN_PROGRESS (Worker: 7c870959) |
-| M4 | E2E Testing Track & Final Verification | `tests/e2e/test_pixiv_10pages.py`, 10-image harness (F12, F13) | M1, M2, M3 | IN_PROGRESS (Test Writer: 86daeab9) |
+## 1. 核心架构分层 (Architecture Layers)
 
-## Interface Contracts
-### CTD & OCR Base Contract
-- `ctd_engine.py`:
-  - `_cluster_lines_by_angle(lines, img=None)`: returns `List[List[dict]]` where lines separated by $y\_gap > \max(20, 1.2 \times avg\_h)$ or dark boundary pixels ($I < 90$) are partitioned into separate line groups.
-- `app/core/ocr/base.py`:
-  - `can_merge_pair(box1, box2, ...)`: returns `False` if ray connecting centroids intersects dark line barrier or if angle divergence cannot be bridged by vector collinearity.
-  - `compute_bubble_labels(img)`: uses kernel $\le 7\times 7$ so adjacent bubbles retain distinct positive component labels.
+```mermaid
+graph TD
+    subgraph UI["🖥️ 界面交互层 (app/ui)"]
+        MW["MainWindow 主工作台"]
+        CV["MangaCanvasView 画布 & 遮罩画笔"]
+        IP["InspectorPanel 属性检查器"]
+        SD["SettingsDialog 系统设置 & 词典管理"]
+    end
 
-### OCR & Language Perception Contract
-- `desktop/core/ocr_engine.py`:
-  - `detect_page_language(img, blocks)`: returns `"en"` for English manga, disabling Manga-OCR fallback completely.
-  - `_read_block_easyocr(crop)`: sorts detections by $(ymin, xmin)$ before `" ".join()`.
+    subgraph Pipeline["⚡ 异步调度与缓存层 (app/core/pipeline & cache)"]
+        PW["PipelineWorker 单页流水线"]
+        BW["BatchWorker 批量队列 (支持暂停/恢复)"]
+        CM["CacheManager 状态与磁盘缓存 (.amt_cache)"]
+    end
 
-### Inpainting & Typography Contract
-- `desktop/core/ocr_engine.py`:
-  - `classify_block_type(box, aspect, uniform)`: keeps uniform wide boxes as `"bubble"` / `"narration"`.
-- `app/core/inpaint/`:
-  - Uniform dark boxes (`block.bg_color == "#000000"` or $lum < 40$) are flat-filled with background median color; skip Gaussian feather blending that bleeds white text edges.
-- `app/core/typography/engine.py`:
-  - If `block.bg_color` is dark ($lum < 60$), force `text_color_hex = "#FFFFFF"` and stroke `#000000`.
+    subgraph Engines["🧠 核心算法引擎层 (app/core)"]
+        OCR["OCR & 气泡分割层\n(CTD / Manga-OCR / EasyOCR / RapidOCR)"]
+        INP["图像擦除与修复层\n(Simple-LaMa / OpenCV / 底色分析)"]
+        LLM["AI 语境翻译层\n(DeepSeek / OpenAI / Gemini + Glossary)"]
+        TYPO["自适应排版渲染层\n(Auto-Fit / 对比度描边 / 旋转贴合)"]
+    end
 
-## Code Layout
-- `app/core/ocr/ctd_engine.py` — Comic Text Detector clustering & line extraction
-- `app/core/ocr/base.py` — Connected component labeling and pair merging
-- `desktop/core/ocr_engine.py` — Desktop OCR engine, language detection, EasyOCR sorting
-- `app/core/ocr/easyocr_engine.py` — Core EasyOCR engine
-- `app/core/inpaint/opencv_engine.py` & `desktop/core/inpaint_engine.py` — Inpainting solid flat-fill
-- `app/core/typography/engine.py` — Typography color & rendering
-- `tests/unit/` — Existing 263 unit tests
-- `tests/e2e/test_pixiv_10pages.py` — Automated 10-image benchmark harness
+    UI --> Pipeline
+    Pipeline --> Engines
+```
+
+### 1.1 检测与气泡防粘连分割层 (`app/core/ocr/`)
+- **`ctd_engine.py`**：基于 Comic Text Detector (DBNet + 文本行聚类)，按垂直间距（`y_gap > 1.2 * avg_h`）与暗色边界屏障拆分相邻文本行。
+- **`base.py`**：连通域气泡标记（`compute_bubble_labels`）、成对文本行合并判定（`can_merge_pair`）、质心射线暗边界采样（Ray-Casting Dark Boundary Barrier）及旋转向量共线性校验，防止紧邻气泡与斜体旁白误合并。
+
+### 1.2 多引擎协同 OCR 与语种感知层 (`app/core/ocr/` & `desktop/core/ocr_engine.py`)
+- **逐框语种路由**：自动探测页面与单框语种特征，日文竖排路由至 `Manga-OCR` / `RapidOCR`，英文及拉丁语系路由至 `EasyOCR`，消除假名幻觉。
+- **2D 空间片段排序与倾斜矫正**：对倾斜文本块进行仿射变换端正裁剪（Upright Crop Normalization），并按阅读顺序排序后拼接。
+
+### 1.3 图像修复与掩码生成层 (`app/core/inpaint/`)
+- **`lama_engine.py` & `opencv_engine.py`**：精细化生成膨胀文字掩码，消除边缘残影。
+- **`color_analyzer.py`**：分析气泡背景色均值与标准差；针对反白/纯黑叙事框（`lum < 40`）直接采用背景中值纯色填充，跳过高斯羽化，杜绝灰白光晕。
+- **`unboxed_text_eraser.py`**：针对漫画背景上的无框字、拟声词及手绘涂抹区域进行定向擦除。
+
+### 1.4 语境感知翻译与专有名词词典 (`app/core/translation/`)
+- **阅读序与分块上下文链**：支持日漫（右至左 `manga_rtl`）与条漫（左至右 `webtoon_ltr`）空间拓扑排序，跨批次传递前文摘要。
+- **专有名词词典 (`glossary`)**：在提示词构建与后处理阶段注入用户自定义词条，保证角色名与核心术语前后统一。
+
+### 1.5 智能排版与描边渲染层 (`app/core/typography/`)
+- **`auto_fit.py`**：结合气泡安全内边距进行二分字号搜索与多行断词优化。
+- **`engine.py` & `stroke_renderer.py`**：支持根据背景明暗自动反转字色与描边色（深色背景自动切换 `#FFFFFF` 白字与深色描边），支持自适应行距（`auto_line_spacing`）与动态描边宽度（`auto_stroke_width`）。
+
+---
+
+## 2. 核心特性清单 (Feature Inventory)
+
+| 编号 | 特性名称 | 核心实现模块 | 状态 |
+| :--- | :--- | :--- | :--- |
+| **F1** | CTD 空间间距与暗边界文本行切分 | `app/core/ocr/ctd_engine.py` | ✅ 已完成 |
+| **F2** | 气泡连通域精细化标记（防全页粘连） | `app/core/ocr/base.py` | ✅ 已完成 |
+| **F3** | 质心射线暗色边界屏障检测 (Ray-Casting) | `app/core/ocr/base.py` | ✅ 已完成 |
+| **F4** | 斜体手写旁白角度门控与边界保护 | `app/core/ocr/base.py` | ✅ 已完成 |
+| **F5** | 逐框语种预判与日英双引擎协同路由 | `desktop/core/ocr_engine.py` | ✅ 已完成 |
+| **F6** | EasyOCR 2D 空间拓扑排序 | `app/core/ocr/easyocr_engine.py` | ✅ 已完成 |
+| **F7** | 倾斜文本框仿射旋转端正裁剪 | `app/core/ocr/easyocr_engine.py` | ✅ 已完成 |
+| **F8** | 翻译上下文链、孤立标点过滤与专有名词词典 | `app/core/settings` / `translation` | ✅ 已完成 |
+| **F9** | 宽幅叙事横幅与拟声词分类去偏 | `desktop/core/ocr_engine.py` | ✅ 已完成 |
+| **F10** | 深色/黑底文本框纯色直填（无灰边残影） | `app/core/inpaint/opencv_engine.py` | ✅ 已完成 |
+| **F11** | 底色感知高对比排版与动态行距/描边 | `app/core/typography/engine.py` | ✅ 已完成 |
+| **F12** | 交互式涂抹重绘画笔、ZIP/CBZ 导入与批量暂停恢复 | `app/ui/canvas/view.py` / `main_window.py` | ✅ 已完成 |
+| **F13** | 334 项核心单元测试零回归保障 | `tests/unit/` | ✅ 已完成 |
+
+---
+
+## 3. 关键接口契约 (Interface Contracts)
+
+### 3.1 气泡分割与合并契约
+- `ctd_engine.py::_cluster_lines_by_angle(lines, img=None)`：当相邻行垂直间距 `y_gap > max(20, 1.2 * avg_h)` 或穿越暗色边界像素（`I < 90`）时，强制拆分为独立文本块。
+- `app/core/ocr/base.py::can_merge_pair(box1, box2, ...)`：若两框质心连线穿过暗色气泡框线，或旋转角偏差超出阈值且不满足向量共线性，返回 `False`。
+
+### 3.2 背景修复与排版色彩契约
+- `app/core/inpaint/`：当检测到均匀深色背景框（`block.bg_color == "#000000"` 或亮度 `lum < 40`）时，直接采用背景中值纯色覆盖文字掩码，跳过高斯 Alpha 混合。
+- `app/core/typography/engine.py`：若 `block.bg_color` 为深色（`lum < 60`）且处于自动配色模式，自动采用 `#FFFFFF` 白色字体的高对比度渲染方案。

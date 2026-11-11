@@ -1,139 +1,77 @@
-# Test Infrastructure & Quality Assurance Specification
+# 🧪 测试基础设施与质量保障规范 (TEST_INFRA.md)
 
-## 1. Testing Philosophy & Guiding Principles
+## 1. 测试设计原则
 
-The `Automatic-Manga-Translation` testing framework enforces rigorous, multi-tiered verification across all computer vision, optical character recognition, machine translation, image inpainting, and typography rendering modules. The framework adheres to four core principles:
+`Automatic-Manga-Translation` 采用多层级自动化测试体系，全面覆盖计算机视觉检测、OCR 识别、大模型翻译、图像擦除修复、智能排版渲染与 PyQt6 桌面交互组件：
 
-1. **Zero-Mock Realism for Complex Visual Artifacts**:
-   While unit tests utilize synthetic primitives for fast algorithmic verification, End-to-End (E2E) tests evaluate real-world manga pages from the Pixiv benchmark (`D:\baidu\download\baidu\pixiv\test`). Mocking is strictly forbidden in Tier 4 E2E benchmarks; all detection, clustering, inpainting, and typography algorithms must execute on actual image tensors.
-
-2. **Strict Test Integrity & Anti-Cheating Invariants**:
-   Tests must evaluate concrete geometrical, optical, and linguistic invariants (e.g. connected component isolation, ray-casting barrier detection, RGB pixel luminance standard deviations, Unicode script distributions). Facade tests, hardcoded true values, and tautological assertions are strictly prohibited.
-
-3. **Progressive Testability & Isolation**:
-   Every test suite is fully isolated and self-contained. Headless execution (`QT_QPA_PLATFORM=offscreen`) is guaranteed across both Windows and POSIX environments. Temporary files and output caches are managed using isolated fixtures (`tmp_path` or `.amt_cache` separation).
-
-4. **Multi-Tier Verification Pyramid**:
-   Tests are stratified into 4 progressive tiers, moving from fast unit feedback (< 20s) to comprehensive real-world multi-page visual evaluation.
+1. **真实张量计算**：测试直接运行于真实或合成图像张量之上，验证连通域分割、射线边界检测、像素亮度分布与排版渲染结果。
+2. **无头环境隔离 (Headless Isolation)**：所有 GUI 测试均支持 `QT_QPA_PLATFORM=offscreen` 无头模式运行，临时文件与缓存通过 `tmp_path` 严格隔离。
+3. **四层验证金字塔**：从秒级反馈的算法单元测试到多页真实漫画端到端基准测试，层层递进保障代码质量。
 
 ---
 
-## 2. 4-Tier Test Architecture
+## 2. 四层测试架构
 
-```
+```text
 +-----------------------------------------------------------------------------------+
-|               Tier 4: Real-World Manga Benchmark Suite (E2E)                      |
-|   `tests/e2e/test_pixiv_10pages.py` (10 Pixiv Pages: Segmentation, OCR, Inpaint)  |
+|               Tier 4: 真实漫画端到端基准套件 (Real-World E2E Benchmark)           |
+|   `tests/e2e/test_pixiv_10pages.py` (气泡防粘连、多语种路由、黑框修复、二维码保护) |
 +-----------------------------------------------------------------------------------+
-|               Tier 3: Adversarial & Stress Testing Suite                          |
-|   `tests/challenge/` (Extreme Aspect Ratios, Overlaps, Corrupted Formats)         |
+|               Tier 3: 极限与对抗性压力测试 (Adversarial & Stress Suite)           |
+|   `tests/challenge/` (超长宽比、极端分辨率、重叠气泡、异常图像格式容错)           |
 +-----------------------------------------------------------------------------------+
-|               Tier 2: Synthetic E2E & Desktop Workflow Suites                     |
-|   `tests/e2e/test_tier1_*.py` ~ `test_tier4_*.py` (Orchestrated by test_runner.py) |
-|   GUI Canvas, Offscreen Workers, Async Cancellation, Model Dispatch               |
+|               Tier 2: 桌面工作流与组件集成测试 (Synthetic E2E & GUI Workflow)     |
+|   `tests/e2e/test_tier1_*.py` ~ `test_tier4_*.py`                                 |
+|   (画布交互、异步工作线程、撤销重做、批量导出)                                    |
 +-----------------------------------------------------------------------------------+
-|               Tier 1: Fast Algorithmic Unit Tests (263 Tests)                     |
-|   `tests/unit/` (Geometry, Angle Extraction, QR Immunity, Typography Math)        |
+|               Tier 1: 核心算法与组件单元测试 (334 项单元测试)                     |
+|   `tests/unit/` & `tests/test_typography_settings.py`                             |
 +-----------------------------------------------------------------------------------+
 ```
 
-### Tier 1: Fast Algorithmic Unit Tests
-- **Directory**: `tests/unit/`
-- **Scope**: Mathematical transformations, polygon calculations, bounding box merging heuristics, connected-component bubble labeling, ray-casting boundary barrier logic, QR code filtering, stroke calculations, undo/redo history, and serialization models.
-- **Execution Target**: Pure Python + OpenCV + NumPy (zero network, fast CPU).
-- **Target Count**: 263 baseline unit tests.
-- **Run Command**: `pytest tests/unit/ -q`
+### Tier 1：核心算法与 UI 单元测试 (`tests/unit/`)
+- **覆盖范围**：几何变换、多边形旋转贴合、相邻框防粘连合并策略、射线暗边界检测、二维码过滤、自适应字号与描边计算、专有名词词典、画笔掩码修复、ZIP/CBZ 递归导入导出、撤销重做历史栈等。
+- **测试规模**：334 项单元测试 + 5 项排版设置专项测试。
+- **执行命令**：
+  ```bash
+  pytest tests/unit/ tests/test_typography_settings.py -q
+  ```
 
-### Tier 2: Synthetic E2E & Desktop Pipeline Integration Tests
-- **Directory**: `tests/e2e/` (`test_tier1_gui.py`, `test_tier1_ocr.py`, `test_tier1_inpaint.py`, `test_tier1_translation.py`, `test_tier1_typography.py`, `test_tier1_editing.py`, `test_tier1_export.py`, `test_tier1_async.py`, `test_tier1_error.py`, `test_tier2_boundary.py`, `test_tier3_combinations.py`, `test_tier4_scenarios.py`)
-- **Scope**: Complete offscreen desktop application workflows, PyQt6 canvas selection, inspector property synchronization, async background worker thread management, and multi-step pipeline lifecycle.
-- **Run Command**: `python tests/e2e/test_runner.py` or `pytest tests/e2e/test_tier*.py`
+### Tier 2：桌面端合成流水线测试 (`tests/e2e/test_tier*.py`)
+- **覆盖范围**：PyQt6 画布图元选择、右侧检查器属性联动、后台异步工作线程调度与取消、批量翻译状态同步。
+- **执行命令**：
+  ```bash
+  pytest tests/e2e/test_tier*.py -q
+  ```
 
-### Tier 3: Adversarial Challenge & Stress Tests
-- **Directory**: `tests/challenge/`
-- **Scope**: Stress testing against corrupt image files, huge resolutions (> 4K), degenerate zero-area boxes, extreme text densities, overlapping bubbles, and Unicode surrogate edge cases.
-- **Run Command**: `pytest tests/challenge/ -v`
+### Tier 3：极限边界与压力测试 (`tests/challenge/`)
+- **覆盖范围**：破损图像文件、超大图（> 4K）、退化零面积文本框、密集重叠气泡、特殊 Unicode 字符等异常场景。
+- **执行命令**：
+  ```bash
+  pytest tests/challenge/ -v
+  ```
 
-### Tier 4: Real-World 10-Image Pixiv Benchmark Suite
-- **Test File**: `tests/e2e/test_pixiv_10pages.py`
-- **Scope**: Comprehensive end-to-end evaluation on all 10 raw comic pages in `D:\baidu\download\baidu\pixiv\test` (3 color pages, 7 screentone pages).
-- **Evaluation Dimensions**:
-  1. **Dimension 1: Bubble Segmentation & Isolation**
-     - Verify tight adjacent oval speech bubbles on `88061806_p002.jpg` are detected as 2 separate `TranslationBlock` instances, strictly NOT merged into 1.
-     - Verify slanted external side annotations ("What a naughty maid!", "And you ruined his sister's dress...") are physically isolated from main speech bubbles.
-  2. **Dimension 2: OCR Accuracy & Language Routing**
-     - Verify English manga routes cleanly to EasyOCR, yielding 0 Japanese kana (hiragana/katakana) hallucinations.
-     - Verify multi-line EasyOCR text is correctly sorted in 2D reading order (top-to-bottom, left-to-right) without word scrambling.
-  3. **Dimension 3: Dark Box Inpainting & Typography**
-     - Verify inverted dark/black boxes ("2 days and 1 masturbation later", "Friend A (19)", etc.) have clean background flat-fill with zero light-gray halos or smudges.
-     - Verify typography renders high-contrast white text (`#FFFFFF`) with dark outline on dark backgrounds.
-  4. **Dimension 4: Regression & Performance**
-     - Verify invocation via `pytest tests/e2e/test_pixiv_10pages.py` and standalone `python tests/e2e/test_pixiv_10pages.py`.
-     - Zero regression across all existing 263 unit tests.
-- **Run Command**: `pytest tests/e2e/test_pixiv_10pages.py -v` or `python tests/e2e/test_pixiv_10pages.py`
+### Tier 4：真实漫画端到端基准测试 (`tests/e2e/test_pixiv_10pages.py`)
+- **评估维度**：
+  1. **气泡分割与隔离**：验证紧邻椭圆对话气泡与斜体旁白均独立成框，绝不误合并。
+  2. **语种路由与识别**：验证英文漫画精准路由至 EasyOCR，零日文假名幻觉，多行词序端正。
+  3. **深色框修复与反白排版**：验证黑底叙事框擦除后无灰边光晕，且自动渲染高对比白字与描边。
+  4. **二维码完好保护**：验证漫画尾页宣传二维码在擦除前后像素 100% 零改动。
 
 ---
 
-## 3. Feature Inventory Coverage Matrix
+## 3. 快速运行指南
 
-| Feature ID | Feature Name | Source Module | Primary Test Tier | Test Specification File | Concrete Verification Invariants & Assertions |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **F1** | CTD Spatial & Boundary Line Splitting | `app/core/ocr/ctd_engine.py` | Tier 1, Tier 4 | `tests/unit/test_ocr_angle_polygon.py`<br>`tests/e2e/test_pixiv_10pages.py` | Split lines when vertical distance $y\_gap > 1.2 \times avg\_h$ or dark barrier pixels ($I < 90$) detected; verify separate blocks generated. |
-| **F2** | Bubble Connected Component Refinement | `app/core/ocr/base.py` | Tier 1, Tier 4 | `tests/unit/test_qr_bubble_adaptive.py`<br>`tests/e2e/test_pixiv_10pages.py` | Morphological closing kernel $\le 7\times 7$ avoids merging adjacent bubbles; page background area filter prevents label zeroing. |
-| **F3** | Ray-Casting Dark Boundary Barrier | `app/core/ocr/base.py` | Tier 1, Tier 4 | `tests/unit/test_qr_bubble_adaptive.py`<br>`tests/e2e/test_pixiv_10pages.py` | Sample pixel luminance along centroid-connecting segment in `can_merge_pair`; reject merge if dark barrier ($I < 90$) detected. |
-| **F4** | Slanted Handwriting Boundary Protection | `app/core/ocr/base.py` | Tier 1, Tier 4 | `tests/unit/test_ocr_angle_polygon.py`<br>`tests/e2e/test_pixiv_10pages.py` | Angle difference $\| \Delta \theta \| \le 10^\circ$ gating; vector collinearity verification; slanted notes remain separate blocks. |
-| **F5** | Fast English Pre-Detection & Hard Gating | `desktop/core/ocr_engine.py` | Tier 2, Tier 4 | `tests/e2e/test_tier1_ocr.py`<br>`tests/e2e/test_pixiv_10pages.py` | Identify Latin character presence; route to EasyOCR; hard-disable Manga-OCR; assert regex `[\u3040-\u30ff]` matches 0 characters. |
-| **F6** | EasyOCR 2D Spatial Fragment Sorting | `desktop/core/ocr_engine.py`<br>`app/core/ocr/easyocr_engine.py` | Tier 1, Tier 4 | `tests/e2e/test_tier1_ocr.py`<br>`tests/e2e/test_pixiv_10pages.py` | Spatial line-clustering and $(y_{min}, x_{min})$ sorting prior to text joining; assert word order matches ground truth reading flow. |
-| **F7** | Slanted Upright Crop Normalization | `app/core/ocr/easyocr_engine.py` | Tier 1, Tier 4 | `tests/unit/test_ocr_angle_polygon.py`<br>`tests/e2e/test_pixiv_10pages.py` | Affine rotation matrix $R(-\theta)$ applied to crops before feeding to EasyOCR; improves tilted word recognition accuracy. |
-| **F8** | Translation Context & Punctuation Guard | `desktop/core/ocr_engine.py` | Tier 1, Tier 2 | `tests/e2e/test_tier1_translation.py`<br>`tests/e2e/test_pixiv_10pages.py` | Strip stray leading colons and orphan punctuation ("：衣服", "：天") caused by OCR line segmentation artifacts. |
-| **F9** | Aspect-Ratio Onomatopoeia De-biasing | `desktop/core/ocr_engine.py` | Tier 1, Tier 4 | `tests/e2e/test_pixiv_10pages.py` | Narration banners with aspect ratio $> 4.0$ classified as `bubble` / `narration` when background is uniform (`is_uniform == True`). |
-| **F10** | Inverted Dark Box Instant Flat-Fill | `app/core/inpaint/opencv_engine.py`<br>`desktop/core/inpaint_engine.py` | Tier 1, Tier 4 | `tests/unit/test_inpaint_mask.py`<br>`tests/e2e/test_pixiv_10pages.py` | Direct solid median fill for dark boxes (`block.bg_color == "#000000"` or $lum < 40$); bypass Gaussian alpha feather blending; assert $\mu(crop) < 5.0$, high-lum pixels $= 0$. |
-| **F11** | Background-Color-Aware Typography | `app/core/typography/engine.py` | Tier 1, Tier 4 | `tests/unit/test_typography_settings.py`<br>`tests/e2e/test_pixiv_10pages.py` | Inspect stored `block.bg_color`; if dark ($lum < 60$), enforce white text `#FFFFFF` and contrasting stroke; assert text visibility. |
-| **F12** | Automated 10-Image E2E Evaluation Suite | `tests/e2e/test_pixiv_10pages.py` | Tier 4 | `tests/e2e/test_pixiv_10pages.py` | Programmatic verification of all 10 real Pixiv images across the 4 quality dimensions. |
-| **F13** | Zero-Regression Unit Test Guarantee | `tests/unit/` | Tier 1 | `pytest tests/unit/ -q` | 100% pass rate maintained across all 263 unit tests. |
-
----
-
-## 4. Test Execution & CI/CD Guide
-
-### Prerequisites
-- Python 3.10+ (Current runtime: Python 3.12.6)
-- Dependencies installed: `pytest`, `pytest-qt`, `numpy`, `opencv-python`, `Pillow`, `torch`, `easyocr`
-
-### Environment Configuration
-Headless offscreen operation is required for headless test runners:
 ```powershell
-# Windows PowerShell
+# Windows PowerShell 开启无头模式（可选，CI 环境推荐）
 $env:QT_QPA_PLATFORM="offscreen"
+
+# 1. 运行核心单元测试套件
+pytest tests/unit/ -q
+
+# 2. 运行排版配置专项测试
+pytest tests/test_typography_settings.py -v
+
+# 3. 运行极限压力测试
+pytest tests/challenge/ -q
 ```
-```bash
-# Linux / macOS
-export QT_QPA_PLATFORM=offscreen
-```
-
-### Test Commands
-
-1. **Run Full Baseline Unit Test Suite (Tier 1)**:
-   ```bash
-   pytest tests/unit/ -q
-   ```
-   *Expected Outcome*: 263 passed, 0 failed in ~45-50s.
-
-2. **Run Synthetic 4-Tier E2E Suites (Tier 2)**:
-   ```bash
-   python tests/e2e/test_runner.py
-   ```
-
-3. **Run Real-World 10-Page Pixiv E2E Benchmark (Tier 4)**:
-   ```bash
-   # Via Pytest
-   pytest tests/e2e/test_pixiv_10pages.py -v
-
-   # Or via Standalone Executable Runner
-   python tests/e2e/test_pixiv_10pages.py
-   ```
-
-4. **Run Full Combined Test Suite**:
-   ```bash
-   pytest tests/unit/ tests/e2e/test_pixiv_10pages.py -q
-   ```
