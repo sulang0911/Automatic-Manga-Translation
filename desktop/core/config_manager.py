@@ -15,10 +15,10 @@ DEFAULT_SYSTEM_PROMPT = (
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     # Translation LLM Provider Settings
-    "provider": "openai",  # "deepseek" | "openai" | "gemini" | "custom"
-    "api_key": "1",
-    "model": "richardyoung/qwen2.5-7b-instruct-abliterated:Q5_K_M",
-    "custom_endpoint": "http://127.0.0.1:11434/v1",
+    "provider": "deepseek",  # "deepseek" | "openai" | "gemini" | "custom"
+    "api_key": "",
+    "model": "deepseek-chat",
+    "custom_endpoint": "",
     "target_lang": "简体中文",
     "source_lang": "自动识别",
     "temperature": 0.2,
