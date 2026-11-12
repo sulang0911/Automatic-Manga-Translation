@@ -83,6 +83,13 @@ class PipelineWorker(QThread):
                     })
                     return
 
+            if blocks:
+                try:
+                    from app.core.inpaint.color_analyzer import refresh_blocks_text_colors
+                    refresh_blocks_text_colors(original_img, blocks)
+                except Exception:
+                    pass
+
             # 2. Inpainting Stage
             if erased_img is None or self.mode in ["full", "inpaint_only"]:
                 if self._is_cancelled: return

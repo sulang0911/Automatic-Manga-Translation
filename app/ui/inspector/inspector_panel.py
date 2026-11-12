@@ -513,22 +513,30 @@ class InspectorPanel(QFrame):
             b if isinstance(b, dict) else (b.to_dict() if hasattr(b, "to_dict") else vars(b))
             for b in (blocks or [])
         ]
-        self.bubble_list.clear()
-        count = len(self.current_blocks)
-        self.bubble_count_lbl.setText(f"对话气泡 ({count})")
+        self.bubble_list.setUpdatesEnabled(False)
+        self.bubble_list.blockSignals(True)
+        try:
+            self.bubble_list.clear()
+            count = len(self.current_blocks)
+            self.bubble_count_lbl.setText(f"对话气泡 ({count})")
 
-        for idx, b in enumerate(self.current_blocks):
-            orig = b.get("original_text", "").replace("\n", " ")[:18]
-            trans = b.get("translated_text", "").replace("\n", " ")[:18]
-            display_txt = trans if trans else (orig if orig else "(空文本)")
-            btype = b.get("type", "bubble")
-            prefix = f"#{idx+1:02d}" if btype == "bubble" else f"#{idx+1:02d} · 拟声"
-            item = QListWidgetItem(f"{prefix}   {display_txt}")
-            item.setData(Qt.ItemDataRole.UserRole, b)
-            self.bubble_list.addItem(item)
+            for idx, b in enumerate(self.current_blocks):
+                orig = b.get("original_text", "").replace("\n", " ")[:18]
+                trans = b.get("translated_text", "").replace("\n", " ")[:18]
+                display_txt = trans if trans else (orig if orig else "(空文本)")
+                btype = b.get("type", "bubble")
+                prefix = f"#{idx+1:02d}" if btype == "bubble" else f"#{idx+1:02d} · 拟声"
+                item = QListWidgetItem(f"{prefix}   {display_txt}")
+                item.setData(Qt.ItemDataRole.UserRole, b)
+                self.bubble_list.addItem(item)
+
+            if self.current_blocks:
+                self.bubble_list.setCurrentRow(0)
+        finally:
+            self.bubble_list.blockSignals(False)
+            self.bubble_list.setUpdatesEnabled(True)
 
         if self.current_blocks:
-            self.bubble_list.setCurrentRow(0)
             self._populate_detail(self.current_blocks[0])
         else:
             self._clear_detail()

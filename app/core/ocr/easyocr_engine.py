@@ -21,7 +21,7 @@ from app.core.ocr.base import (
     calculate_polygon_angle
 )
 from app.core.ocr.reading_order import sort_reading_order
-from app.core.inpaint.color_analyzer import get_background_color_hex, analyze_text_color
+from app.core.inpaint.color_analyzer import get_background_color_hex, analyze_text_color, extract_line_text_colors
 
 try:
     from app.core.pipeline import clean_ocr_syntax, clean_translation_syntax, normalize_domain_slang, prioritize_english_routing
@@ -278,6 +278,7 @@ class EasyOCREngine(BaseOCREngine):
             bg_g = int(bg_hex[3:5], 16)
             bg_b = int(bg_hex[5:7], 16)
             text_hex = analyze_text_color(crop, (bg_b, bg_g, bg_r))
+            line_cols = extract_line_text_colors(crop, (bg_b, bg_g, bg_r))
 
             aspect = (xmax - xmin) / max(1, (ymax - ymin))
             is_bubble = True
@@ -316,6 +317,7 @@ class EasyOCREngine(BaseOCREngine):
                 original_text=b["text"],
                 bg_color=bg_hex,
                 text_color=text_hex,
+                line_colors=line_cols,
                 confidence=b["conf"],
                 line_count=b.get("line_count", 1),
                 type=BlockType.BUBBLE.value if is_bubble else BlockType.ONOMATOPOEIA.value,

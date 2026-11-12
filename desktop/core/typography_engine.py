@@ -195,27 +195,37 @@ class TypographyEngine:
             start_y = ymin + (box_h - total_h) / 2.0
             cur_y = start_y
 
-            for line in lines:
+            raw_line_colors = block.get("line_colors") or []
+            for li, line in enumerate(lines):
                 bbox = draw.textbbox((0, 0), line, font=font)
                 lw = bbox[2] - bbox[0]
                 lh = bbox[3] - bbox[1]
                 cur_x = xmin + (box_w - lw) / 2.0
 
-                if stroke_rgb and calc_stroke_w > 0:
+                line_rgb = text_rgb
+                line_stroke_rgb = stroke_rgb
+                if text_color_mode != "custom" and len(raw_line_colors) > 1:
+                    r_idx = min(len(raw_line_colors) - 1, int(round(li * (len(raw_line_colors) - 1) / max(1, len(lines) - 1))))
+                    line_rgb = hex_to_rgb(raw_line_colors[r_idx])
+                    if stroke_mode == "auto":
+                        l_lum = 0.299 * line_rgb[0] + 0.587 * line_rgb[1] + 0.114 * line_rgb[2]
+                        line_stroke_rgb = (255, 255, 255) if l_lum < 128 else (0, 0, 0)
+
+                if line_stroke_rgb and calc_stroke_w > 0:
                     draw.text(
                         (cur_x, cur_y),
                         line,
                         font=font,
-                        fill=(text_rgb[0], text_rgb[1], text_rgb[2], 255),
+                        fill=(line_rgb[0], line_rgb[1], line_rgb[2], 255),
                         stroke_width=calc_stroke_w,
-                        stroke_fill=(stroke_rgb[0], stroke_rgb[1], stroke_rgb[2], 255)
+                        stroke_fill=(line_stroke_rgb[0], line_stroke_rgb[1], line_stroke_rgb[2], 255)
                     )
                 else:
                     draw.text(
                         (cur_x, cur_y),
                         line,
                         font=font,
-                        fill=(text_rgb[0], text_rgb[1], text_rgb[2], 255)
+                        fill=(line_rgb[0], line_rgb[1], line_rgb[2], 255)
                     )
                 cur_y += lh + line_spacing
 

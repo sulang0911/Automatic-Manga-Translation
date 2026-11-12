@@ -1,18 +1,19 @@
 """
 app/core/models.py
-Domain models for Manga/Webtoon Translation System.
+Core data models, enumerations, and serialization schemas for Automatic Manga Translation.
 """
 from __future__ import annotations
 import uuid
 import math
 from dataclasses import dataclass, field, asdict
 from enum import Enum
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any
 
 
 class BlockType(str, Enum):
     BUBBLE = "bubble"
     ONOMATOPOEIA = "onomatopoeia"
+    NARRATION = "narration"
     OTHER = "other"
 
 
@@ -23,9 +24,9 @@ class TextDirection(str, Enum):
 
 
 class ReadingOrderMode(str, Enum):
-    MANGA_RTL = "manga_rtl"
-    WEBTOON_TTB = "webtoon_ttb"
-    WESTERN_LTR = "western_ltr"
+    MANGA_RTL = "manga_rtl"      # Traditional Japanese Manga: Right-to-Left, Top-to-Bottom
+    WESTERN_LTR = "western_ltr"  # Western Comics / Manhua: Left-to-Right, Top-to-Bottom
+    WEBTOON_TTB = "webtoon_ttb"  # Vertical Scroll Webtoon: Strict Top-to-Bottom
 
 
 class TextColorMode(str, Enum):
@@ -46,17 +47,16 @@ class StrokeMode(str, Enum):
 
 
 class OnomatopoeiaMode(str, Enum):
-    IGNORE = "ignore"
-    TRANSPARENT = "transparent"
     NORMAL = "normal"
+    TRANSPARENT = "transparent"
+    IGNORE = "ignore"
 
 
 class PageStatus(str, Enum):
-    IDLE = "idle"
     PENDING = "pending"
-    OCR = "ocr"
-    INPAINTING = "inpainting"
-    TRANSLATING = "translating"
+    OCR_DONE = "ocr_done"
+    INPAINT_DONE = "inpaint_done"
+    TRANSLATED = "translated"
     RENDERING = "rendering"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -84,6 +84,7 @@ class TranslationBlock:
     confidence: float = 1.0
     reading_order: int = 0
     line_count: int = 1
+    line_colors: Optional[List[str]] = None
 
     # Per-block typographic overrides
     font_family_override: Optional[str] = None
@@ -251,7 +252,8 @@ class TranslationBlock:
 @dataclass
 class StyleConfig:
     """
-    Global typography and rendering configuration.
+    Typography and rendering style configuration for translated manga text.
+    Defaults to cute manga font ('霞鹜文楷'), non-bold, smart 1.30x line spacing, and 3.5px auto stroke width.
     """
     font_family: str = "霞鹜文楷"
     font_size_scale: float = 1.0
@@ -286,41 +288,54 @@ class StyleConfig:
     def from_dict(cls, data: Dict[str, Any]) -> StyleConfig:
         valid_fields = {f for f in cls.__dataclass_fields__}
         filtered = {k: v for k, v in data.items() if k in valid_fields}
+        # Support legacy desktop_config keys
+        if "text_color" in data and "custom_text_color" not in filtered:
+            filtered["custom_text_color"] = data["text_color"]
+        if "bg_color" in data and "custom_bg_color" not in filtered:
+            filtered["custom_bg_color"] = data["bg_color"]
         return cls(**filtered)
 
 
 @dataclass
 class MangaPage:
     """
-    Represents a manga page in a batch or active workspace.
+    Represents a single manga page in the processing queue.
     """
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
     file_path: str = ""
     file_name: str = ""
     width: int = 0
     height: int = 0
-    status: str = PageStatus.IDLE.value
-    progress: int = 0
-    error_message: Optional[str] = None
+    status: str = PageStatus.PENDING.value
     blocks: List[TranslationBlock] = field(default_factory=list)
-
-    # Disk cache paths
-    has_ocr_cache: bool = False
-    has_erased_cache: bool = False
-    has_translated_cache: bool = False
-    erased_image_path: Optional[str] = None
-    translated_image_path: Optional[str] = None
+    error_message: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
-        d = asdict(self)
-        d["blocks"] = [b.to_dict() for b in self.blocks]
-        return d
+        return {
+            "id": self.id,
+            "file_path": self.file_path,
+            "file_name": self.file_name,
+            "width": self.width,
+            "height": self.height,
+            "status": self.status,
+            "blocks": [b.to_dict() for b in self.blocks],
+            "error_message": self.error_message,
+        }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> MangaPage:
-        valid_fields = {f for f in cls.__dataclass_fields__}
-        filtered = {k: v for k, v in data.items() if k in valid_fields and k != "blocks"}
-        blocks_data = data.get("blocks", [])
-        page = cls(**filtered)
-        page.blocks = [TranslationBlock.from_dict(b) for b in blocks_data]
-        return page
+        raw_blocks = data.get("blocks", [])
+        blocks = [
+            b if isinstance(b, TranslationBlock) else TranslationBlock.from_dict(b)
+            for b in raw_blocks
+        ]
+        return cls(
+            id=data.get("id", uuid.uuid4().hex[:8]),
+            file_path=data.get("file_path", ""),
+            file_name=data.get("file_name", ""),
+            width=int(data.get("width", 0)),
+            height=int(data.get("height", 0)),
+            status=data.get("status", PageStatus.PENDING.value),
+            blocks=blocks,
+            error_message=data.get("error_message", ""),
+        )

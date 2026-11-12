@@ -286,7 +286,8 @@ class MangaCanvasView(QGraphicsView):
         self.setBackgroundBrush(QColor("#141416"))
 
         # State tracking
-        self.original_cv: Optional[np.ndarray] = None
+        self._original_cv: Optional[np.ndarray] = None
+        self._image_path: Optional[str] = None
         self.translated_cv: Optional[np.ndarray] = None
         self.erased_cv: Optional[np.ndarray] = None
         self.blocks: List[Any] = []
@@ -346,6 +347,21 @@ class MangaCanvasView(QGraphicsView):
         except Exception:
             self.setViewport(QWidget())
             self._using_opengl = False
+
+    @property
+    def original_cv(self) -> Optional[np.ndarray]:
+        if self._original_cv is None and self._image_path:
+            import os
+            if os.path.exists(self._image_path):
+                from app.core.cache.cache_manager import safe_cv2_imread
+                self._original_cv = safe_cv2_imread(self._image_path)
+        return self._original_cv
+
+    @original_cv.setter
+    def original_cv(self, val: Optional[np.ndarray]):
+        self._original_cv = val
+        if val is None:
+            self._image_path = None
 
     @property
     def scene(self) -> MangaCanvasScene:
@@ -433,10 +449,14 @@ class MangaCanvasView(QGraphicsView):
             return
 
         img_h, img_w = 1, 1
-        if self.original_cv is not None and self.original_cv.size > 0:
-            img_h, img_w = self.original_cv.shape[:2]
+        if self._original_cv is not None and self._original_cv.size > 0:
+            img_h, img_w = self._original_cv.shape[:2]
         elif self.translated_cv is not None and self.translated_cv.size > 0:
             img_h, img_w = self.translated_cv.shape[:2]
+        elif self.erased_cv is not None and self.erased_cv.size > 0:
+            img_h, img_w = self.erased_cv.shape[:2]
+        elif self.original_cv is not None and self.original_cv.size > 0:
+            img_h, img_w = self.original_cv.shape[:2]
 
         for b in self.blocks:
             b_dict = b if isinstance(b, dict) else (b.to_dict() if hasattr(b, "to_dict") else vars(b))
@@ -591,17 +611,21 @@ class MangaCanvasView(QGraphicsView):
         original_cv: Optional[np.ndarray],
         translated_cv: Optional[np.ndarray] = None,
         erased_cv: Optional[np.ndarray] = None,
-        blocks: Optional[List[Any]] = None
+        blocks: Optional[List[Any]] = None,
+        image_path: Optional[str] = None
     ):
         """Sets raw image data, generates only the active view mode pixmaps, and resets layout."""
-        self.original_cv = original_cv
+        self._original_cv = original_cv
+        self._image_path = image_path if original_cv is None else None
         self.translated_cv = translated_cv
         self.erased_cv = erased_cv
         self.blocks = blocks if blocks is not None else []
 
         has_any_img = (
-            (original_cv is not None and original_cv.size > 0)
+            (self._original_cv is not None and self._original_cv.size > 0)
             or (translated_cv is not None and translated_cv.size > 0)
+            or (erased_cv is not None and erased_cv.size > 0)
+            or bool(self._image_path)
         )
         if has_any_img:
             if hasattr(self, "empty_state"):
@@ -610,10 +634,9 @@ class MangaCanvasView(QGraphicsView):
             if hasattr(self, "empty_state"):
                 self.empty_state.show()
 
+        self._clear_bubbles()
         self._scene.set_images(QPixmap(), QPixmap(), QPixmap())
-        self._ensure_pixmaps_for_mode(self.view_mode)
         self.set_view_mode(self.view_mode)
-        self._rebuild_bubbles()
 
     def update_translated_image(self, translated_cv: Optional[np.ndarray], erased_cv: Optional[np.ndarray] = None):
         """Updates translated pixmap in scene background without destroying or recreating interactive bubble items."""

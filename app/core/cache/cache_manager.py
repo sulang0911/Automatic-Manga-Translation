@@ -85,6 +85,7 @@ class MangaCacheManager:
     def __init__(self, custom_cache_root: Optional[str] = None):
         self.custom_cache_root = custom_cache_root
         self._translated_memo: Dict[str, Tuple[float, int, bool]] = {}
+        self._blocks_memo: Dict[str, Tuple[float, int, List[Dict[str, Any]]]] = {}
 
     def get_cache_dir(self, image_path: str, create: bool = False) -> str:
         """
@@ -164,6 +165,10 @@ class MangaCacheManager:
             if len(self._translated_memo) >= 1000:
                 self._translated_memo.clear()
             self._translated_memo[b_path] = (st.st_mtime, st.st_size, res)
+            if isinstance(blocks_list, list):
+                if len(self._blocks_memo) >= 500:
+                    self._blocks_memo.clear()
+                self._blocks_memo[b_path] = (st.st_mtime, st.st_size, blocks_list)
             return res
         except Exception:
             return False
@@ -248,16 +253,26 @@ class MangaCacheManager:
         }
 
         # 1. Blocks JSON
-        if os.path.exists(paths["blocks_json"]):
+        b_path = paths["blocks_json"]
+        if os.path.exists(b_path):
             try:
-                with open(paths["blocks_json"], "r", encoding="utf-8") as f:
-                    raw_blocks = json.load(f)
+                st = os.stat(b_path)
+                memo_b = self._blocks_memo.get(b_path)
+                if memo_b is not None and memo_b[0] == st.st_mtime and memo_b[1] == st.st_size:
+                    raw_blocks = memo_b[2]
+                else:
+                    with open(b_path, "r", encoding="utf-8") as f:
+                        raw_blocks = json.load(f)
+                    if isinstance(raw_blocks, list):
+                        if len(self._blocks_memo) >= 500:
+                            self._blocks_memo.clear()
+                        self._blocks_memo[b_path] = (st.st_mtime, st.st_size, raw_blocks)
                 if isinstance(raw_blocks, list):
                     res["blocks"] = [
                         TranslationBlock.from_dict(b) if isinstance(b, dict) else b
                         for b in raw_blocks
                     ]
-                res["blocks_path"] = paths["blocks_json"]
+                res["blocks_path"] = b_path
                 res["has_cache"] = True
             except Exception as e:
                 logger.warning(f"Error loading blocks cache for {image_path}: {e}")

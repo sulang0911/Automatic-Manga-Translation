@@ -12,6 +12,7 @@ from typing import Dict, Any, List, Optional
 from desktop.core.ocr_engine import OCREngine
 from desktop.core.inpaint_engine import InpaintEngine
 from app.core.typography.engine import TypographyEngine
+from app.core.inpaint.color_analyzer import refresh_blocks_text_colors
 from app.core.translation import TranslationManager, ProviderConfig
 from app.core.models import TranslationBlock
 from app.core.cache.cache_manager import get_cache_manager
@@ -104,6 +105,7 @@ class PipelineWorker(QThread):
                 if reuse_cache:
                     self.sig_progress.emit(25, "从本地缓存恢复 OCR 识别结果...")
                     blocks = [b.to_dict() if hasattr(b, "to_dict") else b for b in cached_blocks]
+                    refresh_blocks_text_colors(original_img, blocks)
                     self.sig_step_done.emit("ocr", blocks)
                 else:
                     self.sig_progress.emit(15, "正在执行本地高精度 OCR 识别...")
@@ -140,6 +142,9 @@ class PipelineWorker(QThread):
                         "translated_img": None
                     })
                     return
+
+            if blocks:
+                refresh_blocks_text_colors(original_img, blocks)
 
             # 2. Inpainting Stage
             erased_saved = False

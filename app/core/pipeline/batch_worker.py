@@ -13,6 +13,7 @@ from typing import List, Dict, Any, Optional
 from desktop.core.ocr_engine import OCREngine
 from desktop.core.inpaint_engine import InpaintEngine
 from app.core.typography.engine import TypographyEngine
+from app.core.inpaint.color_analyzer import refresh_blocks_text_colors
 from app.core.translation import TranslationManager, ProviderConfig
 from app.core.models import TranslationBlock
 from app.core.cache.cache_manager import get_cache_manager, safe_cv2_imread, safe_cv2_imwrite
@@ -192,18 +193,25 @@ class BatchWorker(QThread):
                 if cached_is_valid:
                     self.sig_batch_progress.emit(idx + 1, total, filename, 90, "已命中本地缓存，正在检查渲染与导出...")
                     cached_data = cache_mgr.load_page_cache(img_path, load_images=False)
+                    has_legacy_cyan = any(
+                        str((getattr(b, "text_color", "") if hasattr(b, "text_color") else b.get("text_color", "")) or "").upper() == "#3CE8F5"
+                        for b in cached_data.get("blocks", [])
+                    )
                     c_stat_now = cache_mgr.has_cache(img_path)
-                    need_render_cache = not c_stat_now.get("rendered", False)
+                    need_render_cache = (not c_stat_now.get("rendered", False)) or has_legacy_cyan
                     need_export_file = bool(export_path and not os.path.exists(export_path))
                     if need_render_cache or need_export_file:
                         full_c = cache_mgr.load_page_cache(img_path, load_images=True)
-                        rendered_to_export = full_c.get("rendered_img")
+                        rendered_to_export = None if has_legacy_cyan else full_c.get("rendered_img")
                         if rendered_to_export is None:
                             base_bg = full_c.get("erased_img")
+                            orig_for_color = safe_cv2_imread(img_path) if has_legacy_cyan else None
                             if base_bg is None:
-                                base_bg = safe_cv2_imread(img_path)
+                                base_bg = orig_for_color if orig_for_color is not None else safe_cv2_imread(img_path)
                             if base_bg is not None:
                                 c_blocks = cached_data.get("blocks", [])
+                                if orig_for_color is not None:
+                                    refresh_blocks_text_colors(orig_for_color, c_blocks)
                                 onoma_mode = "normal"
                                 if hasattr(self.config, "style"):
                                     onoma_mode = getattr(self.config.style, "onomatopoeia_mode", "normal")
@@ -277,6 +285,7 @@ class BatchWorker(QThread):
                 if reuse_ocr_cache:
                     self.sig_batch_progress.emit(idx + 1, total, filename, 25, "正在读取已识别文本缓存...")
                     blocks = cached_blocks
+                    refresh_blocks_text_colors(original_img, blocks)
                 else:
                     self.sig_batch_progress.emit(idx + 1, total, filename, 30, "正在识别文字...")
                     blocks = ocr_eng.detect_and_recognize(original_img)

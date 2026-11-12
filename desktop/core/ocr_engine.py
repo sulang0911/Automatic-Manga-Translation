@@ -1230,11 +1230,13 @@ class OCREngine:
             b_val = int(bg_color[5:7], 16) if len(bg_color) >= 7 else 255
 
             try:
-                from app.core.inpaint.color_analyzer import analyze_text_color
+                from app.core.inpaint.color_analyzer import analyze_text_color, extract_line_text_colors
                 detected_text_color = analyze_text_color(crop, (b_val, g_val, r_val))
+                detected_line_colors = extract_line_text_colors(crop, (b_val, g_val, r_val))
             except Exception:
                 bg_lum = 0.299 * r_val + 0.587 * g_val + 0.114 * b_val
                 detected_text_color = "#FFFFFF" if bg_lum < 128 else "#000000"
+                detected_line_colors = [detected_text_color]
 
             # Determine type (bubble vs onomatopoeia) based on aspect ratio & background
             is_bubble = True
@@ -1266,6 +1268,7 @@ class OCREngine:
                 polygon=box.get("polygon"),
                 bg_color=bg_color,
                 text_color=detected_text_color,
+                line_colors=detected_line_colors,
                 type="bubble" if is_bubble else "onomatopoeia",
                 confidence=float(box.get("conf", 1.0)),
                 line_count=int(box.get("line_count", 1)),

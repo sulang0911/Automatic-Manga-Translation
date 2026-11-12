@@ -22,7 +22,7 @@ from app.core.models import TranslationBlock
 from app.core.cache.cache_manager import get_cache_manager
 from app.core.inpaint.color_analyzer import (
     get_background_color_rgb, get_text_mask, is_background_uniform,
-    analyze_text_color, dilate_mask
+    analyze_text_color, extract_line_text_colors, dilate_mask
 )
 
 
@@ -111,6 +111,7 @@ class BlockOcrTranslateWorker(QThread):
                 bg_r, bg_g, bg_b = get_background_color_rgb(crop_for_color)
                 tb["bg_color"] = f"#{bg_r:02X}{bg_g:02X}{bg_b:02X}"
                 tb["text_color"] = analyze_text_color(crop_for_color, (bg_b, bg_g, bg_r))
+                tb["line_colors"] = extract_line_text_colors(crop_for_color, (bg_b, bg_g, bg_r))
             except Exception:
                 pass
 

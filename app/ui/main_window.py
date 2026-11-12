@@ -21,6 +21,7 @@ from PyQt6.QtGui import QIcon, QKeySequence, QShortcut, QColor, QDragEnterEvent,
 from app.core.config import AppConfig
 from app.core.models import TranslationBlock, StyleConfig
 from app.core.typography.engine import TypographyEngine
+from app.core.inpaint.color_analyzer import refresh_blocks_text_colors
 from app.core.undo_manager import UndoManager, PageSnapshot, are_blocks_equal
 from app.core.pipeline.pipeline_worker import PipelineWorker
 from app.core.pipeline.batch_worker import BatchWorker
@@ -559,7 +560,15 @@ class MainWindow(QMainWindow):
         self._on_view_mode_changed(mode)
 
     def _on_view_mode_changed(self, mode: str):
-        """Switches view mode (lazily loading erased_img if switching to inpainted) and manages split-slider bar visibility."""
+        """Switches view mode (lazily loading original_cv or erased_img when needed) and manages split-slider bar visibility."""
+        if mode in ("original", "split_slider", "side_by_side") and self.current_image_data and getattr(self.canvas_view, "_original_cv", None) is None:
+            path = self.current_image_data.get("path")
+            orig = self.current_image_data.get("original_cv")
+            if orig is None and path and os.path.exists(path):
+                orig = safe_cv2_imread(path)
+            if orig is not None:
+                self.current_image_data["original_cv"] = orig
+                self.canvas_view.original_cv = orig
         if mode == "inpainted" and self.current_image_data and self.canvas_view.erased_cv is None:
             path = self.current_image_data.get("path")
             erased = self.current_image_data.get("erased_img")
@@ -757,7 +766,7 @@ class MainWindow(QMainWindow):
             if active_path in self._recent_memory_paths:
                 self._recent_memory_paths.remove(active_path)
             self._recent_memory_paths.append(active_path)
-        keep_paths = set(self._recent_memory_paths[-4:])
+        keep_paths = set(self._recent_memory_paths[-24:])
         cache_mgr = get_cache_manager()
         for it in getattr(self.page_list, "items_data", []):
             p = it.get("path")
@@ -773,79 +782,165 @@ class MainWindow(QMainWindow):
                     it.pop("img", None)
 
     def _prefetch_adjacent_translated_page(self, current_path: str):
-        """Pre-decodes the next translated page's rendered cache into RAM during idle time for zero-lag page switching."""
+        """Pre-decodes surrounding translated pages' rendered caches into RAM in a background thread for zero-lag page switching."""
         if not self.isVisible():
             return
         if (self.active_worker and self.active_worker.isRunning()) or (self.active_batch_worker and self.active_batch_worker.isRunning()):
             return
-        items = getattr(self.page_list, "items_data", [])
+        items = list(getattr(self.page_list, "items_data", []))
         if len(items) <= 1:
             return
-        curr_idx = -1
-        for idx, it in enumerate(items):
-            if it.get("path") == current_path:
-                curr_idx = idx
-                break
-        if curr_idx < 0 or curr_idx + 1 >= len(items):
-            return
-        next_item = items[curr_idx + 1]
-        next_path = next_item.get("path")
-        if not next_path or not os.path.exists(next_path):
-            return
-        if next_item.get("translated_img") is not None and next_item.get("original_cv") is not None:
-            return
-        cache_mgr = get_cache_manager()
-        c_stat = cache_mgr.has_cache(next_path)
-        if not c_stat.get("rendered", False):
-            return
-        try:
-            if next_item.get("original_cv") is None:
-                next_item["original_cv"] = safe_cv2_imread(next_path)
-            cached = cache_mgr.load_page_cache(next_path, load_images=True, load_erased=False, load_rendered=True)
-            if cached.get("rendered_img") is not None:
-                next_item["translated_img"] = cached["rendered_img"]
-            if cached.get("blocks"):
-                next_item["blocks"] = cached["blocks"]
-            if next_path not in self._recent_memory_paths:
-                self._recent_memory_paths.insert(0, next_path)
-        except Exception:
-            pass
+
+        import threading
+        seq = getattr(self, "_prefetch_seq", 0) + 1
+        self._prefetch_seq = seq
+
+        def _bg_worker(target_seq: int, cur_p: str, snapshot_items: List[Dict[str, Any]]):
+            try:
+                curr_idx = -1
+                for idx, it in enumerate(snapshot_items):
+                    if it.get("path") == cur_p:
+                        curr_idx = idx
+                        break
+                if curr_idx < 0:
+                    curr_idx = 0
+
+                order: List[int] = []
+                for step in range(1, min(16, len(snapshot_items))):
+                    if curr_idx + step < len(snapshot_items):
+                        order.append(curr_idx + step)
+                    if curr_idx - step >= 0:
+                        order.append(curr_idx - step)
+
+                cache_mgr = get_cache_manager()
+                for idx in order:
+                    if getattr(self, "_prefetch_seq", 0) != target_seq:
+                        return
+                    if (self.active_worker and self.active_worker.isRunning()) or (self.active_batch_worker and self.active_batch_worker.isRunning()):
+                        return
+                    cand_item = snapshot_items[idx]
+                    cand_path = cand_item.get("path")
+                    if not cand_path or not os.path.exists(cand_path):
+                        continue
+                    c_stat = cache_mgr.has_cache(cand_path)
+                    if c_stat.get("rendered", False):
+                        need_r = cand_item.get("translated_img") is None
+                        need_b = not cand_item.get("blocks") and c_stat.get("blocks", False)
+                        if not need_r and not need_b:
+                            continue
+                        cached = cache_mgr.load_page_cache(
+                            cand_path,
+                            load_images=need_r,
+                            load_erased=False,
+                            load_rendered=need_r
+                        )
+                        if need_r and cached.get("rendered_img") is not None:
+                            cand_item["translated_img"] = cached["rendered_img"]
+                        if need_b and cached.get("blocks"):
+                            cand_item["blocks"] = cached["blocks"]
+                        if cand_path not in self._recent_memory_paths:
+                            self._recent_memory_paths.insert(0, cand_path)
+                    elif c_stat.get("erased", False) and c_stat.get("blocks", False) and cand_item.get("translated_img") is None:
+                        cached = cache_mgr.load_page_cache(
+                            cand_path,
+                            load_images=True,
+                            load_erased=True,
+                            load_rendered=False
+                        )
+                        c_blocks = cached.get("blocks") or []
+                        c_erased = cached.get("erased_img")
+                        has_trans = any(
+                            bool(getattr(b, "translated_text", "") if hasattr(b, "translated_text") else b.get("translated_text", ""))
+                            for b in c_blocks
+                        )
+                        if c_erased is not None and c_blocks and has_trans:
+                            cand_item["blocks"] = c_blocks
+                            cand_item["erased_img"] = c_erased
+                            page_style = cand_item.get("style") or self.config.style
+                            onoma_mode = getattr(page_style, "onomatopoeia_mode", "normal")
+                            model_blocks = [
+                                b if isinstance(b, TranslationBlock) else TranslationBlock.from_dict(b)
+                                for b in c_blocks
+                            ]
+                            render_blocks = [
+                                b for b in model_blocks
+                                if b.type != "onomatopoeia" or onoma_mode != "ignore" or getattr(b, "force_erase", False)
+                            ]
+                            rendered_bg = self.typo_engine.render_page(c_erased, render_blocks, page_style)
+                            if rendered_bg is not None:
+                                cand_item["translated_img"] = rendered_bg
+                                cache_mgr.save_page_cache(cand_path, rendered_img=rendered_bg)
+                                if cand_path not in self._recent_memory_paths:
+                                    self._recent_memory_paths.insert(0, cand_path)
+            except Exception:
+                pass
+
+        threading.Thread(
+            target=_bg_worker,
+            args=(seq, current_path, items),
+            daemon=True
+        ).start()
 
     def _on_page_selected(self, item_data: Dict[str, Any]):
         path = item_data.get("path")
         if path and os.path.exists(path):
             self.current_image_data = item_data
             self._evict_inactive_page_memory(path)
+
+            cache_mgr = get_cache_manager()
+            mem_translated = item_data.get("translated_img")
+            mem_erased = item_data.get("erased_img")
+            mem_blocks = item_data.get("blocks")
             cv_img = item_data.get("original_cv")
-            if cv_img is None:
+
+            if mem_translated is not None and mem_blocks is not None and self.canvas_view.view_mode not in ("inpainted", "split_slider", "side_by_side"):
+                c_stat = {"rendered": True, "erased": mem_erased is not None, "blocks": True}
+            else:
+                c_stat = cache_mgr.has_cache(path)
+
+            has_fast_cache = (mem_translated is not None) or c_stat.get("rendered", False) or (mem_erased is not None) or c_stat.get("erased", False)
+            need_orig_now = (
+                not has_fast_cache
+                or self.canvas_view.view_mode in ("split_slider", "side_by_side")
+            )
+
+            if cv_img is None and need_orig_now:
                 cv_img = safe_cv2_imread(path)
                 if cv_img is not None:
                     item_data["original_cv"] = cv_img
-            if cv_img is not None:
-                cache_mgr = get_cache_manager()
-                c_stat = cache_mgr.has_cache(path)
-                mem_translated = item_data.get("translated_img")
-                mem_erased = item_data.get("erased_img")
-                need_erased_now = (
-                    self.canvas_view.view_mode == "inpainted"
-                    or (not c_stat.get("rendered", False) and mem_translated is None)
-                )
+
+            need_erased_now = (
+                self.canvas_view.view_mode == "inpainted"
+                or (not c_stat.get("rendered", False) and mem_translated is None)
+            )
+            need_blocks_disk = (not mem_blocks) and c_stat.get("blocks", False)
+            need_erased_disk = need_erased_now and (mem_erased is None) and c_stat.get("erased", False)
+            need_rendered_disk = (mem_translated is None) and c_stat.get("rendered", False)
+
+            if need_blocks_disk or need_erased_disk or need_rendered_disk:
                 cached = cache_mgr.load_page_cache(
                     path,
-                    load_images=True,
-                    load_erased=need_erased_now and (mem_erased is None),
-                    load_rendered=(mem_translated is None)
+                    load_images=(need_erased_disk or need_rendered_disk),
+                    load_erased=need_erased_disk,
+                    load_rendered=need_rendered_disk
                 )
-
                 cached_blocks = cached.get("blocks")
-                blocks = cached_blocks if cached_blocks else item_data.get("blocks", [])
-
+                blocks = cached_blocks if cached_blocks else (mem_blocks or [])
                 cached_erased = cached.get("erased_img")
                 erased = cached_erased if cached_erased is not None else mem_erased
-
                 cached_rendered = cached.get("rendered_img")
                 translated = cached_rendered if cached_rendered is not None else mem_translated
+            else:
+                blocks = mem_blocks or []
+                erased = mem_erased
+                translated = mem_translated
 
+            if translated is None and erased is None and cv_img is None:
+                cv_img = safe_cv2_imread(path)
+                if cv_img is not None:
+                    item_data["original_cv"] = cv_img
+
+            if cv_img is not None or translated is not None or erased is not None:
                 has_translations = any(
                     bool(getattr(b, "translated_text", "") if hasattr(b, "translated_text") else b.get("translated_text", ""))
                     for b in blocks
@@ -853,39 +948,61 @@ class MainWindow(QMainWindow):
 
                 # If blocks exist and have translations, but rendered image not on disk yet, render on demand
                 if translated is None and blocks and has_translations and (erased is not None or cv_img is not None):
+                    if erased is None and c_stat.get("erased", False):
+                        erased = cache_mgr.load_page_cache(
+                            path, load_images=True, load_erased=True, load_rendered=False
+                        ).get("erased_img")
+
+                    needs_color_repair = any(
+                        str((getattr(b, "text_color", "") if hasattr(b, "text_color") else b.get("text_color", "")) or "").upper() == "#3CE8F5"
+                        for b in blocks
+                    )
+                    if needs_color_repair:
+                        if cv_img is None:
+                            cv_img = safe_cv2_imread(path)
+                            if cv_img is not None:
+                                item_data["original_cv"] = cv_img
+                        if cv_img is not None:
+                            refresh_blocks_text_colors(cv_img, blocks)
+
                     page_style = item_data.get("style") or self.config.style
                     onoma_mode = getattr(page_style, "onomatopoeia_mode", "normal")
-                    if erased is None and cv_img is not None:
-                        try:
-                            from desktop.core.inpaint_engine import InpaintEngine
-                            inpaint_mode = "auto"
-                            bubble_dil = 3
-                            onoma_dil = 6
-                            feather_rad = 4
-                            if hasattr(self.config, "inpaint"):
-                                inpaint_mode = getattr(self.config.inpaint, "engine", "auto")
-                            elif isinstance(self.config, dict):
-                                inpaint_mode = self.config.get("inpaint", {}).get("engine", self.config.get("inpaint_engine", "auto"))
-                            if hasattr(self.config, "style"):
-                                bubble_dil = getattr(self.config.style, "bubble_dilation", 3)
-                                onoma_dil = getattr(self.config.style, "onomatopoeia_dilation", 6)
-                                feather_rad = getattr(self.config.style, "feather_radius", 4)
-                            elif isinstance(self.config, dict):
-                                bubble_dil = self.config.get("bubble_dilation", 3)
-                                onoma_dil = self.config.get("onomatopoeia_dilation", 6)
-                                feather_rad = self.config.get("feather_radius", 4)
+                    if erased is None:
+                        if cv_img is None:
+                            cv_img = safe_cv2_imread(path)
+                            if cv_img is not None:
+                                item_data["original_cv"] = cv_img
+                        if cv_img is not None:
+                            try:
+                                from desktop.core.inpaint_engine import InpaintEngine
+                                inpaint_mode = "auto"
+                                bubble_dil = 3
+                                onoma_dil = 6
+                                feather_rad = 4
+                                if hasattr(self.config, "inpaint"):
+                                    inpaint_mode = getattr(self.config.inpaint, "engine", "auto")
+                                elif isinstance(self.config, dict):
+                                    inpaint_mode = self.config.get("inpaint", {}).get("engine", self.config.get("inpaint_engine", "auto"))
+                                if hasattr(self.config, "style"):
+                                    bubble_dil = getattr(self.config.style, "bubble_dilation", 3)
+                                    onoma_dil = getattr(self.config.style, "onomatopoeia_dilation", 6)
+                                    feather_rad = getattr(self.config.style, "feather_radius", 4)
+                                elif isinstance(self.config, dict):
+                                    bubble_dil = self.config.get("bubble_dilation", 3)
+                                    onoma_dil = self.config.get("onomatopoeia_dilation", 6)
+                                    feather_rad = self.config.get("feather_radius", 4)
 
-                            inpaint_eng = InpaintEngine(mode=inpaint_mode)
-                            erased = inpaint_eng.inpaint(
-                                cv_img, blocks,
-                                bubble_dilation=bubble_dil,
-                                onomatopoeia_dilation=onoma_dil,
-                                feather_radius=feather_rad,
-                                onomatopoeia_mode=onoma_mode
-                            )
-                            cache_mgr.save_page_cache(path, erased_img=erased)
-                        except Exception as e:
-                            print(f"[-] Auto inpaint on select error: {e}")
+                                inpaint_eng = InpaintEngine(mode=inpaint_mode)
+                                erased = inpaint_eng.inpaint(
+                                    cv_img, blocks,
+                                    bubble_dilation=bubble_dil,
+                                    onomatopoeia_dilation=onoma_dil,
+                                    feather_radius=feather_rad,
+                                    onomatopoeia_mode=onoma_mode
+                                )
+                                cache_mgr.save_page_cache(path, erased_img=erased)
+                            except Exception as e:
+                                print(f"[-] Auto inpaint on select error: {e}")
 
                     base_bg = erased if erased is not None else cv_img
                     model_blocks = [
@@ -898,7 +1015,15 @@ class MainWindow(QMainWindow):
                             if b.type != "onomatopoeia" or onoma_mode != "ignore" or getattr(b, "force_erase", False)
                         ]
                         translated = self.typo_engine.render_page(base_bg, render_blocks, page_style)
-                        cache_mgr.save_page_cache(path, rendered_img=translated)
+                        if self.isVisible():
+                            import threading
+                            threading.Thread(
+                                target=cache_mgr.save_page_cache,
+                                kwargs={"image_path": path, "rendered_img": translated},
+                                daemon=True
+                            ).start()
+                        else:
+                            cache_mgr.save_page_cache(path, rendered_img=translated)
                     except Exception as e:
                         print(f"[-] Auto render on select error: {e}")
 
@@ -918,7 +1043,12 @@ class MainWindow(QMainWindow):
                         if hasattr(self, "_mode_buttons") and "original" in self._mode_buttons:
                             self._mode_buttons["original"].setChecked(True)
 
-                self.canvas_view.set_data(cv_img, translated_cv=translated, erased_cv=erased, blocks=blocks)
+                if self.canvas_view.view_mode in ("original", "split_slider", "side_by_side") and cv_img is None:
+                    cv_img = safe_cv2_imread(path)
+                    if cv_img is not None:
+                        item_data["original_cv"] = cv_img
+
+                self.canvas_view.set_data(cv_img, translated_cv=translated, erased_cv=erased, blocks=blocks, image_path=path)
                 self.canvas_view.fit_in_view()
                 self.inspector_panel.set_blocks(blocks)
 
@@ -945,7 +1075,7 @@ class MainWindow(QMainWindow):
                     else:
                         self.canvas_view.hud.set_page_info(0, len(self.page_list.items_data))
                 if translated is not None and self.isVisible():
-                    QTimer.singleShot(50, lambda p=path: self._prefetch_adjacent_translated_page(p))
+                    self._prefetch_adjacent_translated_page(path)
 
     def _on_zoom_changed(self, zoom: float):
         """Updates zoom percentage chip on status bar and status label."""
@@ -1400,6 +1530,12 @@ class MainWindow(QMainWindow):
             self.status_label.setText("气泡已删除，已还原原图底图")
             return
 
+        orig_cv_for_color = getattr(self.canvas_view, "original_cv", None)
+        if orig_cv_for_color is None:
+            orig_cv_for_color = self.current_image_data.get("original_cv")
+        if orig_cv_for_color is not None and blocks:
+            refresh_blocks_text_colors(orig_cv_for_color, blocks)
+
         page_style = self.current_image_data.get("style") or self.config.style
         onoma_mode = getattr(page_style, "onomatopoeia_mode", "normal")
         model_blocks = []
@@ -1852,6 +1988,16 @@ class MainWindow(QMainWindow):
             if erased_img is None:
                 continue
 
+            orig_item_cv = item.get("original_cv")
+            if orig_item_cv is None and any(
+                str((getattr(b, "text_color", "") if hasattr(b, "text_color") else b.get("text_color", "")) or "").upper() == "#3CE8F5"
+                or not (getattr(b, "line_colors", None) if hasattr(b, "line_colors") else b.get("line_colors"))
+                for b in blocks
+            ):
+                orig_item_cv = safe_cv2_imread(path)
+            if orig_item_cv is not None:
+                refresh_blocks_text_colors(orig_item_cv, blocks)
+
             model_blocks = [
                 b if isinstance(b, TranslationBlock) else TranslationBlock.from_dict(b)
                 for b in blocks
@@ -1923,6 +2069,14 @@ class MainWindow(QMainWindow):
         if erased_img is None:
             self.toast.show_message(f"无法读取底图文件: {path}", "error")
             return
+
+        orig_single_cv = item_data.get("original_cv")
+        if orig_single_cv is None and is_current:
+            orig_single_cv = getattr(self.canvas_view, "original_cv", None)
+        if orig_single_cv is None:
+            orig_single_cv = safe_cv2_imread(path)
+        if orig_single_cv is not None:
+            refresh_blocks_text_colors(orig_single_cv, blocks)
 
         model_blocks = [
             b if isinstance(b, TranslationBlock) else TranslationBlock.from_dict(b)

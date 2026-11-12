@@ -8,6 +8,9 @@ from .color_analyzer import (
     is_background_uniform,
     get_text_mask,
     analyze_text_color,
+    extract_line_text_colors,
+    collapse_color_turns,
+    refresh_blocks_text_colors,
     dilate_mask,
 )
 from .opencv_engine import OpenCVInpainter
@@ -22,6 +25,9 @@ __all__ = [
     "is_background_uniform",
     "get_text_mask",
     "analyze_text_color",
+    "extract_line_text_colors",
+    "collapse_color_turns",
+    "refresh_blocks_text_colors",
     "dilate_mask",
     "OpenCVInpainter",
     "LaMaInpainter",
