@@ -87,7 +87,7 @@ class PipelineWorker(QThread):
 
                 if cache_status["blocks"] and self.mode not in ("full", "ocr_only"):
                     cached_blocks = cache_mgr.load_page_cache(self.image_path, load_images=False)["blocks"]
-                    if is_auto_source_lang(norm_src):
+                    if self.mode == "translate_only" or is_auto_source_lang(norm_src):
                         reuse_cache = True
                     else:
                         sample_text = " ".join(str(b.get("original_text", "")) if isinstance(b, dict) else str(getattr(b, "original_text", "")) for b in cached_blocks[:5])
@@ -233,6 +233,13 @@ class PipelineWorker(QThread):
 
                 source_lang = self.config.get("source_lang", "自动识别")
                 target_lang = self.config.get("target_lang", "简体中文")
+
+                if self.mode == "translate_only" and blocks:
+                    for b in blocks:
+                        if isinstance(b, dict):
+                            b["translated_text"] = ""
+                        elif hasattr(b, "translated_text"):
+                            b.translated_text = ""
 
                 blocks = mgr.translate(
                     blocks=blocks,

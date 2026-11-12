@@ -329,7 +329,7 @@ class MangaCanvasView(QGraphicsView):
         self.typography_bar.sig_orientation_toggled.connect(self._on_typography_orientation_toggled)
         self.typography_bar.sig_font_size_changed.connect(self._on_typography_font_size_changed)
         self.typography_bar.sig_font_family_changed.connect(self._on_typography_font_family_changed)
-        self.typography_bar.sig_rerender_requested.connect(self.sig_bubble_changed.emit)
+        self.typography_bar.sig_rerender_requested.connect(self.sig_bubble_commit.emit)
 
         # Empty State Welcome Placeholder
         self.empty_state = EmptyStateWidget(self)
@@ -558,12 +558,15 @@ class MangaCanvasView(QGraphicsView):
 
     def _on_typography_orientation_toggled(self, block_data: Dict[str, Any], direction: str):
         self.sig_bubble_changed.emit(block_data)
+        self.sig_bubble_commit.emit(block_data)
 
     def _on_typography_font_size_changed(self, block_data: Dict[str, Any], size: int):
         self.sig_bubble_changed.emit(block_data)
+        self.sig_bubble_commit.emit(block_data)
 
     def _on_typography_font_family_changed(self, block_data: Dict[str, Any], family: str):
         self.sig_bubble_changed.emit(block_data)
+        self.sig_bubble_commit.emit(block_data)
 
     def set_show_bubbles(self, show: bool):
         """Toggles speech bubble overlay bounding box visibility."""

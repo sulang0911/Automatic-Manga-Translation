@@ -202,11 +202,12 @@ class InspectorPanel(QFrame):
         # Provider / Model
         layout.addWidget(QLabel("翻译引擎与模型:"))
         self.provider_combo = QComboBox(self)
-        self.provider_combo.addItems(["DeepSeek (deepseek-chat)", "OpenAI (gpt-4o-mini)", "Gemini (gemini-1.5-flash)", "自定义 API"])
+        self.provider_combo.addItems(["DeepSeek (deepseek-chat)", "OpenAI (gpt-4o-mini)", "Gemini (gemini-2.5-flash)", "Antigravity (Gemini 兼容)", "自定义 API"])
         prov = cfg.get("provider", "deepseek")
         if prov == "openai": self.provider_combo.setCurrentIndex(1)
         elif prov == "gemini": self.provider_combo.setCurrentIndex(2)
-        elif prov == "custom": self.provider_combo.setCurrentIndex(3)
+        elif "antigravity" in str(prov): self.provider_combo.setCurrentIndex(3)
+        elif prov == "custom": self.provider_combo.setCurrentIndex(4)
         else: self.provider_combo.setCurrentIndex(0)
         self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
         layout.addWidget(self.provider_combo)
@@ -293,8 +294,8 @@ class InspectorPanel(QFrame):
         self._update_cfg("bg_opacity", val / 100.0)
 
     def _on_provider_changed(self, idx: int):
-        providers = ["deepseek", "openai", "gemini", "custom"]
-        models = ["deepseek-chat", "gpt-4o-mini", "gemini-1.5-flash", "custom-model"]
+        providers = ["deepseek", "openai", "gemini", "antigravity", "custom"]
+        models = ["deepseek-chat", "gpt-4o-mini", "gemini-2.5-flash", "gemini-2.5-flash", "custom-model"]
         self._update_cfg("provider", providers[idx])
         self._update_cfg("model", models[idx])
 

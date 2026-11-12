@@ -185,6 +185,7 @@ class MainWindow(QMainWindow):
         self.inspector_panel.sig_block_updated.connect(self._on_block_updated_from_inspector)
         self.inspector_panel.sig_block_deleted.connect(self._on_block_deleted)
         self.inspector_panel.sig_translate_page_requested.connect(lambda: self._start_pipeline_for_page(mode="translate_only"))
+        self.inspector_panel.sig_batch_retranslate_cached_requested.connect(lambda: self._start_batch(force_retranslate=False, retranslate_from_cache=True))
         self.inspector_panel.sig_erase_page_requested.connect(lambda: self._start_pipeline_for_page(mode="inpaint_only"))
         self.inspector_panel.sig_export_page_requested.connect(self._export_current_page)
         self.inspector_panel.sig_open_export_dir_requested.connect(self._open_export_directory)
@@ -232,9 +233,11 @@ class MainWindow(QMainWindow):
         self.page_list.sig_page_selected.connect(self._on_page_selected)
         self.page_list.sig_page_removed.connect(self._on_page_removed)
         self.page_list.sig_start_batch.connect(lambda: self._start_batch(force_retranslate=False))
+        self.page_list.sig_start_retranslate_from_cache.connect(lambda: self._start_batch(force_retranslate=False, retranslate_from_cache=True))
         self.page_list.sig_start_retranslate_all.connect(lambda: self._start_batch(force_retranslate=True))
         self.page_list.sig_clear_requested.connect(self._on_page_list_cleared)
         self.page_list.sig_translate_page.connect(self._on_translate_page_from_list)
+        self.page_list.sig_retranslate_page_from_cache.connect(self._on_retranslate_page_from_cache)
         self.page_list.sig_export_page.connect(self._on_export_page_from_list)
         self.page_list.sig_export_all.connect(self._export_all_pages)
         self.page_list.sig_edit_page_style.connect(self._open_page_style_dialog)
@@ -884,6 +887,10 @@ class MainWindow(QMainWindow):
     def _on_page_selected(self, item_data: Dict[str, Any]):
         path = item_data.get("path")
         if path and os.path.exists(path):
+            if hasattr(self, "_rerender_timer") and self._rerender_timer.isActive():
+                self._rerender_timer.stop()
+                if self.current_image_data and self.current_image_data.get("path") != path:
+                    self._re_render_current_page()
             self.current_image_data = item_data
             self._evict_inactive_page_memory(path)
 
@@ -930,6 +937,11 @@ class MainWindow(QMainWindow):
                 erased = cached_erased if cached_erased is not None else mem_erased
                 cached_rendered = cached.get("rendered_img")
                 translated = cached_rendered if cached_rendered is not None else mem_translated
+                if item_data.get("style") is None and cached.get("page_style") is not None:
+                    item_data["style"] = cached["page_style"]
+                    w_row = self.page_list._item_widgets.get(item_data.get("id"))
+                    if w_row and hasattr(w_row, "refresh_style_indicator"):
+                        w_row.refresh_style_indicator()
             else:
                 blocks = mem_blocks or []
                 erased = mem_erased
@@ -1074,8 +1086,10 @@ class MainWindow(QMainWindow):
                         self.canvas_view.hud.set_page_info(curr_idx + 1, len(self.page_list.items_data))
                     else:
                         self.canvas_view.hud.set_page_info(0, len(self.page_list.items_data))
-                if translated is not None and self.isVisible():
-                    self._prefetch_adjacent_translated_page(path)
+                if self.isVisible():
+                    self._save_workspace_session()
+                    if translated is not None:
+                        self._prefetch_adjacent_translated_page(path)
 
     def _on_zoom_changed(self, zoom: float):
         """Updates zoom percentage chip on status bar and status label."""
@@ -1146,6 +1160,12 @@ class MainWindow(QMainWindow):
         blocks = self.current_image_data.get("blocks", [])
         blocks.append(new_block)
         self.current_image_data["blocks"] = blocks
+        path = self.current_image_data.get("path")
+        if path:
+            try:
+                get_cache_manager().save_page_cache(path, blocks=blocks)
+            except Exception:
+                pass
 
         # Re-set data to update overlays & inspector
         self.canvas_view.set_data(
@@ -1357,6 +1377,12 @@ class MainWindow(QMainWindow):
                             setattr(b, k, v)
                 break
         self.canvas_view.update_bubble_item(block_data)
+        path = self.current_image_data.get("path")
+        if path and blocks is not None:
+            try:
+                get_cache_manager().save_page_cache(path, blocks=blocks)
+            except Exception:
+                pass
         self._schedule_rerender()
 
     def _on_block_deleted(self, block_id: str):
@@ -1586,8 +1612,16 @@ class MainWindow(QMainWindow):
                     path,
                     blocks=full_blocks_to_save,
                     erased_img=None if has_eras else base_img,
-                    rendered_img=rendered
+                    rendered_img=rendered,
+                    page_style=self.current_image_data.get("style")
                 )
+                has_any_trans = any(
+                    bool(getattr(b, "translated_text", "") if hasattr(b, "translated_text") else b.get("translated_text", ""))
+                    for b in full_blocks_to_save
+                )
+                page_id = self.current_image_data.get("id")
+                if has_any_trans and page_id and hasattr(self.page_list, "update_item_status"):
+                    self.page_list.update_item_status(page_id, "completed", "已完成")
             self.status_label.setText("排版重绘完成并已自动保存")
         except Exception as e:
             self.status_label.setText(f"重排版失败: {e}")
@@ -1661,6 +1695,11 @@ class MainWindow(QMainWindow):
         self._on_page_selected(item_data)
         self._start_pipeline_for_page(mode="full")
 
+    def _on_retranslate_page_from_cache(self, item_data: Dict[str, Any]):
+        """Re-translates and re-renders the specified page using cached OCR text and erased background without re-running OCR."""
+        self._on_page_selected(item_data)
+        self._start_pipeline_for_page(mode="translate_only")
+
     def _on_export_page_from_list(self, item_data: Dict[str, Any]):
         """Exports the specific page requested from the context menu."""
         self._on_page_selected(item_data)
@@ -1688,6 +1727,8 @@ class MainWindow(QMainWindow):
         if hasattr(self, "status_page_label"):
             self.status_page_label.setText("PAGE: --")
         self._update_status_bubble_count(0)
+        if self.isVisible():
+            self._save_workspace_session()
         self.status_label.setText("就绪 | 页面队列已清空")
 
     def _on_source_lang_changed(self, lang: str):
@@ -1907,6 +1948,16 @@ class MainWindow(QMainWindow):
         if dialog.exec():
             new_style = dialog.applied_style
             item_data["style"] = new_style
+            path = item_data.get("path")
+            if path:
+                get_cache_manager().save_page_cache(
+                    path,
+                    page_style=new_style,
+                    clear_page_style=(new_style is None)
+                )
+            w_row = self.page_list._item_widgets.get(item_data.get("id"))
+            if w_row and hasattr(w_row, "refresh_style_indicator"):
+                w_row.refresh_style_indicator()
             self._re_render_single_page(item_data, new_style)
 
     def _open_current_page_style_dialog(self):
@@ -2244,7 +2295,13 @@ class MainWindow(QMainWindow):
             self.page_list.update_item_status(page_id, "failed", f"失败: {short_err}")
         self.toast.show_message(err_msg, "error")
 
-    def _start_batch(self, queue_items: Optional[List[Dict[str, Any]]] = None, force_retranslate: bool = False, export_dir: Optional[str] = None):
+    def _start_batch(
+        self,
+        queue_items: Optional[List[Dict[str, Any]]] = None,
+        force_retranslate: bool = False,
+        export_dir: Optional[str] = None,
+        retranslate_from_cache: bool = False
+    ):
         """Launches BatchWorker QThread for chapter queue."""
         if self.active_batch_worker and self.active_batch_worker.isRunning():
             self.active_batch_worker.cancel()
@@ -2255,9 +2312,11 @@ class MainWindow(QMainWindow):
             if hasattr(self, "retranslate_toolbar_btn"):
                 self.retranslate_toolbar_btn.setText("全部重新翻译")
             if hasattr(self.page_list, "batch_btn"):
-                self.page_list.batch_btn.setText("🚀 批量翻译 (跳过已完成)")
+                self.page_list.batch_btn.setText("批量翻译")
+            if hasattr(self.page_list, "retranslate_cached_btn"):
+                self.page_list.retranslate_cached_btn.setText("按缓存重译")
             if hasattr(self.page_list, "retranslate_all_btn"):
-                self.page_list.retranslate_all_btn.setText("🔄 全部重新翻译 (强制覆盖)")
+                self.page_list.retranslate_all_btn.setText("全部重译")
             return
 
         items = queue_items or self.page_list.items_data
@@ -2274,9 +2333,11 @@ class MainWindow(QMainWindow):
         if hasattr(self, "retranslate_toolbar_btn"):
             self.retranslate_toolbar_btn.setText("取消批处理")
         if hasattr(self.page_list, "batch_btn"):
-            self.page_list.batch_btn.setText("⏹ 取消批处理")
+            self.page_list.batch_btn.setText("⏹ 取消")
+        if hasattr(self.page_list, "retranslate_cached_btn"):
+            self.page_list.retranslate_cached_btn.setText("⏹ 取消")
         if hasattr(self.page_list, "retranslate_all_btn"):
-            self.page_list.retranslate_all_btn.setText("⏹ 取消批处理")
+            self.page_list.retranslate_all_btn.setText("⏹ 取消")
 
         # When force_retranslate is True (全部重新翻译), clear all software-generated cache files & folders first
         if force_retranslate:
@@ -2311,9 +2372,15 @@ class MainWindow(QMainWindow):
 
             self.status_label.setText("已清理旧缓存文件夹，正在启动全量重新翻译...")
             self.toast.show_message("已清理原有缓存文件夹，开始全量重新翻译...", "info")
+        elif retranslate_from_cache:
+            for it in items:
+                it["translated_img"] = None
+                it["blocks"] = None
+                if hasattr(self.page_list, "update_item_status"):
+                    self.page_list.update_item_status(it.get("id"), "processing", "待重译(缓存)")
+            self.status_label.setText("正在基于缓存中的识别文字重新翻译并渲染...")
+            self.toast.show_message("开始基于缓存直接重新翻译与排版渲染 (免重新OCR识别)...", "info")
 
-        # When export_dir is provided (e.g. Batch Export), prepare directory.
-        # When export_dir is None (Batch Translate), raster baking is deferred to eliminate GUI freeze & save disk space!
         if export_dir:
             export_dir = os.path.abspath(export_dir)
             os.makedirs(export_dir, exist_ok=True)
@@ -2323,6 +2390,7 @@ class MainWindow(QMainWindow):
             config=self.config.to_dict(),
             export_dir=export_dir,
             force_retranslate=force_retranslate,
+            retranslate_from_cache=retranslate_from_cache,
             parent=self
         )
         self.active_batch_worker.sig_batch_progress.connect(self._on_batch_progress)
@@ -2340,14 +2408,16 @@ class MainWindow(QMainWindow):
 
     def _on_batch_item_completed(self, image_id: str, result: Dict[str, Any]):
         self.page_list.update_item_status(image_id, "completed", "已完成")
-        for it in getattr(self.page_list, "items_data", []):
-            if it.get("id") == image_id:
-                it["translated_img"] = None
-                it["erased_img"] = None
-                break
+        if not result.get("skipped", False):
+            for it in getattr(self.page_list, "items_data", []):
+                if it.get("id") == image_id:
+                    it["translated_img"] = None
+                    it["erased_img"] = None
+                    it["blocks"] = None
+                    break
         # If this is the currently active page on canvas, reload immediately if batch is not actively running
         # a multi-page queue (otherwise _on_batch_finished will refresh it without stalling the worker mid-batch).
-        if self.current_image_data and self.current_image_data.get("id") == image_id:
+        if self.current_image_data and self.current_image_data.get("id") == image_id and not result.get("skipped", False):
             is_multi_batch_running = (
                 self.active_batch_worker is not None
                 and self.active_batch_worker.isRunning()
@@ -2368,9 +2438,11 @@ class MainWindow(QMainWindow):
         if hasattr(self, "retranslate_toolbar_btn"):
             self.retranslate_toolbar_btn.setText("全部重新翻译")
         if hasattr(self.page_list, "batch_btn"):
-            self.page_list.batch_btn.setText("🚀 批量翻译 (跳过已完成)")
+            self.page_list.batch_btn.setText("批量翻译")
+        if hasattr(self.page_list, "retranslate_cached_btn"):
+            self.page_list.retranslate_cached_btn.setText("按缓存重译")
         if hasattr(self.page_list, "retranslate_all_btn"):
-            self.page_list.retranslate_all_btn.setText("🔄 全部重新翻译 (强制覆盖)")
+            self.page_list.retranslate_all_btn.setText("全部重译")
         self.status_label.setText(f"批处理完成: {success_count} 成功, {fail_count} 失败")
         self.toast.show_message(f"批处理完成: {success_count} 成功, {fail_count} 失败", "success" if fail_count == 0 else "warning")
 
@@ -2607,13 +2679,67 @@ class MainWindow(QMainWindow):
             desc_r = self.undo_manager.get_redo_description()
             self.redo_btn.setToolTip(f"重做: {desc_r} (Ctrl+Y / Ctrl+Shift+Z)" if desc_r else "重做 (Ctrl+Y)")
 
+    def _save_workspace_session(self):
+        """Persists the current page list and active page path so restarting the software restores the workspace."""
+        try:
+            import json
+            items = getattr(self.page_list, "items_data", [])
+            paths = [
+                it.get("path") for it in items
+                if it.get("path") and os.path.exists(it.get("path"))
+                and not any(it.get("path", "").startswith(td) for td in getattr(self.page_list, "_temp_archive_dirs", []))
+            ]
+            active_path = self.current_image_data.get("path") if self.current_image_data else None
+            session_file = os.path.join(os.path.dirname(os.path.abspath("desktop_config.json")), ".amt_last_session.json")
+            with open(session_file, "w", encoding="utf-8") as f:
+                json.dump({"paths": paths, "active_path": active_path}, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def restore_last_session(self):
+        """Restores the last opened image list, active page, and cached modifications on software startup."""
+        try:
+            import json
+            session_file = os.path.join(os.path.dirname(os.path.abspath("desktop_config.json")), ".amt_last_session.json")
+            if not os.path.exists(session_file):
+                return
+            with open(session_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            raw_paths = data.get("paths") or []
+            valid_paths = [p for p in raw_paths if p and os.path.exists(p)]
+            if not valid_paths:
+                return
+            self.page_list.add_paths(valid_paths)
+            if self.page_list.items_data:
+                self.drop_zone.set_compact(True)
+                active_path = data.get("active_path")
+                target_idx = 0
+                if active_path:
+                    for idx, it in enumerate(self.page_list.items_data):
+                        if it.get("path") == active_path:
+                            target_idx = idx
+                            break
+                self.page_list.list_widget.setCurrentRow(target_idx)
+                self._on_page_selected(self.page_list.items_data[target_idx])
+        except Exception:
+            pass
+
     def closeEvent(self, event):
-        """Gracefully stops background workers, removes temporary archives, and reclaims memory on exit."""
+        """Flushes any pending modifications to disk cache, saves session state, stops workers, and reclaims memory on exit."""
         try:
             if hasattr(self, "_rerender_timer") and self._rerender_timer.isActive():
                 self._rerender_timer.stop()
+                self._re_render_current_page()
+            elif self.current_image_data and self.current_image_data.get("path") and self.current_image_data.get("blocks") is not None:
+                get_cache_manager().save_page_cache(
+                    self.current_image_data["path"],
+                    blocks=self.current_image_data["blocks"],
+                    page_style=self.current_image_data.get("style")
+                )
         except Exception:
             pass
+
+        self._save_workspace_session()
 
         for worker_attr in ("active_worker", "active_batch_worker", "block_worker"):
             worker = getattr(self, worker_attr, None)

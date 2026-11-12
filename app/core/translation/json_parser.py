@@ -11,6 +11,51 @@ from typing import Any, List, Dict, Optional, Set, Tuple
 from app.core.models import TranslationBlock
 
 
+
+REFUSAL_PREFIXES = (
+    "i cannot fulfill",
+    "i can't fulfill",
+    "i cannot comply",
+    "i can't comply",
+    "i am unable to",
+    "i'm unable to",
+    "i cannot translate",
+    "i can't translate",
+    "i cannot process",
+    "i can't process",
+    "i cannot assist",
+    "i can't assist",
+    "i cannot complete",
+    "i can't complete",
+    "i apologize, but",
+    "i'm sorry, but",
+    "i'm sorry, i cannot",
+    "sorry, i cannot",
+    "sorry, but i",
+    "as an ai",
+    "抱歉，我无法",
+    "对不起，我无法",
+    "很抱歉，我无法",
+    "我不能满足",
+    "无法满足您的请求",
+)
+
+
+def is_llm_refusal(raw_text: str) -> bool:
+    """Detects whether the model output is a safety/policy refusal rather than translation content."""
+    if not raw_text or not raw_text.strip():
+        return True
+    cleaned = re.sub(r'<(?:think|thought|reasoning)>[\s\S]*?</(?:think|thought|reasoning)>', '', raw_text, flags=re.IGNORECASE).strip()
+    if not cleaned:
+        return True
+    low = cleaned.lower()
+    if any(low.startswith(p) for p in REFUSAL_PREFIXES):
+        return True
+    if ("[" not in cleaned and "{" not in cleaned) and any(p in low for p in REFUSAL_PREFIXES):
+        return True
+    return False
+
+
 def parse_llm_json_response(raw_text: str) -> Any:
     """
     Extracts and normalizes structured JSON payload from model response.
@@ -181,10 +226,22 @@ def _salvage_translation_blocks(text: str) -> List[Dict[str, Any]]:
                 "type": btype
             })
 
-    # Plain text list fallback (e.g. "1. [id] translated text" or "1. translated text")
+    # Plain text list fallback (e.g. "[id] translated text", "1. [id] translated text", or "1. translated text")
     if not items:
         lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
         for line in lines:
+            m_bracket = re.match(r'^\[([a-zA-Z0-9_\-]+)\]\s*[:：]?\s*(.+)$', line)
+            if m_bracket:
+                lid = m_bracket.group(1).strip()
+                ltxt = m_bracket.group(2).strip()
+                if ltxt and not ltxt.startswith("```"):
+                    items.append({
+                        "id": lid,
+                        "original_text": "",
+                        "translated_text": ltxt,
+                        "type": "bubble"
+                    })
+                continue
             m = re.match(r'^(?:[-*]|\d+[\.\)])\s*(?:\[([a-zA-Z0-9_\-]+)\]|([a-zA-Z0-9_\-]+)\s*[:：])?\s*(.+)$', line)
             if m:
                 lid = (m.group(1) or m.group(2) or str(len(items) + 1)).strip()

@@ -81,6 +81,8 @@ class TranslationBlock:
     font_size_pct: float = 2.0
     type: str = BlockType.BUBBLE.value
     direction: str = TextDirection.AUTO.value
+    alignment: Optional[str] = None
+    status: str = ""
     confidence: float = 1.0
     reading_order: int = 0
     line_count: int = 1
@@ -95,8 +97,13 @@ class TranslationBlock:
     stroke_color_override: Optional[str] = None
     stroke_width_override: Optional[float] = None
     font_bold_override: Optional[bool] = None
+    font_italic_override: Optional[bool] = None
+    force_erase: bool = False
     angle: float = 0.0  # Rotation angle in degrees (-180.0 to 180.0)
     angle_override: Optional[float] = None
+    _orig_box: Optional[List[float]] = None
+    _orig_polygon: Optional[List[List[int]]] = None
+    _merged_boxes: Optional[List[Dict[str, Any]]] = None
 
     def __post_init__(self):
         # Validate and clamp coordinates to [0.0, 100.0]
@@ -236,8 +243,21 @@ class TranslationBlock:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> TranslationBlock:
+        if isinstance(data, cls):
+            return data
         valid_fields = {f for f in cls.__dataclass_fields__}
         filtered = {k: v for k, v in data.items() if k in valid_fields}
+        if isinstance(data.get("style"), dict):
+            st = data["style"]
+            if st.get("direction") and not filtered.get("direction"):
+                filtered["direction"] = st["direction"]
+            if st.get("font_size") and filtered.get("font_size_override") is None:
+                try:
+                    filtered["font_size_override"] = float(st["font_size"])
+                except (ValueError, TypeError):
+                    pass
+            if st.get("font_family") and not filtered.get("font_family_override"):
+                filtered["font_family_override"] = st["font_family"]
         if "translated_text" not in filtered or not filtered["translated_text"]:
             if "translation" in data and data["translation"]:
                 filtered["translated_text"] = data["translation"]

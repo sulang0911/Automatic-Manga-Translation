@@ -10,7 +10,7 @@ from typing import List, Dict, Optional, Any
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QListWidget,
-    QListWidgetItem, QToolButton, QFrame, QMenu, QFileDialog, QPushButton
+    QListWidgetItem, QToolButton, QFrame, QMenu, QFileDialog, QPushButton, QButtonGroup
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QSize
 from PyQt6.QtGui import QPixmap, QIcon, QColor, QPainter, QBrush, QDragEnterEvent, QDropEvent, QCursor
@@ -102,13 +102,12 @@ class PageItemWidget(QWidget):
         layout.setContentsMargins(6, 4, 4, 4)
         layout.setSpacing(8)
 
-        # Thumbnail (Click to open page-level style dialog)
+        # Thumbnail preview (Clicking selects the page normally without accidentally opening modal dialog)
         self.thumb_label = QLabel(self)
         self.thumb_label.setObjectName("thumbLabel")
         self.thumb_label.setFixedSize(36, 48)
         self.thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.thumb_label.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.thumb_label.setToolTip("点击单独配置本页字体与排版样式")
+        self.thumb_label.setToolTip(item_data.get("rel_path") or os.path.basename(item_data["path"]))
         self.thumb_label.setStyleSheet(
             "background-color: rgba(255, 255, 255, 0.04);"
             "border-radius: 5px;"
@@ -148,11 +147,15 @@ class PageItemWidget(QWidget):
         layout.addLayout(text_col, 1)
 
         # Subtle Action Buttons
+        has_custom_page_style = item_data.get("style") is not None
         self.style_btn = QToolButton(self)
-        self.style_btn.setIcon(get_icon("sparkles", color="#8E8E93", size=13))
-        self.style_btn.setToolTip("本页独立排版样式")
+        self.style_btn.setIcon(get_icon("sparkles", color="#0A84FF" if has_custom_page_style else "#8E8E93", size=13))
+        self.style_btn.setToolTip("配置本页独立字体与排版样式 (或双击列表项)")
         self.style_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.style_btn.setStyleSheet("border: none; background: transparent; padding: 3px; border-radius: 5px;")
+        self.style_btn.setStyleSheet(
+            "QToolButton { border: none; background: transparent; padding: 3px; border-radius: 5px; }"
+            "QToolButton:hover { background-color: rgba(10, 132, 255, 0.16); }"
+        )
         self.style_btn.clicked.connect(lambda: self.sig_edit_style.emit(self.item_data))
         layout.addWidget(self.style_btn)
 
@@ -160,7 +163,10 @@ class PageItemWidget(QWidget):
         self.remove_btn.setIcon(get_icon("close", color="#636366", size=12))
         self.remove_btn.setToolTip("从列表中移除")
         self.remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.remove_btn.setStyleSheet("border: none; background: transparent; padding: 3px; border-radius: 5px;")
+        self.remove_btn.setStyleSheet(
+            "QToolButton { border: none; background: transparent; padding: 3px; border-radius: 5px; }"
+            "QToolButton:hover { background-color: rgba(239, 68, 68, 0.16); }"
+        )
         self.remove_btn.clicked.connect(lambda: self.sig_remove.emit(self.item_id))
         layout.addWidget(self.remove_btn)
 
@@ -173,12 +179,10 @@ class PageItemWidget(QWidget):
         elif init_status in ("failed", "error"):
             self.status_dot.set_color("#EF4444")
 
-    def mousePressEvent(self, event):
-        super().mousePressEvent(event)
-        if event.button() == Qt.MouseButton.LeftButton:
-            child = self.childAt(event.pos())
-            if child == self.thumb_label:
-                self.sig_edit_style.emit(self.item_data)
+    def refresh_style_indicator(self):
+        """Updates the sparkle icon color when page-specific style is set or cleared."""
+        has_custom = self.item_data.get("style") is not None
+        self.style_btn.setIcon(get_icon("sparkles", color="#0A84FF" if has_custom else "#8E8E93", size=13))
 
     def _load_thumbnail(self, path: str, sync: bool = False):
         if not path:
@@ -243,8 +247,10 @@ class PageListWidget(QWidget):
     sig_page_removed = pyqtSignal(str)
     sig_clear_requested = pyqtSignal()
     sig_start_batch = pyqtSignal()
+    sig_start_retranslate_from_cache = pyqtSignal()
     sig_start_retranslate_all = pyqtSignal()
     sig_translate_page = pyqtSignal(dict)
+    sig_retranslate_page_from_cache = pyqtSignal(dict)
     sig_export_page = pyqtSignal(dict)
     sig_export_all = pyqtSignal()
     sig_edit_page_style = pyqtSignal(dict)
@@ -297,6 +303,59 @@ class PageListWidget(QWidget):
 
         layout.addWidget(header)
 
+        # Status Filter Bar (All / Queued / Completed / Failed)
+        self._active_filter: str = "all"
+        self.filter_bar = QWidget(self)
+        filter_layout = QHBoxLayout(self.filter_bar)
+        filter_layout.setContentsMargins(4, 0, 4, 2)
+        filter_layout.setSpacing(4)
+
+        self._filter_group = QButtonGroup(self)
+        self._filter_group.setExclusive(True)
+        self._filter_buttons: Dict[str, QPushButton] = {}
+
+        filter_specs = [
+            ("all", "全部", "显示全部漫画页面"),
+            ("queued", "待处理", "仅显示等待翻译或处理中的页面"),
+            ("completed", "已完成", "仅显示已完成翻译的页面"),
+            ("failed", "失败", "仅显示处理失败的页面"),
+        ]
+        filter_btn_qss = (
+            "QPushButton {"
+            "  background-color: rgba(255, 255, 255, 0.04);"
+            "  color: #8E8E93;"
+            "  border: 1px solid rgba(255, 255, 255, 0.07);"
+            "  border-radius: 5px;"
+            "  padding: 2px 6px;"
+            "  font-size: 10px;"
+            "  font-weight: 500;"
+            "}"
+            "QPushButton:hover {"
+            "  background-color: rgba(255, 255, 255, 0.09);"
+            "  color: #F5F5F7;"
+            "}"
+            "QPushButton:checked {"
+            "  background-color: rgba(10, 132, 255, 0.20);"
+            "  color: #0A84FF;"
+            "  border: 1px solid rgba(10, 132, 255, 0.45);"
+            "  font-weight: 600;"
+            "}"
+        )
+        for f_key, f_label, f_tip in filter_specs:
+            f_btn = QPushButton(f_label, self.filter_bar)
+            f_btn.setCheckable(True)
+            f_btn.setChecked(f_key == "all")
+            f_btn.setToolTip(f_tip)
+            f_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            f_btn.setFixedHeight(22)
+            f_btn.setStyleSheet(filter_btn_qss)
+            f_btn.clicked.connect(lambda checked, k=f_key: self.set_status_filter(k))
+            self._filter_group.addButton(f_btn)
+            self._filter_buttons[f_key] = f_btn
+            filter_layout.addWidget(f_btn, 1)
+
+        layout.addWidget(self.filter_bar)
+
         # List Widget
         self.list_widget = QListWidget(self)
         self.list_widget.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
@@ -315,20 +374,32 @@ class PageListWidget(QWidget):
 
         self.batch_btn = QPushButton("批量翻译", self)
         self.batch_btn.setProperty("class", "primaryBtn")
-        self.batch_btn.setIcon(get_icon("play_all", color="#FFFFFF", size=12))
-        self.batch_btn.setToolTip("批量翻译全部页面 (自动跳过已完成页面)")
+        self.batch_btn.setIcon(get_icon("play_all", color="#FFFFFF", size=11))
+        self.batch_btn.setToolTip("批量翻译未完成页面 (直接跳过已完成页面，不检查渲染与导出)")
         self.batch_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.batch_btn.setEnabled(False)
         self.batch_btn.setFixedHeight(30)
+        self.batch_btn.setStyleSheet("font-size: 11px; padding: 2px 6px;")
         self.batch_btn.clicked.connect(self.sig_start_batch.emit)
         btn_layout.addWidget(self.batch_btn, 3)
 
+        self.retranslate_cached_btn = QPushButton("按缓存重译", self)
+        self.retranslate_cached_btn.setIcon(get_icon("sparkles", color="#0A84FF", size=11))
+        self.retranslate_cached_btn.setToolTip("根据缓存中已识别的文字直接重新翻译并渲染排版 (免重新OCR识别)")
+        self.retranslate_cached_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.retranslate_cached_btn.setEnabled(False)
+        self.retranslate_cached_btn.setFixedHeight(30)
+        self.retranslate_cached_btn.setStyleSheet("font-size: 11px; padding: 2px 6px;")
+        self.retranslate_cached_btn.clicked.connect(self.sig_start_retranslate_from_cache.emit)
+        btn_layout.addWidget(self.retranslate_cached_btn, 3)
+
         self.retranslate_all_btn = QPushButton("全部重译", self)
-        self.retranslate_all_btn.setIcon(get_icon("refresh", color="#98989D", size=12))
-        self.retranslate_all_btn.setToolTip("清除缓存并强制重新翻译全部页面")
+        self.retranslate_all_btn.setIcon(get_icon("refresh", color="#98989D", size=11))
+        self.retranslate_all_btn.setToolTip("清除缓存并从头重新识别(OCR)、擦除与翻译全部页面")
         self.retranslate_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.retranslate_all_btn.setEnabled(False)
         self.retranslate_all_btn.setFixedHeight(30)
+        self.retranslate_all_btn.setStyleSheet("font-size: 11px; padding: 2px 6px;")
         self.retranslate_all_btn.clicked.connect(self.sig_start_retranslate_all.emit)
         btn_layout.addWidget(self.retranslate_all_btn, 2)
 
@@ -439,6 +510,14 @@ class PageListWidget(QWidget):
                     status = "queued"
                     status_text = "等待中"
 
+                saved_style = None
+                try:
+                    c_paths = cache_mgr.get_cache_paths(path, create_dir=False)
+                    if os.path.exists(c_paths.get("style_json", "")):
+                        saved_style = cache_mgr.load_page_cache(path, load_images=False).get("page_style")
+                except Exception:
+                    saved_style = None
+
                 item_data = {
                     "id": str(uuid.uuid4()),
                     "path": path,
@@ -446,6 +525,7 @@ class PageListWidget(QWidget):
                     "root_dir": entry["root_dir"],
                     "status": status,
                     "status_text": status_text,
+                    "style": saved_style,
                 }
                 new_items.append(item_data)
                 self.items_data.append(item_data)
@@ -536,14 +616,65 @@ class PageListWidget(QWidget):
         widget = self._item_widgets.get(item_id)
         if widget:
             widget.update_status(status, message)
+        self._update_filter_counts()
+        self._apply_status_filter()
+
+    def set_status_filter(self, filter_key: str):
+        """Filters visible items in list_widget by status ('all', 'queued', 'completed', 'failed') without altering indices."""
+        self._active_filter = filter_key
+        if hasattr(self, "_filter_buttons") and filter_key in self._filter_buttons:
+            btn = self._filter_buttons[filter_key]
+            if not btn.isChecked():
+                btn.setChecked(True)
+        self._apply_status_filter()
+
+    def _matches_filter(self, status_val: str) -> bool:
+        flt = getattr(self, "_active_filter", "all")
+        if flt == "all":
+            return True
+        st = str(status_val or "queued").lower()
+        if flt == "completed":
+            return st in ("completed", "done")
+        if flt == "failed":
+            return st in ("failed", "error")
+        if flt == "queued":
+            return st in ("queued", "pending", "processing")
+        return True
+
+    def _apply_status_filter(self):
+        if not hasattr(self, "list_widget"):
+            return
+        for row, item_data in enumerate(self.items_data):
+            if row < self.list_widget.count():
+                list_item = self.list_widget.item(row)
+                if list_item is not None:
+                    visible = self._matches_filter(item_data.get("status", "queued"))
+                    list_item.setHidden(not visible)
+
+    def _update_filter_counts(self):
+        if not hasattr(self, "_filter_buttons"):
+            return
+        total = len(self.items_data)
+        done_cnt = sum(1 for it in self.items_data if str(it.get("status", "queued")).lower() in ("completed", "done"))
+        fail_cnt = sum(1 for it in self.items_data if str(it.get("status", "queued")).lower() in ("failed", "error"))
+        queue_cnt = total - done_cnt - fail_cnt
+
+        self._filter_buttons["all"].setText(f"全部({total})" if total > 0 else "全部")
+        self._filter_buttons["queued"].setText(f"待译({queue_cnt})" if queue_cnt > 0 else "待译")
+        self._filter_buttons["completed"].setText(f"完成({done_cnt})" if done_cnt > 0 else "已完成")
+        self._filter_buttons["failed"].setText(f"失败({fail_cnt})" if fail_cnt > 0 else "失败")
 
     def _update_count(self):
         count = len(self.items_data)
         self.count_badge.setText(f"{count} 页")
         if hasattr(self, "batch_btn"):
             self.batch_btn.setEnabled(count > 0)
+        if hasattr(self, "retranslate_cached_btn"):
+            self.retranslate_cached_btn.setEnabled(count > 0)
         if hasattr(self, "retranslate_all_btn"):
             self.retranslate_all_btn.setEnabled(count > 0)
+        self._update_filter_counts()
+        self._apply_status_filter()
         self.sig_count_changed.emit(count)
 
     def _on_item_double_clicked(self, item: QListWidgetItem):
@@ -565,11 +696,13 @@ class PageListWidget(QWidget):
         menu = QMenu(self)
         act_style = menu.addAction(get_icon("sparkles", color="#0A84FF", size=14), "单页文字排版设置...")
         act_translate = menu.addAction(get_icon("play", color="#0A84FF", size=14), "翻译此页面")
-        act_retranslate_this = menu.addAction(get_icon("refresh", color="#FF9F0A", size=14), "重新翻译此页面")
+        act_retranslate_cached_this = menu.addAction(get_icon("sparkles", color="#0A84FF", size=14), "按缓存重译此页 (免重新识别)")
+        act_retranslate_this = menu.addAction(get_icon("refresh", color="#FF9F0A", size=14), "完全重译此页面 (清除缓存重识别)")
         act_export = menu.addAction(get_icon("download", color="#30D158", size=14), "导出此页面...")
         act_export_all = menu.addAction(get_icon("download", color="#0A84FF", size=14), "批量导出全本页面...")
         menu.addSeparator()
-        act_retranslate_all = menu.addAction(get_icon("play_all", color="#FF9F0A", size=14), "批量重新翻译全部页面...")
+        act_retranslate_cached_all = menu.addAction(get_icon("sparkles", color="#0A84FF", size=14), "批量按缓存重译全部页面 (免重新识别)...")
+        act_retranslate_all = menu.addAction(get_icon("play_all", color="#FF9F0A", size=14), "批量完全重译全部页面 (清除缓存)...")
         menu.addSeparator()
         act_locate = menu.addAction(get_icon("folder_open", color="#98989D", size=14), "在访达/资源管理器中显示")
         menu.addSeparator()
@@ -581,6 +714,10 @@ class PageListWidget(QWidget):
             self.sig_edit_page_style.emit(data)
         elif chosen == act_translate:
             self.sig_translate_page.emit(data)
+        elif chosen == act_retranslate_cached_this:
+            self.sig_retranslate_page_from_cache.emit(data)
+        elif chosen == act_retranslate_cached_all:
+            self.sig_start_retranslate_from_cache.emit()
         elif chosen == act_retranslate_this:
             if path:
                 get_cache_manager().clear_cache(path)

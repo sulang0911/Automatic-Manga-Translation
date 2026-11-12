@@ -35,6 +35,7 @@ class BatchWorker(QThread):
         export_dir: str = "",
         root_dir: Optional[str] = None,
         force_retranslate: bool = False,
+        retranslate_from_cache: bool = False,
         parent=None
     ):
         super().__init__(parent)
@@ -43,6 +44,7 @@ class BatchWorker(QThread):
         self.export_dir = export_dir
         self.root_dir = root_dir
         self.force_retranslate = force_retranslate
+        self.retranslate_from_cache = retranslate_from_cache
         self._is_cancelled = False
         self._is_paused = False
 
@@ -170,89 +172,77 @@ class BatchWorker(QThread):
             try:
                 export_path = self.resolve_export_path(item)
 
-                # 1. Check for full cache breakpoint resumption (skipped when force_retranslate is True or language mismatch)
-                cached_is_valid = False
-                if not self.force_retranslate and cache_mgr.is_fully_translated(img_path):
-                    if is_auto_source_lang(effective_source):
-                        cached_is_valid = True
-                    else:
-                        cached_meta = cache_mgr.load_page_cache(img_path, load_images=False)
-                        sample_text = " ".join(str(b.get("original_text", "")) if isinstance(b, dict) else str(getattr(b, "original_text", "")) for b in cached_meta.get("blocks", [])[:5])
-                        has_kana = any('\u3040' <= c <= '\u309f' or '\u30a0' <= c <= '\u30ff' for c in sample_text)
-                        has_hangul = any('\uac00' <= c <= '\ud7af' or '\u1100' <= c <= '\u11ff' for c in sample_text)
-                        norm_src = normalize_source_lang(effective_source)
-                        if norm_src == "en" and (has_kana or has_hangul):
-                            cached_is_valid = False
-                        elif norm_src == "ko" and has_kana and not has_hangul:
-                            cached_is_valid = False
-                        elif norm_src == "ja" and has_hangul and not has_kana:
-                            cached_is_valid = False
+                # 1. Fast skip for already completed pages when running normal Batch Translate (skip completed directly without checking render/export)
+                if not self.force_retranslate and not self.retranslate_from_cache:
+                    is_done_status = str(item.get("status", "")).lower() in ("completed", "done")
+                    is_cache_done = is_done_status or cache_mgr.is_fully_translated(img_path)
+                    if is_cache_done:
+                        need_export_file = bool(export_path and not os.path.exists(export_path))
+                        if not need_export_file:
+                            self.sig_batch_progress.emit(idx + 1, total, filename, 100, "已跳过(已完成)")
+                            self.sig_item_completed.emit(img_id, {
+                                "has_cache": True,
+                                "skipped": True,
+                                "blocks_count": len(item.get("blocks") or []),
+                                "export_path": export_path
+                            })
+                            success_count += 1
+                            continue
                         else:
-                            cached_is_valid = True
+                            # Batch export mode: export from cache directly
+                            self.sig_batch_progress.emit(idx + 1, total, filename, 90, "正在从缓存导出页面...")
+                            full_c = cache_mgr.load_page_cache(img_path, load_images=True)
+                            rendered_to_export = full_c.get("rendered_img")
+                            if rendered_to_export is None:
+                                base_bg = full_c.get("erased_img")
+                                if base_bg is None:
+                                    base_bg = safe_cv2_imread(img_path)
+                                if base_bg is not None:
+                                    c_blocks = full_c.get("blocks", [])
+                                    eff_cfg = item.get("style") or full_c.get("page_style") or self.config
+                                    onoma_mode = "normal"
+                                    if hasattr(eff_cfg, "onomatopoeia_mode"):
+                                        onoma_mode = getattr(eff_cfg, "onomatopoeia_mode", "normal")
+                                    elif hasattr(eff_cfg, "style"):
+                                        onoma_mode = getattr(eff_cfg.style, "onomatopoeia_mode", "normal")
+                                    elif isinstance(eff_cfg, dict):
+                                        style_cfg = eff_cfg.get("style", eff_cfg)
+                                        if isinstance(style_cfg, dict):
+                                            onoma_mode = style_cfg.get("onomatopoeia_mode", "normal")
 
-                if cached_is_valid:
-                    self.sig_batch_progress.emit(idx + 1, total, filename, 90, "已命中本地缓存，正在检查渲染与导出...")
-                    cached_data = cache_mgr.load_page_cache(img_path, load_images=False)
-                    has_legacy_cyan = any(
-                        str((getattr(b, "text_color", "") if hasattr(b, "text_color") else b.get("text_color", "")) or "").upper() == "#3CE8F5"
-                        for b in cached_data.get("blocks", [])
-                    )
-                    c_stat_now = cache_mgr.has_cache(img_path)
-                    need_render_cache = (not c_stat_now.get("rendered", False)) or has_legacy_cyan
-                    need_export_file = bool(export_path and not os.path.exists(export_path))
-                    if need_render_cache or need_export_file:
-                        full_c = cache_mgr.load_page_cache(img_path, load_images=True)
-                        rendered_to_export = None if has_legacy_cyan else full_c.get("rendered_img")
-                        if rendered_to_export is None:
-                            base_bg = full_c.get("erased_img")
-                            orig_for_color = safe_cv2_imread(img_path) if has_legacy_cyan else None
-                            if base_bg is None:
-                                base_bg = orig_for_color if orig_for_color is not None else safe_cv2_imread(img_path)
-                            if base_bg is not None:
-                                c_blocks = cached_data.get("blocks", [])
-                                if orig_for_color is not None:
-                                    refresh_blocks_text_colors(orig_for_color, c_blocks)
-                                onoma_mode = "normal"
+                                    render_blocks = [
+                                        b for b in c_blocks 
+                                        if (b.type if hasattr(b, "type") else b.get("type", "")) != "onomatopoeia" or onoma_mode != "ignore" or (b.force_erase if hasattr(b, "force_erase") else b.get("force_erase", False))
+                                    ]
+                                    rendered_to_export = typo_eng.render_translations(base_bg, render_blocks, eff_cfg)
+                                    if rendered_to_export is not None:
+                                        cache_mgr.save_page_cache(img_path, rendered_img=rendered_to_export)
+                                del base_bg
+                            if rendered_to_export is not None:
+                                compressed = False
                                 if hasattr(self.config, "style"):
-                                    onoma_mode = getattr(self.config.style, "onomatopoeia_mode", "normal")
+                                    compressed = getattr(self.config.style, "export_compressed", False)
                                 elif isinstance(self.config, dict):
                                     style_cfg = self.config.get("style", {})
                                     if isinstance(style_cfg, dict):
-                                        onoma_mode = style_cfg.get("onomatopoeia_mode", "normal")
-
-                                render_blocks = [
-                                    b for b in c_blocks 
-                                    if (b.type if hasattr(b, "type") else b.get("type", "")) != "onomatopoeia" or onoma_mode != "ignore" or (b.force_erase if hasattr(b, "force_erase") else b.get("force_erase", False))
-                                ]
-                                rendered_to_export = typo_eng.render_translations(base_bg, render_blocks, self.config)
-                                if rendered_to_export is not None:
-                                    cache_mgr.save_page_cache(img_path, rendered_img=rendered_to_export)
-                            del base_bg
-                        if need_export_file and rendered_to_export is not None:
-                            compressed = False
-                            if hasattr(self.config, "style"):
-                                compressed = getattr(self.config.style, "export_compressed", False)
-                            elif isinstance(self.config, dict):
-                                style_cfg = self.config.get("style", {})
-                                if isinstance(style_cfg, dict):
-                                    compressed = style_cfg.get("export_compressed", False)
-                            MangaExporter.export_hierarchical_image(
-                                rendered_to_export,
-                                export_path,
-                                source_path=img_path,
-                                compressed=compressed
-                            )
-                        del rendered_to_export, full_c
-                        cleanup_gpu_memory(trim_ram=False)
-
-                    self.sig_batch_progress.emit(idx + 1, total, filename, 100, "秒速恢复(缓存)")
-                    self.sig_item_completed.emit(img_id, {
-                        "has_cache": True,
-                        "blocks_count": len(cached_data.get("blocks", [])),
-                        "export_path": export_path
-                    })
-                    success_count += 1
-                    continue
+                                        compressed = style_cfg.get("export_compressed", False)
+                                MangaExporter.export_hierarchical_image(
+                                    rendered_to_export,
+                                    export_path,
+                                    source_path=img_path,
+                                    compressed=compressed
+                                )
+                            blocks_cnt = len(full_c.get("blocks", []))
+                            del rendered_to_export, full_c
+                            cleanup_gpu_memory(trim_ram=False)
+                            self.sig_batch_progress.emit(idx + 1, total, filename, 100, "已导出(缓存)")
+                            self.sig_item_completed.emit(img_id, {
+                                "has_cache": True,
+                                "blocks_count": blocks_cnt,
+                                "export_path": export_path
+                            })
+                            success_count += 1
+                            continue
 
                 # 2. Need processing: Load original image safely
                 self.sig_batch_progress.emit(idx + 1, total, filename, 10, "正在读取图像...")
@@ -266,7 +256,7 @@ class BatchWorker(QThread):
                 reuse_ocr_cache = False
                 if cache_status["blocks"]:
                     cached_blocks = cache_mgr.load_page_cache(img_path, load_images=False)["blocks"]
-                    if is_auto_source_lang(effective_source):
+                    if self.retranslate_from_cache or is_auto_source_lang(effective_source):
                         reuse_ocr_cache = True
                     else:
                         norm_src = normalize_source_lang(effective_source)
@@ -325,7 +315,7 @@ class BatchWorker(QThread):
                 cleanup_gpu_memory(trim_ram=False)
 
                 # 5. Translate Stage (Check if blocks already have translations)
-                if self.force_retranslate:
+                if self.force_retranslate or self.retranslate_from_cache:
                     for b in blocks:
                         if isinstance(b, dict):
                             b["translated_text"] = ""
@@ -361,7 +351,8 @@ class BatchWorker(QThread):
                     b for b in blocks 
                     if (getattr(b, "type", "") if hasattr(b, "type") else b.get("type", "")) != "onomatopoeia" or onoma_mode != "ignore" or (getattr(b, "force_erase", False) if hasattr(b, "force_erase") else b.get("force_erase", False))
                 ]
-                translated_img = typo_eng.render_translations(base_bg, render_blocks, self.config)
+                eff_render_cfg = item.get("style") or cache_mgr.load_page_cache(img_path, load_images=False).get("page_style") or self.config
+                translated_img = typo_eng.render_translations(base_bg, render_blocks, eff_render_cfg)
                 del base_bg
 
                 if export_path and translated_img is not None:

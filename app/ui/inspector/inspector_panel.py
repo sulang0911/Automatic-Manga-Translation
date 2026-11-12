@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QSplitter, QScrollArea, QColorDialog, QMenu
 )
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QKeySequence, QShortcut
+from PyQt6.QtGui import QColor, QKeySequence, QShortcut, QPixmap, QPainter, QIcon, QPen, QBrush
 
 from app.core.config import AppConfig
 from app.core.models import StrokeMode
@@ -42,6 +42,7 @@ class InspectorPanel(QFrame):
     """
     sig_re_render_requested = pyqtSignal()
     sig_translate_page_requested = pyqtSignal()
+    sig_batch_retranslate_cached_requested = pyqtSignal()
     sig_erase_page_requested = pyqtSignal()
     sig_export_page_requested = pyqtSignal()
     sig_open_export_dir_requested = pyqtSignal()
@@ -99,9 +100,14 @@ class InspectorPanel(QFrame):
 
         top_header = QHBoxLayout()
         top_header.setContentsMargins(2, 0, 2, 0)
+        top_header.setSpacing(6)
         self.bubble_count_lbl = QLabel("对话气泡 (0)", top_container)
         self.bubble_count_lbl.setStyleSheet("font-weight: 600; font-size: 12px; color: #98989D;")
         top_header.addWidget(self.bubble_count_lbl)
+
+        self.bubble_status_summary_lbl = QLabel("", top_container)
+        self.bubble_status_summary_lbl.setStyleSheet("font-size: 10px; color: #636366;")
+        top_header.addWidget(self.bubble_status_summary_lbl)
         top_header.addStretch()
 
         self.btn_add_bubble = QPushButton("新建", top_container)
@@ -487,12 +493,21 @@ class InspectorPanel(QFrame):
         lbl_pipeline.setStyleSheet("font-size: 11px; font-weight: 600; color: #98989D;")
         layout.addWidget(lbl_pipeline)
 
-        self.btn_translate = QPushButton("仅重新翻译文本 (LLM)", widget)
+        self.btn_translate = QPushButton("按缓存重译本页并渲染 (免OCR)", widget)
         self.btn_translate.setIcon(get_icon("sparkles", color="#0A84FF", size=13))
         self.btn_translate.setFixedHeight(30)
+        self.btn_translate.setToolTip("根据缓存中已识别到的文字，免重新识别(OCR)，直接重新翻译并渲染当前页面")
         self.btn_translate.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_translate.clicked.connect(self.sig_translate_page_requested.emit)
         layout.addWidget(self.btn_translate)
+
+        self.btn_batch_retranslate_cached = QPushButton("批量按缓存重译全部页面 (免OCR)", widget)
+        self.btn_batch_retranslate_cached.setIcon(get_icon("refresh", color="#0A84FF", size=13))
+        self.btn_batch_retranslate_cached.setFixedHeight(30)
+        self.btn_batch_retranslate_cached.setToolTip("对列表中所有页面直接使用缓存中的识别文字重新翻译并渲染，无需重新OCR识别")
+        self.btn_batch_retranslate_cached.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_batch_retranslate_cached.clicked.connect(self.sig_batch_retranslate_cached_requested.emit)
+        layout.addWidget(self.btn_batch_retranslate_cached)
 
         self.btn_erase = QPushButton("仅重新擦除背景文字 (Inpaint)", widget)
         self.btn_erase.setIcon(get_icon("eraser", color="#98989D", size=13))
@@ -507,6 +522,128 @@ class InspectorPanel(QFrame):
     # -------------------------------------------------------------------------
     # Public Data Synchronization
     # -------------------------------------------------------------------------
+    @staticmethod
+    def _has_block_style_override(b: Dict[str, Any]) -> bool:
+        return any(
+            b.get(k) is not None
+            for k in (
+                "font_family_override",
+                "font_size_override",
+                "font_bold_override",
+                "stroke_mode_override",
+                "stroke_width_override",
+                "text_color_override",
+                "angle_override",
+            )
+        )
+
+    @staticmethod
+    def _build_color_swatch_icon(primary_hex: str, line_colors: Optional[List[str]] = None, has_override: bool = False) -> QIcon:
+        pix = QPixmap(14, 14)
+        pix.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pix)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        distinct_cols: List[str] = []
+        if line_colors and not has_override:
+            for c in line_colors:
+                c_up = str(c or "").strip().upper()
+                if c_up.startswith("#") and len(c_up) == 7 and c_up not in distinct_cols:
+                    distinct_cols.append(c_up)
+
+        if len(distinct_cols) >= 2:
+            c1 = QColor(distinct_cols[0])
+            c2 = QColor(distinct_cols[1])
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(c1))
+            painter.drawPie(2, 2, 10, 10, 90 * 16, 180 * 16)
+            painter.setBrush(QBrush(c2))
+            painter.drawPie(2, 2, 10, 10, 270 * 16, 180 * 16)
+        else:
+            c_main = QColor(primary_hex if (primary_hex and str(primary_hex).startswith("#")) else "#000000")
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(c_main))
+            painter.drawEllipse(2, 2, 10, 10)
+
+        ring_color = QColor("#0A84FF") if has_override else QColor(255, 255, 255, 110)
+        pen = QPen(ring_color, 1.4 if has_override else 1.0)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(2, 2, 10, 10)
+        painter.end()
+        return QIcon(pix)
+
+    def _format_bubble_list_item(self, item: QListWidgetItem, idx: int, b: Dict[str, Any]):
+        orig_raw = str(b.get("original_text", "") or "").strip()
+        trans_raw = str(b.get("translated_text", "") or "").strip()
+        orig = orig_raw.replace("\n", " ")[:18]
+        trans = trans_raw.replace("\n", " ")[:18]
+        display_txt = trans if trans else (orig if orig else "(空文本)")
+
+        btype = b.get("type", "bubble")
+        has_override = self._has_block_style_override(b)
+        is_untranslated = bool(orig_raw and not trans_raw)
+
+        direction = str(b.get("direction", "auto") or "auto").lower()
+        if direction == "vertical":
+            dir_tag = "↕"
+        elif direction == "horizontal":
+            dir_tag = "↔"
+        else:
+            h_box = abs(float(b.get("ymax", 0)) - float(b.get("ymin", 0)))
+            w_box = abs(float(b.get("xmax", 0)) - float(b.get("xmin", 0)))
+            dir_tag = "↕" if h_box > w_box * 1.15 else "↔"
+
+        badges: List[str] = [dir_tag]
+        if btype == "onomatopoeia":
+            badges.append("拟声")
+        if is_untranslated:
+            badges.append("未译")
+        if has_override:
+            badges.append("✦样式")
+
+        badge_str = " · ".join(badges)
+        prefix = f"#{idx+1:02d} [{badge_str}]"
+        item.setText(f"{prefix}  {display_txt}")
+
+        eff_color = b.get("text_color_override") or b.get("text_color") or "#000000"
+        line_cols = b.get("line_colors")
+        item.setIcon(self._build_color_swatch_icon(eff_color, line_cols, has_override=has_override))
+
+        if is_untranslated:
+            item.setForeground(QBrush(QColor("#FF9F0A")))
+        else:
+            item.setData(Qt.ItemDataRole.ForegroundRole, None)
+
+        tip_lines = [
+            f"气泡 #{idx+1:02d} ({'拟声词' if btype == 'onomatopoeia' else '对话框'} · {'竖排' if dir_tag == '↕' else '横排'})",
+            f"原文: {orig_raw[:60] or '(无)'}",
+            f"译文: {trans_raw[:60] or '(未翻译)'}",
+            f"文字颜色: {eff_color}" + (" (独立覆盖)" if has_override else " (自动识别)"),
+        ]
+        item.setToolTip("\n".join(tip_lines))
+
+    def _update_bubble_summary_badge(self):
+        if not hasattr(self, "bubble_status_summary_lbl"):
+            return
+        total = len(self.current_blocks)
+        if total == 0:
+            self.bubble_status_summary_lbl.setText("")
+            return
+        trans_cnt = sum(1 for b in self.current_blocks if str(b.get("translated_text", "") or "").strip())
+        override_cnt = sum(1 for b in self.current_blocks if self._has_block_style_override(b))
+        parts = [f"已译 {trans_cnt}/{total}"]
+        if override_cnt > 0:
+            parts.append(f"✦{override_cnt} 独立样式")
+        self.bubble_status_summary_lbl.setText(" · ".join(parts))
+
+    def _refresh_current_bubble_list_item(self):
+        curr_item = self.bubble_list.currentItem()
+        curr_row = self.bubble_list.currentRow()
+        if curr_item and self.selected_block and 0 <= curr_row < len(self.current_blocks):
+            self._format_bubble_list_item(curr_item, curr_row, self.selected_block)
+        self._update_bubble_summary_badge()
+
     def set_blocks(self, blocks: List[Any]):
         """Populates the bubble list from TranslationBlock objects or dicts."""
         self.current_blocks = [
@@ -519,14 +656,11 @@ class InspectorPanel(QFrame):
             self.bubble_list.clear()
             count = len(self.current_blocks)
             self.bubble_count_lbl.setText(f"对话气泡 ({count})")
+            self._update_bubble_summary_badge()
 
             for idx, b in enumerate(self.current_blocks):
-                orig = b.get("original_text", "").replace("\n", " ")[:18]
-                trans = b.get("translated_text", "").replace("\n", " ")[:18]
-                display_txt = trans if trans else (orig if orig else "(空文本)")
-                btype = b.get("type", "bubble")
-                prefix = f"#{idx+1:02d}" if btype == "bubble" else f"#{idx+1:02d} · 拟声"
-                item = QListWidgetItem(f"{prefix}   {display_txt}")
+                item = QListWidgetItem()
+                self._format_bubble_list_item(item, idx, b)
                 item.setData(Qt.ItemDataRole.UserRole, b)
                 self.bubble_list.addItem(item)
 
@@ -694,15 +828,7 @@ class InspectorPanel(QFrame):
             self.selected_block["translated_text"] = self.trans_text_edit.toPlainText()
             self.sig_block_updated.emit(self.selected_block)
 
-            curr_item = self.bubble_list.currentItem()
-            curr_row = self.bubble_list.currentRow()
-            if curr_item:
-                trans = self.selected_block.get("translated_text", "").replace("\n", " ")[:18]
-                orig = self.selected_block.get("original_text", "").replace("\n", " ")[:18]
-                display_txt = trans if trans else (orig if orig else "(空文本)")
-                btype = self.selected_block.get("type", "bubble")
-                prefix = f"#{curr_row+1:02d}" if btype == "bubble" else f"#{curr_row+1:02d} · 拟声"
-                curr_item.setText(f"{prefix}   {display_txt}")
+            self._refresh_current_bubble_list_item()
 
         self.sig_re_render_requested.emit()
 
@@ -725,6 +851,7 @@ class InspectorPanel(QFrame):
     def _on_trans_text_changed(self):
         if self.selected_block:
             self.selected_block["translated_text"] = self.trans_text_edit.toPlainText()
+            self._refresh_current_bubble_list_item()
             self.sig_block_updated.emit(self.selected_block)
 
     def _on_type_changed(self, new_type: str):
@@ -739,6 +866,7 @@ class InspectorPanel(QFrame):
             else:
                 self.force_erase_cb.setVisible(False)
 
+            self._refresh_current_bubble_list_item()
             self.sig_block_updated.emit(self.selected_block)
 
     def _on_force_erase_changed(self, state: int):
@@ -972,6 +1100,7 @@ class InspectorPanel(QFrame):
             self.selected_block["text_color_override"] = self._block_custom_color
             self.selected_block["angle_override"] = float(self.block_angle_slider.value())
 
+        self._refresh_current_bubble_list_item()
         self.sig_block_updated.emit(self.selected_block)
         self.sig_re_render_requested.emit()
 
@@ -1031,6 +1160,7 @@ class InspectorPanel(QFrame):
         text_fg = "#000000" if hex_color.upper() in ("#FFFFFF", "#FFF") else "#FFFFFF"
         self.block_color_btn.setStyleSheet(f"background-color: {hex_color}; color: {text_fg}; font-size: 11px; border-radius: 6px;")
         self.selected_block["text_color_override"] = hex_color
+        self._refresh_current_bubble_list_item()
         self.sig_block_updated.emit(self.selected_block)
         self.sig_re_render_requested.emit()
 
@@ -1043,6 +1173,7 @@ class InspectorPanel(QFrame):
             text_fg = "#000000" if self._block_custom_color.upper() in ("#FFFFFF", "#FFF") else "#FFFFFF"
             self.block_color_btn.setStyleSheet(f"background-color: {self._block_custom_color}; color: {text_fg}; font-size: 11px; border-radius: 6px;")
             self.selected_block["text_color_override"] = self._block_custom_color
+            self._refresh_current_bubble_list_item()
             self.sig_block_updated.emit(self.selected_block)
             self.sig_re_render_requested.emit()
 
@@ -1084,5 +1215,6 @@ class InspectorPanel(QFrame):
         self.block_angle_slider.setValue(int(round(orig_ang)))
         self.block_angle_lbl.setText(f"{orig_ang:+.1f}°" if orig_ang != 0 else "0.0°")
         self.block_angle_slider.blockSignals(False)
+        self._refresh_current_bubble_list_item()
         self.sig_block_updated.emit(self.selected_block)
         self.sig_re_render_requested.emit()

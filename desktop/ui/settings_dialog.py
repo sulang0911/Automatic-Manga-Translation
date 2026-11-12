@@ -175,7 +175,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(QLabel("服务提供商:"))
         self.llm_provider_combo = QComboBox()
         _configure_combo_popup(self.llm_provider_combo)
-        self.llm_provider_combo.addItems(["DeepSeek", "OpenAI", "Google Gemini", "自定义 API (OpenAI 兼容)"])
+        self.llm_provider_combo.addItems(["DeepSeek", "OpenAI", "Google Gemini", "Antigravity (Gemini 反代兼容)", "自定义 API (OpenAI 兼容)"])
         layout.addWidget(self.llm_provider_combo)
 
         # API Key
@@ -407,7 +407,8 @@ class SettingsDialog(QDialog):
         prov = cfg.get("provider", "deepseek")
         if prov == "openai": self.llm_provider_combo.setCurrentIndex(1)
         elif prov == "gemini": self.llm_provider_combo.setCurrentIndex(2)
-        elif prov == "custom": self.llm_provider_combo.setCurrentIndex(3)
+        elif "antigravity" in str(prov): self.llm_provider_combo.setCurrentIndex(3)
+        elif prov == "custom": self.llm_provider_combo.setCurrentIndex(4)
         else: self.llm_provider_combo.setCurrentIndex(0)
 
         self.api_key_input.setText(cfg.get("api_key", ""))
@@ -453,7 +454,7 @@ class SettingsDialog(QDialog):
         self.export_dir_input.setText(cfg.get("recent_export_dir", ""))
 
     def _run_connection_test(self):
-        prov_map = ["deepseek", "openai", "gemini", "custom"]
+        prov_map = ["deepseek", "openai", "gemini", "antigravity", "custom"]
         provider = prov_map[self.llm_provider_combo.currentIndex()]
         api_key = self.api_key_input.text().strip()
         custom_endpoint = self.endpoint_input.text().strip()
@@ -495,7 +496,7 @@ class SettingsDialog(QDialog):
             )
 
     def _save_and_close(self):
-        prov_map = ["deepseek", "openai", "gemini", "custom"]
+        prov_map = ["deepseek", "openai", "gemini", "antigravity", "custom"]
         ocr_map = ["ctd", "paddle", "paddle_manga", "easyocr", "cpu_paddle"]
         inpaint_map = ["auto", "opencv_telea", "opencv_ns"]
         onoma_map = ["normal", "transparent", "ignore"]

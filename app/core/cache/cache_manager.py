@@ -13,7 +13,7 @@ from typing import List, Dict, Any, Optional, Tuple
 import cv2
 import numpy as np
 
-from app.core.models import TranslationBlock
+from app.core.models import TranslationBlock, StyleConfig
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +113,7 @@ class MangaCacheManager:
             "erased_webp": os.path.join(cache_dir, f"{base_name}.erased.webp"),
             "erased_png": os.path.join(cache_dir, f"{base_name}.erased.png"),
             "blocks_json": os.path.join(cache_dir, f"{base_name}.blocks.json"),
+            "style_json": os.path.join(cache_dir, f"{base_name}.style.json"),
             "rendered_webp": os.path.join(cache_dir, f"{base_name}.rendered.webp"),
             "rendered_png": os.path.join(cache_dir, f"{base_name}.rendered.png"),
         }
@@ -178,7 +179,9 @@ class MangaCacheManager:
         image_path: str,
         erased_img: Optional[np.ndarray] = None,
         blocks: Optional[List[Any]] = None,
-        rendered_img: Optional[np.ndarray] = None
+        rendered_img: Optional[np.ndarray] = None,
+        page_style: Optional[Any] = None,
+        clear_page_style: bool = False
     ) -> Dict[str, str]:
         """
         Persists intermediate translation results to disk.
@@ -214,6 +217,14 @@ class MangaCacheManager:
             with open(paths["blocks_json"], "w", encoding="utf-8") as f:
                 json.dump(serialized_blocks, f, ensure_ascii=False, indent=2)
             saved["blocks"] = paths["blocks_json"]
+            try:
+                st = os.stat(paths["blocks_json"])
+                has_tr = any(bool(b.get("translated_text", "").strip()) for b in serialized_blocks if isinstance(b, dict))
+                self._translated_memo[paths["blocks_json"]] = (st.st_mtime, st.st_size, has_tr)
+                self._blocks_memo[paths["blocks_json"]] = (st.st_mtime, st.st_size, serialized_blocks)
+            except Exception:
+                self._translated_memo.pop(paths["blocks_json"], None)
+                self._blocks_memo.pop(paths["blocks_json"], None)
 
         # 3. Save rendered composite
         if rendered_img is not None and rendered_img.size > 0:
@@ -224,6 +235,24 @@ class MangaCacheManager:
                 target_rendered = paths["rendered_png"]
                 if safe_cv2_imwrite(target_rendered, rendered_img, ext=".png"):
                     saved["rendered"] = target_rendered
+
+        # 4. Save or clear per-page style configuration
+        if clear_page_style:
+            if os.path.exists(paths["style_json"]):
+                try:
+                    os.remove(paths["style_json"])
+                except Exception:
+                    pass
+        elif page_style is not None:
+            try:
+                style_dict = page_style.to_dict() if hasattr(page_style, "to_dict") else (
+                    page_style if isinstance(page_style, dict) else vars(page_style)
+                )
+                with open(paths["style_json"], "w", encoding="utf-8") as f:
+                    json.dump(style_dict, f, ensure_ascii=False, indent=2)
+                saved["style"] = paths["style_json"]
+            except Exception as e:
+                logger.warning(f"Failed to save page style for {image_path}: {e}")
 
         return saved
 
@@ -246,11 +275,20 @@ class MangaCacheManager:
             "blocks": [],
             "erased_img": None,
             "rendered_img": None,
+            "page_style": None,
             "has_cache": False,
             "erased_path": None,
             "rendered_path": None,
             "blocks_path": None,
         }
+        if os.path.exists(paths["style_json"]):
+            try:
+                with open(paths["style_json"], "r", encoding="utf-8") as f:
+                    raw_style = json.load(f)
+                if isinstance(raw_style, dict):
+                    res["page_style"] = StyleConfig.from_dict(raw_style)
+            except Exception:
+                pass
 
         # 1. Blocks JSON
         b_path = paths["blocks_json"]
@@ -298,6 +336,8 @@ class MangaCacheManager:
     def clear_cache(self, image_path: str) -> None:
         """Removes all cache files for a specific image."""
         paths = self.get_cache_paths(image_path)
+        self._translated_memo.pop(paths["blocks_json"], None)
+        self._blocks_memo.pop(paths["blocks_json"], None)
         for key, p in paths.items():
             if key != "dir" and os.path.exists(p):
                 try:

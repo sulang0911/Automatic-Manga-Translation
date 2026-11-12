@@ -18,7 +18,10 @@ class TranslationEngine:
     def __init__(self, provider: str = "openai", api_key: str = "1", model: str = "richardyoung/qwen2.5-7b-instruct-abliterated:Q5_K_M",
                  custom_endpoint: str = "", target_lang: str = "简体中文",
                  source_lang: str = "自动识别", temperature: float = 0.2, system_prompt: str = ""):
-        self.provider = provider
+        prov_norm = (provider or "openai").strip().lower()
+        if "antigravity" in prov_norm:
+            prov_norm = "antigravity"
+        self.provider = prov_norm
         self.api_key = api_key
         self.model = model
         self.custom_endpoint = custom_endpoint
@@ -39,13 +42,19 @@ class TranslationEngine:
         elif self.provider == "openai":
             url = f"{self.custom_endpoint.rstrip('/')}/chat/completions" if self.custom_endpoint else "https://api.openai.com/v1/chat/completions"
             headers["Authorization"] = f"Bearer {self.api_key}"
-        elif self.provider == "gemini":
-            if "generativelanguage.googleapis.com" in self.custom_endpoint or not self.custom_endpoint:
-                url = f"https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        elif self.provider in ("gemini", "antigravity"):
+            if self.provider == "gemini" and ("generativelanguage.googleapis.com" in self.custom_endpoint or not self.custom_endpoint):
+                url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
             else:
-                url = f"{self.custom_endpoint.rstrip('/')}/chat/completions"
+                ep = (self.custom_endpoint or "http://127.0.0.1:8045").rstrip('/')
+                if ep.endswith("/chat/completions"):
+                    url = ep
+                else:
+                    url = f"{ep}/chat/completions"
             headers["Authorization"] = f"Bearer {self.api_key}"
-        else: # custom
+            if self.api_key:
+                headers["x-goog-api-key"] = self.api_key
+        else:  # custom
             endpoint = (self.custom_endpoint or "http://127.0.0.1:11434/v1").rstrip('/')
             if not endpoint.endswith("/chat/completions"):
                 url = f"{endpoint}/chat/completions"
@@ -74,6 +83,32 @@ class TranslationEngine:
             for b in blocks:
                 if not b.get("translated_text"):
                     b["translated_text"] = f"【译】{b.get('original_text', '')}"
+            return blocks
+
+        if self.provider == "antigravity":
+            from app.core.translation.antigravity_provider import AntigravityGeminiProvider
+            from app.core.translation.base import ProviderConfig
+            prov = AntigravityGeminiProvider(
+                ProviderConfig(
+                    provider_name="antigravity",
+                    api_key=self.api_key,
+                    model=self.model or "gemini-2.5-flash",
+                    endpoint=self.custom_endpoint,
+                    temperature=self.temperature,
+                )
+            )
+            tb_blocks = [TranslationBlock.from_dict(b) if isinstance(b, dict) else b for b in blocks]
+            res_tb = prov.translate_text_blocks(
+                tb_blocks,
+                source_lang=self.source_lang,
+                target_lang=self.target_lang,
+                progress_callback=progress_callback,
+            )
+            for orig_b, aligned_b in zip(blocks, res_tb):
+                if isinstance(orig_b, dict):
+                    orig_b["translated_text"] = aligned_b.translated_text
+                else:
+                    orig_b.translated_text = aligned_b.translated_text
             return blocks
 
         if progress_callback:
@@ -201,6 +236,32 @@ class TranslationEngine:
         if not self.api_key and self.provider != "custom":
             raise ValueError(f"未配置 API Key！请先填入有效的 {self.provider.upper()} API Key。")
 
+        if self.provider == "antigravity" or (self.provider == "gemini" and self.custom_endpoint):
+            try:
+                from app.core.translation.antigravity_provider import AntigravityGeminiProvider
+                from app.core.translation.base import ProviderConfig
+                prov = AntigravityGeminiProvider(
+                    ProviderConfig(
+                        provider_name="antigravity",
+                        api_key=self.api_key,
+                        model=self.model or "gemini-2.5-flash",
+                        endpoint=self.custom_endpoint,
+                        temperature=self.temperature,
+                        timeout_seconds=25.0,
+                    )
+                )
+                test_block = TranslationBlock(id="test_1", original_text=text_to_translate)
+                res_blocks = prov.translate_text_blocks(
+                    [test_block],
+                    source_lang=self.source_lang,
+                    target_lang=self.target_lang,
+                )
+                if res_blocks and res_blocks[0].translated_text:
+                    return res_blocks[0].translated_text.strip()
+            except Exception as anti_err:
+                if self.provider == "antigravity":
+                    raise RuntimeError(str(anti_err))
+
         url, headers = self._get_api_url_and_headers()
         messages = [
             {"role": "system", "content": self.system_prompt},
@@ -242,4 +303,3 @@ class TranslationEngine:
             if isinstance(parse_err, RuntimeError):
                 raise parse_err
             raise RuntimeError(f"解析响应内容失败: {parse_err}, 原始返回: {resp.text[:200]}")
-

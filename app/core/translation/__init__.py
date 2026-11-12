@@ -18,6 +18,7 @@ from .retry_handler import execute_http_request_with_retry
 from .deepseek_provider import DeepSeekProvider
 from .openai_provider import OpenAIProvider
 from .gemini_provider import GeminiProvider
+from .antigravity_provider import AntigravityGeminiProvider
 from .custom_provider import CustomOpenAIProvider
 from .manager import TranslationManager
 
@@ -38,6 +39,7 @@ __all__ = [
     "DeepSeekProvider",
     "OpenAIProvider",
     "GeminiProvider",
+    "AntigravityGeminiProvider",
     "CustomOpenAIProvider",
     "TranslationManager",
 ]

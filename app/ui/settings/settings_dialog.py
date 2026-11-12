@@ -203,9 +203,19 @@ class SettingsDialog(QDialog):
         box_layout.addWidget(QLabel("服务提供商 (Provider):"))
         self.provider_combo = QComboBox()
         _configure_combo_popup(self.provider_combo)
-        self.provider_combo.addItems(["deepseek", "openai", "gemini", "custom"])
+        self.provider_combo.addItem("deepseek", "deepseek")
+        self.provider_combo.addItem("openai", "openai")
+        self.provider_combo.addItem("gemini", "gemini")
+        self.provider_combo.addItem("antigravity (Gemini 反代兼容)", "antigravity")
+        self.provider_combo.addItem("custom", "custom")
         cur_provider = str(getattr(self.config.llm, "provider", "deepseek") or "deepseek").strip().lower()
-        self.provider_combo.setCurrentText(cur_provider if cur_provider in ("deepseek", "openai", "gemini", "custom") else "deepseek")
+        if "antigravity" in cur_provider:
+            cur_provider = "antigravity"
+        prov_idx = self.provider_combo.findData(cur_provider)
+        if prov_idx >= 0:
+            self.provider_combo.setCurrentIndex(prov_idx)
+        else:
+            self.provider_combo.setCurrentIndex(0)
         self.provider_combo.currentTextChanged.connect(self._on_provider_changed)
         box_layout.addWidget(self.provider_combo)
 
@@ -692,20 +702,37 @@ class SettingsDialog(QDialog):
             self._global_custom_text_color = color.name()
             self._update_global_txt_color_btn()
 
-    def _on_provider_changed(self, provider: str):
+    def _get_selected_provider(self) -> str:
+        data = self.provider_combo.currentData()
+        if data:
+            return str(data).strip().lower()
+        txt = self.provider_combo.currentText().strip().lower()
+        if "antigravity" in txt:
+            return "antigravity"
+        return txt
+
+    def _on_provider_changed(self, _provider_text: str = ""):
+        provider = self._get_selected_provider()
         defaults = {
             "deepseek": "deepseek-chat",
             "openai": "gpt-4o",
             "gemini": "gemini-2.5-flash",
+            "antigravity": "gemini-2.5-flash",
             "custom": "custom-model"
         }
         self.model_edit.setText(defaults.get(provider, "deepseek-chat"))
+        if hasattr(self, "endpoint_edit"):
+            if provider == "antigravity":
+                self.endpoint_edit.setPlaceholderText("https://your-proxy.com 或 https://your-proxy.com/antigravity/v1beta")
+            else:
+                self.endpoint_edit.setPlaceholderText("https://api.example.com/v1")
 
     def _run_connection_test(self):
-        provider = self.provider_combo.currentText().strip()
+        provider = self._get_selected_provider()
         api_key = self.api_key_edit.text().strip()
         endpoint = self.endpoint_edit.text().strip()
-        model = self.model_edit.text().strip() or ("deepseek-chat" if provider == "deepseek" else "gpt-4o-mini")
+        default_m = "deepseek-chat" if provider == "deepseek" else ("gemini-2.5-flash" if provider in ("gemini", "antigravity") else "gpt-4o-mini")
+        model = self.model_edit.text().strip() or default_m
         system_prompt = self.sys_prompt_edit.toPlainText().strip() or DEFAULT_SYSTEM_PROMPT
         test_text = self.test_text_input.text().strip() or "Hello! This is a translation connectivity test."
 
@@ -744,7 +771,7 @@ class SettingsDialog(QDialog):
 
     def _save_to_config(self):
         # LLM
-        self.config.llm.provider = self.provider_combo.currentText()
+        self.config.llm.provider = self._get_selected_provider()
         self.config.llm.api_key = self.api_key_edit.text().strip()
         self.config.llm.model = self.model_edit.text().strip()
         self.config.llm.endpoint = self.endpoint_edit.text().strip()

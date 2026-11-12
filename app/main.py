@@ -72,6 +72,7 @@ def main():
 
     window = MainWindow()
     window.show()
+    window.restore_last_session()
 
     sys.exit(app.exec())
 

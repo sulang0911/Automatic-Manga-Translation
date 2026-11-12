@@ -13,6 +13,7 @@ from app.core.translation.base import (
 from app.core.translation.deepseek_provider import DeepSeekProvider
 from app.core.translation.openai_provider import OpenAIProvider
 from app.core.translation.gemini_provider import GeminiProvider
+from app.core.translation.antigravity_provider import AntigravityGeminiProvider
 from app.core.translation.custom_provider import CustomOpenAIProvider
 
 
@@ -32,7 +33,12 @@ class TranslationManager:
             self._providers["deepseek"] = DeepSeekProvider
             self._providers["openai"] = OpenAIProvider
             self._providers["gemini"] = GeminiProvider
+            self._providers["antigravity"] = AntigravityGeminiProvider
+            self._providers["antigravity_gemini"] = AntigravityGeminiProvider
             self._providers["custom"] = CustomOpenAIProvider
+        elif "antigravity" not in self._providers:
+            self._providers["antigravity"] = AntigravityGeminiProvider
+            self._providers["antigravity_gemini"] = AntigravityGeminiProvider
 
     @classmethod
     def get_instance(cls) -> 'TranslationManager':
@@ -50,17 +56,28 @@ class TranslationManager:
             cls._providers["deepseek"] = DeepSeekProvider
             cls._providers["openai"] = OpenAIProvider
             cls._providers["gemini"] = GeminiProvider
+            cls._providers["antigravity"] = AntigravityGeminiProvider
             cls._providers["custom"] = CustomOpenAIProvider
+        elif "antigravity" not in cls._providers:
+            cls._providers["antigravity"] = AntigravityGeminiProvider
         return list(cls._providers.keys())
+
+    @staticmethod
+    def _normalize_provider_name(name: str) -> str:
+        name_key = (name or "deepseek").strip().lower()
+        if "antigravity" in name_key:
+            return "antigravity"
+        return name_key
 
     def set_active_provider(self, name: str, config: Optional[ProviderConfig] = None):
         self._ensure_default_providers()
-        name_key = name.lower()
+        name_key = self._normalize_provider_name(name)
         if name_key not in self._providers:
             raise ValueError(f"Provider '{name}' is not registered. Available: {self.get_registered_providers()}")
 
         self._active_provider_name = name_key
         if config is not None:
+            config.provider_name = name_key
             self._credentials[name_key] = config
             self._provider_instances.pop(name_key, None)
 
@@ -74,7 +91,7 @@ class TranslationManager:
         return self._provider_instances[name]
 
     def update_credentials(self, provider_name: str, **kwargs):
-        name_key = provider_name.lower()
+        name_key = self._normalize_provider_name(provider_name)
         current_cfg = self._credentials.get(name_key, ProviderConfig(provider_name=name_key))
         for k, v in kwargs.items():
             if hasattr(current_cfg, k):
@@ -83,7 +100,7 @@ class TranslationManager:
         self._provider_instances.pop(name_key, None)
 
     def get_credentials(self, provider_name: str) -> Optional[ProviderConfig]:
-        return self._credentials.get(provider_name.lower())
+        return self._credentials.get(self._normalize_provider_name(provider_name))
 
     def test_connection(
         self,
@@ -92,7 +109,7 @@ class TranslationManager:
     ) -> DiagnosticResult:
         """Executes diagnostic ping to test provider connectivity, model status, and latency."""
         self._ensure_default_providers()
-        name = (provider_name or self._active_provider_name).lower()
+        name = self._normalize_provider_name(provider_name or self._active_provider_name)
         if name not in self._providers:
             return DiagnosticResult(
                 success=False, provider=name, model="", latency_ms=0,

@@ -120,20 +120,29 @@ class ContextualTypographyBar(QFrame):
         """Attaches to a selected block and initializes its parameters."""
         self.block_data = block_data
         style = block_data.get("style", {}) or {}
-        direction = style.get("direction", "vertical")
+        direction = block_data.get("direction") or style.get("direction", "vertical")
+        if direction == "auto":
+            h_b = abs(float(block_data.get("ymax", 0)) - float(block_data.get("ymin", 0)))
+            w_b = abs(float(block_data.get("xmax", 0)) - float(block_data.get("xmin", 0)))
+            direction = "vertical" if h_b > w_b * 1.15 else "horizontal"
         icon_name = "direction_vertical" if direction == "vertical" else "direction_horizontal"
         self.btn_orient.setIcon(get_icon(icon_name, color="#0A84FF", size=14))
 
-        f_size = style.get("font_size") or 14
-        self.lbl_size.setText(str(int(f_size)))
+        f_size = block_data.get("font_size_override") or style.get("font_size") or 14
+        self.lbl_size.setText(str(int(round(float(f_size)))))
 
     def _on_toggle_orientation(self):
         if not self.block_data:
             return
         style = self.block_data.setdefault("style", {})
-        curr = style.get("direction", "vertical")
+        curr = self.block_data.get("direction") or style.get("direction", "vertical")
+        if curr == "auto":
+            h_b = abs(float(self.block_data.get("ymax", 0)) - float(self.block_data.get("ymin", 0)))
+            w_b = abs(float(self.block_data.get("xmax", 0)) - float(self.block_data.get("xmin", 0)))
+            curr = "vertical" if h_b > w_b * 1.15 else "horizontal"
         new_dir = "horizontal" if curr == "vertical" else "vertical"
         style["direction"] = new_dir
+        self.block_data["direction"] = new_dir
         icon_name = "direction_vertical" if new_dir == "vertical" else "direction_horizontal"
         self.btn_orient.setIcon(get_icon(icon_name, color="#0A84FF", size=14))
         self.sig_orientation_toggled.emit(self.block_data, new_dir)
@@ -142,9 +151,10 @@ class ContextualTypographyBar(QFrame):
         if not self.block_data:
             return
         style = self.block_data.setdefault("style", {})
-        curr = int(style.get("font_size", 14) or 14)
+        curr = int(round(float(self.block_data.get("font_size_override") or style.get("font_size", 14) or 14)))
         new_size = max(8, min(72, curr + delta))
         style["font_size"] = new_size
+        self.block_data["font_size_override"] = float(new_size)
         self.lbl_size.setText(str(new_size))
         self.sig_font_size_changed.emit(self.block_data, new_size)
 
@@ -153,6 +163,7 @@ class ContextualTypographyBar(QFrame):
             return
         style = self.block_data.setdefault("style", {})
         style["font_family"] = font_name
+        self.block_data["font_family_override"] = None if font_name == "默认字体" else font_name
         self.sig_font_family_changed.emit(self.block_data, font_name)
 
     def _on_rerender(self):
