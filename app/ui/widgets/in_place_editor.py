@@ -66,9 +66,11 @@ class ContextualTypographyBar(QFrame):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(6, 2, 6, 2)
         layout.setSpacing(4)
+        layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         # 1. Orientation toggle
         self.btn_orient = QToolButton(self)
+        self.btn_orient.setFixedSize(24, 24)
         self.btn_orient.setIcon(get_icon("direction_vertical", color="#0A84FF", size=14))
         self.btn_orient.setToolTip("切换横排 / 竖排排版 (快捷键: V)")
         self.btn_orient.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
@@ -77,22 +79,25 @@ class ContextualTypographyBar(QFrame):
 
         sep1 = QFrame(self)
         sep1.setFrameShape(QFrame.Shape.VLine)
+        sep1.setFixedHeight(16)
         sep1.setStyleSheet("color: rgba(255, 255, 255, 0.14);")
         layout.addWidget(sep1)
 
         # 2. Font size stepper
         self.btn_size_down = QToolButton(self)
+        self.btn_size_down.setFixedSize(24, 24)
         self.btn_size_down.setText("－")
         self.btn_size_down.setToolTip("缩小字号 (快捷键: [ )")
         self.btn_size_down.clicked.connect(lambda: self._step_font_size(-1))
         layout.addWidget(self.btn_size_down)
 
         self.lbl_size = QLabel("14", self)
-        self.lbl_size.setFixedWidth(22)
+        self.lbl_size.setFixedSize(24, 24)
         self.lbl_size.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.lbl_size)
 
         self.btn_size_up = QToolButton(self)
+        self.btn_size_up.setFixedSize(24, 24)
         self.btn_size_up.setText("＋")
         self.btn_size_up.setToolTip("放大字号 (快捷键: ] )")
         self.btn_size_up.clicked.connect(lambda: self._step_font_size(1))
@@ -100,17 +105,20 @@ class ContextualTypographyBar(QFrame):
 
         sep2 = QFrame(self)
         sep2.setFrameShape(QFrame.Shape.VLine)
+        sep2.setFixedHeight(16)
         sep2.setStyleSheet("color: rgba(255, 255, 255, 0.14);")
         layout.addWidget(sep2)
 
         # 3. Quick font dropdown
         self.font_combo = QComboBox(self)
+        self.font_combo.setFixedHeight(24)
         self.font_combo.addItems(["默认字体", "思源黑体", "思源宋体", "漫画体", "圆体"])
         self.font_combo.currentTextChanged.connect(self._on_font_changed)
         layout.addWidget(self.font_combo)
 
         # 4. Rerender action button
         self.btn_rerender = QToolButton(self)
+        self.btn_rerender.setFixedSize(24, 24)
         self.btn_rerender.setIcon(get_icon("sparkles", color="#0A84FF", size=13))
         self.btn_rerender.setToolTip("即时重新渲染此气泡")
         self.btn_rerender.clicked.connect(self._on_rerender)
@@ -219,6 +227,7 @@ class InPlaceBubbleEditor(QFrame):
 
         # Header Row
         header = QHBoxLayout()
+        header.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         self.title_lbl = QLabel("气泡编辑", self)
         self.title_lbl.setStyleSheet("color: #F5F5F7; font-weight: 600; font-size: 12px;")
         header.addWidget(self.title_lbl)
@@ -226,6 +235,7 @@ class InPlaceBubbleEditor(QFrame):
         header.addStretch()
 
         self.btn_close = QToolButton(self)
+        self.btn_close.setFixedSize(22, 22)
         self.btn_close.setIcon(get_icon("close", color="#98989D", size=11))
         self.btn_close.setStyleSheet("background: transparent; border: none; border-radius: 5px; padding: 3px;")
         self.btn_close.clicked.connect(self.close_editor)
@@ -248,12 +258,14 @@ class InPlaceBubbleEditor(QFrame):
         # Action Buttons Row
         action_row = QHBoxLayout()
         action_row.setSpacing(6)
+        action_row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         hint_lbl = QLabel("Ctrl+Enter 下一条", self)
         hint_lbl.setStyleSheet("color: #636366; font-size: 11px;")
         action_row.addWidget(hint_lbl, 1)
 
         self.btn_commit = QPushButton("应用修改", self)
+        self.btn_commit.setFixedHeight(28)
         self.btn_commit.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.btn_commit.setStyleSheet("""
             QPushButton {

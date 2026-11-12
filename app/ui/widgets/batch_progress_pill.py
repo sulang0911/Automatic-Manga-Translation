@@ -85,6 +85,8 @@ class BatchProgressPill(QFrame):
 
         # Pause button
         self.btn_pause = QPushButton("暂停", self)
+        self.btn_pause.setFixedHeight(24)
+        self.btn_pause.setMinimumWidth(52)
         self.btn_pause.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.btn_pause.setStyleSheet("""
             QPushButton {
@@ -105,6 +107,8 @@ class BatchProgressPill(QFrame):
 
         # Cancel button
         self.btn_cancel = QPushButton("取消", self)
+        self.btn_cancel.setFixedHeight(24)
+        self.btn_cancel.setMinimumWidth(52)
         self.btn_cancel.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.btn_cancel.setStyleSheet("""
             QPushButton {

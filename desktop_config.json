@@ -35,12 +35,12 @@
     "max_dimension": 2048
   },
   "style": {
-    "font_family": "霞鹜文楷",
-    "font_size_scale": 1.0,
+    "font_family": "得意黑",
+    "font_size_scale": 0.9,
     "auto_fit_font_size": true,
     "min_font_size": 8,
     "max_font_size": 72,
-    "line_spacing": 1.3,
+    "line_spacing": 1.1,
     "auto_line_spacing": true,
     "text_color_mode": "original",
     "custom_text_color": "#000000",

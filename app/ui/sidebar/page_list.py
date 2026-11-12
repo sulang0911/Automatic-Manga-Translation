@@ -99,8 +99,9 @@ class PageItemWidget(QWidget):
         self.item_id = item_data["id"]
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(6, 4, 4, 4)
+        layout.setContentsMargins(6, 4, 6, 4)
         layout.setSpacing(8)
+        layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         # Thumbnail preview (Clicking selects the page normally without accidentally opening modal dialog)
         self.thumb_label = QLabel(self)
@@ -123,6 +124,7 @@ class PageItemWidget(QWidget):
         text_col = QVBoxLayout()
         text_col.setContentsMargins(0, 2, 0, 2)
         text_col.setSpacing(3)
+        text_col.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         self.name_label = QLabel(os.path.basename(item_data["path"]), self)
         self.name_label.setStyleSheet("font-weight: 500; font-size: 12px;")
@@ -134,6 +136,7 @@ class PageItemWidget(QWidget):
         status_row = QHBoxLayout()
         status_row.setContentsMargins(0, 0, 0, 0)
         status_row.setSpacing(5)
+        status_row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         self.status_dot = StatusDot(color="#71717A", size=7, parent=self)
         status_row.addWidget(self.status_dot)
@@ -149,6 +152,7 @@ class PageItemWidget(QWidget):
         # Subtle Action Buttons
         has_custom_page_style = item_data.get("style") is not None
         self.style_btn = QToolButton(self)
+        self.style_btn.setFixedSize(24, 24)
         self.style_btn.setIcon(get_icon("sparkles", color="#0A84FF" if has_custom_page_style else "#8E8E93", size=13))
         self.style_btn.setToolTip("配置本页独立字体与排版样式 (或双击列表项)")
         self.style_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -160,6 +164,7 @@ class PageItemWidget(QWidget):
         layout.addWidget(self.style_btn)
 
         self.remove_btn = QToolButton(self)
+        self.remove_btn.setFixedSize(24, 24)
         self.remove_btn.setIcon(get_icon("close", color="#636366", size=12))
         self.remove_btn.setToolTip("从列表中移除")
         self.remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -272,21 +277,26 @@ class PageListWidget(QWidget):
         # Clean macOS Section Header
         header = QWidget(self)
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(6, 2, 4, 2)
+        header_layout.setContentsMargins(2, 2, 2, 2)
         header_layout.setSpacing(6)
+        header_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         title = QLabel("页面列表", header)
+        title.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
         title.setStyleSheet("font-weight: 600; font-size: 12px; color: #98989D;")
         header_layout.addWidget(title)
 
         self.count_badge = QLabel("0 页", header)
         self.count_badge.setObjectName("countBadge")
+        self.count_badge.setFixedHeight(20)
+        self.count_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         header_layout.addWidget(self.count_badge)
         header_layout.addStretch()
 
         # Add Files / Folder Button
         self.add_btn = QToolButton(header)
         self.add_btn.setProperty("class", "icon-action-btn")
+        self.add_btn.setFixedSize(26, 26)
         self.add_btn.setIcon(get_icon("plus", color="#98989D", size=14))
         self.add_btn.setToolTip("添加漫画图片或文件夹")
         self.add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -295,7 +305,8 @@ class PageListWidget(QWidget):
 
         self.clear_btn = QToolButton(header)
         self.clear_btn.setProperty("class", "icon-action-btn")
-        self.clear_btn.setIcon(get_icon("trash", color="#98989D", size=13))
+        self.clear_btn.setFixedSize(26, 26)
+        self.clear_btn.setIcon(get_icon("trash", color="#98989D", size=14))
         self.clear_btn.setToolTip("清空页面列表")
         self.clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.clear_btn.clicked.connect(self.clear_all)
@@ -307,8 +318,9 @@ class PageListWidget(QWidget):
         self._active_filter: str = "all"
         self.filter_bar = QWidget(self)
         filter_layout = QHBoxLayout(self.filter_bar)
-        filter_layout.setContentsMargins(4, 0, 4, 2)
+        filter_layout.setContentsMargins(0, 0, 0, 2)
         filter_layout.setSpacing(4)
+        filter_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         self._filter_group = QButtonGroup(self)
         self._filter_group.setExclusive(True)
@@ -325,9 +337,9 @@ class PageListWidget(QWidget):
             "  background-color: rgba(255, 255, 255, 0.04);"
             "  color: #8E8E93;"
             "  border: 1px solid rgba(255, 255, 255, 0.07);"
-            "  border-radius: 5px;"
-            "  padding: 2px 6px;"
-            "  font-size: 10px;"
+            "  border-radius: 6px;"
+            "  padding: 0px 2px;"
+            "  font-size: 11px;"
             "  font-weight: 500;"
             "}"
             "QPushButton:hover {"
@@ -347,7 +359,7 @@ class PageListWidget(QWidget):
             f_btn.setChecked(f_key == "all")
             f_btn.setToolTip(f_tip)
             f_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            f_btn.setFixedHeight(22)
+            f_btn.setFixedHeight(24)
             f_btn.setStyleSheet(filter_btn_qss)
             f_btn.clicked.connect(lambda checked, k=f_key: self.set_status_filter(k))
             self._filter_group.addButton(f_btn)
@@ -367,43 +379,48 @@ class PageListWidget(QWidget):
         self.list_widget.installEventFilter(self)
         layout.addWidget(self.list_widget, 1)
 
-        # Compact Single-Row macOS Batch Action Footer (De-bloated from 2 tall stacked buttons)
-        btn_layout = QHBoxLayout()
-        btn_layout.setContentsMargins(2, 4, 2, 2)
-        btn_layout.setSpacing(6)
+        # Aligned 2-Row Batch Action Footer (prevents text clipping in narrow 220px sidebar)
+        footer_layout = QVBoxLayout()
+        footer_layout.setContentsMargins(0, 4, 0, 2)
+        footer_layout.setSpacing(6)
 
-        self.batch_btn = QPushButton("批量翻译", self)
+        self.batch_btn = QPushButton("批量翻译 (跳过已完成)", self)
         self.batch_btn.setProperty("class", "primaryBtn")
-        self.batch_btn.setIcon(get_icon("play_all", color="#FFFFFF", size=11))
+        self.batch_btn.setIcon(get_icon("play_all", color="#FFFFFF", size=12))
         self.batch_btn.setToolTip("批量翻译未完成页面 (直接跳过已完成页面，不检查渲染与导出)")
         self.batch_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.batch_btn.setEnabled(False)
         self.batch_btn.setFixedHeight(30)
-        self.batch_btn.setStyleSheet("font-size: 11px; padding: 2px 6px;")
+        self.batch_btn.setStyleSheet("font-size: 12px; padding: 2px 10px;")
         self.batch_btn.clicked.connect(self.sig_start_batch.emit)
-        btn_layout.addWidget(self.batch_btn, 3)
+        footer_layout.addWidget(self.batch_btn)
+
+        sub_btn_layout = QHBoxLayout()
+        sub_btn_layout.setContentsMargins(0, 0, 0, 0)
+        sub_btn_layout.setSpacing(6)
 
         self.retranslate_cached_btn = QPushButton("按缓存重译", self)
-        self.retranslate_cached_btn.setIcon(get_icon("sparkles", color="#0A84FF", size=11))
+        self.retranslate_cached_btn.setIcon(get_icon("sparkles", color="#0A84FF", size=12))
         self.retranslate_cached_btn.setToolTip("根据缓存中已识别的文字直接重新翻译并渲染排版 (免重新OCR识别)")
         self.retranslate_cached_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.retranslate_cached_btn.setEnabled(False)
-        self.retranslate_cached_btn.setFixedHeight(30)
+        self.retranslate_cached_btn.setFixedHeight(28)
         self.retranslate_cached_btn.setStyleSheet("font-size: 11px; padding: 2px 6px;")
         self.retranslate_cached_btn.clicked.connect(self.sig_start_retranslate_from_cache.emit)
-        btn_layout.addWidget(self.retranslate_cached_btn, 3)
+        sub_btn_layout.addWidget(self.retranslate_cached_btn, 1)
 
         self.retranslate_all_btn = QPushButton("全部重译", self)
-        self.retranslate_all_btn.setIcon(get_icon("refresh", color="#98989D", size=11))
+        self.retranslate_all_btn.setIcon(get_icon("refresh", color="#98989D", size=12))
         self.retranslate_all_btn.setToolTip("清除缓存并从头重新识别(OCR)、擦除与翻译全部页面")
         self.retranslate_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.retranslate_all_btn.setEnabled(False)
-        self.retranslate_all_btn.setFixedHeight(30)
+        self.retranslate_all_btn.setFixedHeight(28)
         self.retranslate_all_btn.setStyleSheet("font-size: 11px; padding: 2px 6px;")
         self.retranslate_all_btn.clicked.connect(self.sig_start_retranslate_all.emit)
-        btn_layout.addWidget(self.retranslate_all_btn, 2)
+        sub_btn_layout.addWidget(self.retranslate_all_btn, 1)
 
-        layout.addLayout(btn_layout)
+        footer_layout.addLayout(sub_btn_layout)
+        layout.addLayout(footer_layout)
 
     def add_paths(self, paths: List[str]):
         """

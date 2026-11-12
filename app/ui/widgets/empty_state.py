@@ -65,6 +65,8 @@ class EmptyStateWidget(QWidget):
         btn_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.btn_folder = QPushButton("打开章节文件夹", card)
+        self.btn_folder.setFixedHeight(34)
+        self.btn_folder.setMinimumWidth(148)
         self.btn_folder.setIcon(get_icon("folder_open", color="#FFFFFF", size=14))
         self.btn_folder.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.btn_folder.setStyleSheet("""
@@ -85,6 +87,8 @@ class EmptyStateWidget(QWidget):
         btn_row.addWidget(self.btn_folder)
 
         self.btn_files = QPushButton("导入漫画图片", card)
+        self.btn_files.setFixedHeight(34)
+        self.btn_files.setMinimumWidth(148)
         self.btn_files.setIcon(get_icon("plus", color="#F5F5F7", size=13))
         self.btn_files.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.btn_files.setStyleSheet("""

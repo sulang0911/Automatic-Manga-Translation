@@ -108,10 +108,12 @@ class CanvasZoomHud(QFrame):
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 4)
-        layout.setSpacing(3)
+        layout.setSpacing(4)
+        layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         # Draw tool button
         self.btn_draw = QToolButton(self)
+        self.btn_draw.setFixedHeight(26)
         self.btn_draw.setIcon(get_icon("crop", color="#A1A1AA", active_color="#FFFFFF", size=13))
         self.btn_draw.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.btn_draw.setText("框选 (R)")
@@ -123,6 +125,7 @@ class CanvasZoomHud(QFrame):
 
         # OCR & Translate tool button
         self.btn_ocr_draw = QToolButton(self)
+        self.btn_ocr_draw.setFixedHeight(26)
         self.btn_ocr_draw.setIcon(get_icon("sparkles", color="#0A84FF", active_color="#FFFFFF", size=13))
         self.btn_ocr_draw.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.btn_ocr_draw.setText("框选识别 (O)")
@@ -134,6 +137,7 @@ class CanvasZoomHud(QFrame):
 
         # Brush tool button
         self.btn_brush = QToolButton(self)
+        self.btn_brush.setFixedHeight(26)
         self.btn_brush.setIcon(get_icon("edit", color="#A1A1AA", active_color="#FFFFFF", size=13))
         self.btn_brush.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.btn_brush.setText("保护画笔 (B)")
@@ -146,11 +150,13 @@ class CanvasZoomHud(QFrame):
         # Separator line
         sep = QFrame(self)
         sep.setFrameShape(QFrame.Shape.VLine)
+        sep.setFixedHeight(16)
         sep.setStyleSheet("color: rgba(255, 255, 255, 0.15);")
         layout.addWidget(sep)
 
         # Zoom controls
         self.btn_zoom_out = QToolButton(self)
+        self.btn_zoom_out.setFixedSize(26, 26)
         self.btn_zoom_out.setIcon(get_icon("zoom_out", color="#A1A1AA", size=12))
         self.btn_zoom_out.setToolTip("缩小 (Ctrl+-)")
         self.btn_zoom_out.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -158,9 +164,12 @@ class CanvasZoomHud(QFrame):
         layout.addWidget(self.btn_zoom_out)
 
         self.zoom_lbl = QLabel("100%", self)
+        self.zoom_lbl.setFixedSize(44, 26)
+        self.zoom_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.zoom_lbl)
 
         self.btn_zoom_in = QToolButton(self)
+        self.btn_zoom_in.setFixedSize(26, 26)
         self.btn_zoom_in.setIcon(get_icon("zoom_in", color="#A1A1AA", size=12))
         self.btn_zoom_in.setToolTip("放大 (Ctrl+=)")
         self.btn_zoom_in.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -168,6 +177,7 @@ class CanvasZoomHud(QFrame):
         layout.addWidget(self.btn_zoom_in)
 
         self.btn_fit = QToolButton(self)
+        self.btn_fit.setFixedHeight(26)
         self.btn_fit.setIcon(get_icon("fit_window", color="#A1A1AA", size=12))
         self.btn_fit.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.btn_fit.setText("适应")
@@ -177,6 +187,7 @@ class CanvasZoomHud(QFrame):
         layout.addWidget(self.btn_fit)
 
         self.btn_reset = QToolButton(self)
+        self.btn_reset.setFixedHeight(26)
         self.btn_reset.setIcon(get_icon("actual_size", color="#A1A1AA", size=12))
         self.btn_reset.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.btn_reset.setText("1:1")
@@ -188,11 +199,13 @@ class CanvasZoomHud(QFrame):
         # Separator line for pager
         sep_page = QFrame(self)
         sep_page.setFrameShape(QFrame.Shape.VLine)
+        sep_page.setFixedHeight(16)
         sep_page.setStyleSheet("color: rgba(255, 255, 255, 0.15);")
         layout.addWidget(sep_page)
 
         # Page navigation controls
         self.btn_prev_page = QToolButton(self)
+        self.btn_prev_page.setFixedSize(26, 26)
         self.btn_prev_page.setIcon(get_icon("chevron_left", color="#A1A1AA", size=12))
         self.btn_prev_page.setToolTip("上一页 (快捷键: A / PageUp)")
         self.btn_prev_page.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -200,11 +213,12 @@ class CanvasZoomHud(QFrame):
         layout.addWidget(self.btn_prev_page)
 
         self.lbl_page = QLabel("-- / --", self)
-        self.lbl_page.setStyleSheet("min-width: 46px; text-align: center;")
+        self.lbl_page.setFixedSize(52, 26)
         self.lbl_page.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.lbl_page)
 
         self.btn_next_page = QToolButton(self)
+        self.btn_next_page.setFixedSize(26, 26)
         self.btn_next_page.setIcon(get_icon("chevron_right", color="#A1A1AA", size=12))
         self.btn_next_page.setToolTip("下一页 (快捷键: D / PageDown)")
         self.btn_next_page.setCursor(Qt.CursorShape.PointingHandCursor)

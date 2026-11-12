@@ -59,16 +59,18 @@ class DropZoneWidget(QFrame):
         self.btn_import_files = QPushButton("选择图片", self)
         self.btn_import_files.setIcon(get_icon("plus", color="#98989D", size=12))
         self.btn_import_files.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_import_files.setFixedHeight(26)
+        self.btn_import_files.setFixedHeight(28)
+        self.btn_import_files.setStyleSheet("padding: 2px 8px; font-size: 11px;")
         self.btn_import_files.clicked.connect(self._open_file_dialog)
-        btn_layout.addWidget(self.btn_import_files)
+        btn_layout.addWidget(self.btn_import_files, 1)
 
         self.btn_import_folder = QPushButton("选择文件夹", self)
         self.btn_import_folder.setIcon(get_icon("folder_open", color="#0A84FF", size=12))
         self.btn_import_folder.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_import_folder.setFixedHeight(26)
+        self.btn_import_folder.setFixedHeight(28)
+        self.btn_import_folder.setStyleSheet("padding: 2px 8px; font-size: 11px;")
         self.btn_import_folder.clicked.connect(self._open_folder_dialog)
-        btn_layout.addWidget(self.btn_import_folder)
+        btn_layout.addWidget(self.btn_import_folder, 1)
 
         layout.addLayout(btn_layout)
 
@@ -95,8 +97,8 @@ class DropZoneWidget(QFrame):
             self.icon_label.setPixmap(get_icon("folder_open", color="#0A84FF", size=22).pixmap(22, 22))
             self.layout().setContentsMargins(10, 12, 10, 12)
             self.layout().setSpacing(5)
-            self.btn_import_files.setFixedHeight(26)
-            self.btn_import_folder.setFixedHeight(26)
+            self.btn_import_files.setFixedHeight(28)
+            self.btn_import_folder.setFixedHeight(28)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
