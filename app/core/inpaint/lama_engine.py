@@ -105,9 +105,15 @@ class LaMaInpainter(BaseInpainter):
 
     def _init_lama(self):
         try:
+            import desktop.core.inpaint_engine as _dp_inp
+            if getattr(_dp_inp, "_GLOBAL_SIMPLE_LAMA", None) is not None:
+                self._lama = _dp_inp._GLOBAL_SIMPLE_LAMA
+                self._lama_available = True
+                return
             from simple_lama_inpainting import SimpleLama
             logger.info("Initializing Simple-LaMa neural inpainting model...")
             self._lama = SimpleLama()
+            _dp_inp._GLOBAL_SIMPLE_LAMA = self._lama
             self._lama_available = True
             logger.info("Simple-LaMa neural inpainting model loaded successfully.")
         except Exception as e:

@@ -167,12 +167,6 @@ class TypographyLayoutEvaluator:
             max_line_w = max((measurer.measure_width(line, font_size) for line in lines), default=0.0)
 
             fits = (max_line_w <= max_w) and (total_h <= max_h)
-            # When a block has >= 3 speaker turns (e.g. 4-line top-left conversation),
-            # prevent individual speaker lines from wrapping into extra broken sub-lines if a slightly smaller font fits cleanly
-            if fits and self.speaker_turn_count >= 3 and font_size > 9.0:
-                paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
-                if len(lines) > len(paragraphs):
-                    fits = False
 
             overflow_x = max(0.0, max_line_w - max_w)
             overflow_y = max(0.0, total_h - max_h)
@@ -234,14 +228,24 @@ class TypographyEngine:
         "stxihei": "STXIHEI.TTF",
     }
 
+    _GLOBAL_FONT_CACHE: Dict[Tuple[str, int], Any] = {}
+    _GLOBAL_FONT_PATH_CACHE: Dict[str, Optional[str]] = {}
+    _LAST_QR_SIG: Optional[Tuple[Any, ...]] = None
+    _LAST_QR_REGIONS: List[Any] = []
+
     def __init__(self, default_font_family: str = "霞鹜文楷"):
         self.default_font_family = default_font_family
         self.auto_fit_engine = AutoFitEngine()
         self.line_breaker = LineBreaker()
         self.vertical_layout = VerticalLayoutEngine()
-        self._font_cache: Dict[Tuple[str, int], Any] = {}
+        self._font_cache: Dict[Tuple[str, int], Any] = TypographyEngine._GLOBAL_FONT_CACHE
 
     def resolve_font_path(self, font_family: str) -> Optional[str]:
+        cache_key = font_family.strip().lower()
+        if cache_key in TypographyEngine._GLOBAL_FONT_PATH_CACHE:
+            cached_p = TypographyEngine._GLOBAL_FONT_PATH_CACHE[cache_key]
+            if cached_p is None or os.path.exists(cached_p):
+                return cached_p
         """Finds true font file path on system or local assets/fonts directory."""
         clean_name = font_family.split("(")[0].split("（")[0].strip()
         key = clean_name.lower()
@@ -278,7 +282,9 @@ class TypographyEngine:
             "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc"
         ]:
             if os.path.exists(p_sys):
+                TypographyEngine._GLOBAL_FONT_PATH_CACHE[cache_key] = p_sys
                 return p_sys
+        TypographyEngine._GLOBAL_FONT_PATH_CACHE[cache_key] = None
         return None
 
     def get_font(self, font_family: str, size: float) -> ImageFont.FreeTypeFont:
@@ -301,6 +307,9 @@ class TypographyEngine:
             except Exception:
                 pass
 
+        if len(self._font_cache) >= 160:
+            for k in list(self._font_cache.keys())[:32]:
+                self._font_cache.pop(k, None)
         self._font_cache[cache_key] = font
         return font
 
@@ -348,9 +357,22 @@ class TypographyEngine:
 
         qr_regions = []
         try:
-            from app.core.ocr.qr_filter import QRCodeFilter
-            filt = QRCodeFilter()
-            qr_regions = filt.detect_regions(erased_image)
+            mid_y, mid_x = h_img // 2, w_img // 2
+            img_sig = (
+                h_img, w_img,
+                int(erased_image.ctypes.data),
+                int(erased_image[0, 0, 0]),
+                int(erased_image[mid_y, mid_x, 0]),
+                int(erased_image[-1, -1, -1]),
+            )
+            if TypographyEngine._LAST_QR_SIG == img_sig:
+                qr_regions = TypographyEngine._LAST_QR_REGIONS
+            else:
+                from app.core.ocr.qr_filter import QRCodeFilter
+                filt = QRCodeFilter()
+                qr_regions = filt.detect_regions(erased_image)
+                TypographyEngine._LAST_QR_SIG = img_sig
+                TypographyEngine._LAST_QR_REGIONS = qr_regions
         except Exception:
             qr_regions = []
 
@@ -470,6 +492,9 @@ class TypographyEngine:
                 speaker_turn_count=speaker_turn_count
             )
 
+            is_speaker_dialogue = (speaker_turn_count >= 2) or bool(SPEAKER_LINE_RE.match(render_text))
+            eff_bubble_shape = "caption" if is_speaker_dialogue else "rect"
+
             if block.font_size_override is not None:
                 font_size = float(block.font_size_override)
             elif cfg.auto_fit_font_size:
@@ -479,7 +504,8 @@ class TypographyEngine:
                     box_h=float(box_h_eff),
                     is_vertical=is_vertical,
                     evaluator=evaluator,
-                    font_scale=cfg.font_size_scale
+                    font_scale=cfg.font_size_scale,
+                    bubble_shape=eff_bubble_shape
                 )
                 font_size = fit_res.optimal_font_size
             else:
@@ -634,7 +660,7 @@ class TypographyEngine:
                         )
             else:
                 measurer = PilTextMeasurer(font_loader, is_bold=is_bold)
-                px, py = self.auto_fit_engine.calculate_padding(draw_box_w, draw_box_h)
+                px, py = self.auto_fit_engine.calculate_padding(draw_box_w, draw_box_h, bubble_shape=eff_bubble_shape)
                 avail_w = max(4.0, draw_box_w - 2 * px)
                 avail_h = max(4.0, draw_box_h - 2 * py)
                 lines = self.line_breaker.wrap_text(render_text, avail_w, font_size, measurer)

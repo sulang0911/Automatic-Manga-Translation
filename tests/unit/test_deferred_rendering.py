@@ -168,8 +168,8 @@ def test_batch_worker_deferred_typography_when_export_dir_none(sample_test_env):
     assert os.path.exists(cache_paths["erased_webp"])
     assert os.path.exists(cache_paths["blocks_json"])
 
-    # Rendered webp should NOT be baked when export_dir is None
-    assert not os.path.exists(cache_paths["rendered_webp"])
+    # Rendered webp MUST be pre-baked into cache so switching pages after batch translation is instant!
+    assert os.path.exists(cache_paths["rendered_webp"])
 
 
 def test_batch_worker_on_the_fly_export_from_cache(sample_test_env):

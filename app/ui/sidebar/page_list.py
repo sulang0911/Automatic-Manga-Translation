@@ -256,6 +256,7 @@ class PageListWidget(QWidget):
         self.setAcceptDrops(True)
         self.items_data: List[Dict[str, Any]] = []
         self._item_widgets: Dict[str, PageItemWidget] = {}
+        self._temp_archive_dirs: List[str] = []
         self.last_removed_row: int = -1
 
         layout = QVBoxLayout(self)
@@ -351,6 +352,7 @@ class PageListWidget(QWidget):
                 try:
                     import zipfile, tempfile
                     ext_dir = tempfile.mkdtemp(prefix="amt_archive_")
+                    self._temp_archive_dirs.append(ext_dir)
                     with zipfile.ZipFile(p, 'r') as zf:
                         zf.extractall(ext_dir)
                     extracted_paths.append(ext_dir)
@@ -491,12 +493,24 @@ class PageListWidget(QWidget):
                 self.sig_page_removed.emit(item_id)
                 break
 
+    def cleanup_temp_dirs(self):
+        """Removes any temporary directories created during zip/cbz archive imports."""
+        import shutil
+        while self._temp_archive_dirs:
+            d = self._temp_archive_dirs.pop()
+            if d and os.path.exists(d):
+                try:
+                    shutil.rmtree(d, ignore_errors=True)
+                except Exception:
+                    pass
+
     def clear_all(self):
-        """Clears all pages from queue."""
+        """Clears all pages from queue and reclaims temporary archive directories."""
         self.last_removed_row = -1
         self.items_data.clear()
         self._item_widgets.clear()
         self.list_widget.clear()
+        self.cleanup_temp_dirs()
         AsyncThumbnailManager.instance().clear_cache()
         self._update_count()
         self.sig_clear_requested.emit()

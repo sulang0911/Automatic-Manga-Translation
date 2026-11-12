@@ -84,6 +84,7 @@ class MangaCacheManager:
 
     def __init__(self, custom_cache_root: Optional[str] = None):
         self.custom_cache_root = custom_cache_root
+        self._translated_memo: Dict[str, Tuple[float, int, bool]] = {}
 
     def get_cache_dir(self, image_path: str, create: bool = False) -> str:
         """
@@ -141,19 +142,29 @@ class MangaCacheManager:
         """
         Returns True if this page has been fully translated and rendered.
         Validates that blocks.json exists, contains blocks, and at least one has translated_text.
+        Uses (mtime, size) memoization to avoid repeated disk JSON parsing during folder ingestion.
         """
         status = self.has_cache(image_path)
         if not (status["blocks"] and (status["rendered"] or status["erased"])):
             return False
         try:
             paths = self.get_cache_paths(image_path)
-            with open(paths["blocks_json"], "r", encoding="utf-8") as f:
+            b_path = paths["blocks_json"]
+            st = os.stat(b_path)
+            memo = self._translated_memo.get(b_path)
+            if memo is not None and memo[0] == st.st_mtime and memo[1] == st.st_size:
+                return memo[2]
+            with open(b_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             blocks_list = data if isinstance(data, list) else data.get("blocks", [])
             if not blocks_list:
-                return False
-            # Check if translations exist
-            return any(bool(b.get("translated_text", "").strip()) for b in blocks_list if isinstance(b, dict))
+                res = False
+            else:
+                res = any(bool(b.get("translated_text", "").strip()) for b in blocks_list if isinstance(b, dict))
+            if len(self._translated_memo) >= 1000:
+                self._translated_memo.clear()
+            self._translated_memo[b_path] = (st.st_mtime, st.st_size, res)
+            return res
         except Exception:
             return False
 
@@ -214,13 +225,16 @@ class MangaCacheManager:
     def load_page_cache(
         self,
         image_path: str,
-        load_images: bool = True
+        load_images: bool = True,
+        load_erased: bool = True,
+        load_rendered: bool = True
     ) -> Dict[str, Any]:
         """
         Loads cached data from disk.
         If `load_images=False`, only loads `blocks` and metadata, returning file paths
         for images without decoding large OpenCV arrays into RAM (ideal for list views).
-        If `load_images=True`, decodes `erased_img` and `rendered_img` (for canvas view).
+        If `load_images=True`, decodes `erased_img` (when load_erased=True) and
+        `rendered_img` (when load_rendered=True).
         """
         paths = self.get_cache_paths(image_path)
         res: Dict[str, Any] = {
@@ -253,7 +267,7 @@ class MangaCacheManager:
         if os.path.exists(erased_p):
             res["erased_path"] = erased_p
             res["has_cache"] = True
-            if load_images:
+            if load_images and load_erased:
                 res["erased_img"] = safe_cv2_imread(erased_p)
 
         # 3. Rendered Image
@@ -261,7 +275,7 @@ class MangaCacheManager:
         if os.path.exists(rendered_p):
             res["rendered_path"] = rendered_p
             res["has_cache"] = True
-            if load_images:
+            if load_images and load_rendered:
                 res["rendered_img"] = safe_cv2_imread(rendered_p)
 
         return res

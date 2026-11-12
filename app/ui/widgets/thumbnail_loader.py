@@ -1,9 +1,10 @@
 """
 app/ui/widgets/thumbnail_loader.py
 High-performance asynchronous thumbnail manager with thread-pool offloading,
-codec-level downsampled decoding (QImageReader), and in-memory LRU caching
-to prevent GUI freezes and RAM spikes during large folder ingestion.
+codec-level downsampled decoding (QImageReader), LIFO priority scheduling,
+and true OrderedDict LRU caching to prevent GUI freezes and RAM spikes.
 """
+from collections import OrderedDict
 from typing import Dict, List, Tuple, Callable, Optional
 import os
 from PyQt6.QtCore import QObject, QThreadPool, QRunnable, pyqtSignal, Qt, QSize
@@ -16,6 +17,8 @@ def _decode_scaled_qimage(path: str, target_width: int, target_height: int) -> Q
     multi-megapixel manga pages do not allocate full-resolution buffers in RAM.
     """
     try:
+        if not path or not os.path.exists(path) or os.path.getsize(path) == 0:
+            return QImage()
         reader = QImageReader(path)
         reader.setAutoTransform(True)
         orig_size = reader.size()
@@ -31,14 +34,17 @@ def _decode_scaled_qimage(path: str, target_width: int, target_height: int) -> Q
     except Exception:
         pass
 
-    img = QImage(path)
-    if not img.isNull():
-        return img.scaled(
-            target_width,
-            target_height,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
-        )
+    try:
+        img = QImage(path)
+        if not img.isNull():
+            return img.scaled(
+                target_width,
+                target_height,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+    except Exception:
+        pass
     return QImage()
 
 
@@ -75,7 +81,7 @@ class AsyncThumbnailManager:
     """
     Thread-safe asynchronous thumbnail loading manager.
     Decodes and downsamples full-resolution manga images in background threads,
-    delivering lightweight QPixmap instances back to the GUI thread.
+    using LIFO priority scheduling and true OrderedDict LRU eviction.
     """
     _instance: Optional['AsyncThumbnailManager'] = None
 
@@ -86,9 +92,10 @@ class AsyncThumbnailManager:
             pass
         self.signals = ThumbnailSignals()
         self.signals.loaded.connect(self._on_thumbnail_loaded)
-        self._cache: Dict[str, QPixmap] = {}
-        self._max_cache = 60
+        self._cache: "OrderedDict[str, QPixmap]" = OrderedDict()
+        self._max_cache = 80
         self._pending_callbacks: Dict[str, List[Callable[[QPixmap], None]]] = {}
+        self._priority_seq: int = 0
 
     @classmethod
     def instance(cls) -> 'AsyncThumbnailManager':
@@ -104,26 +111,30 @@ class AsyncThumbnailManager:
         return cls._instance
 
     def get_cached(self, path: str) -> Optional[QPixmap]:
-        """Returns cached QPixmap if already decoded, else None."""
-        return self._cache.get(path)
+        """Returns cached QPixmap if already decoded (updating LRU order), else None."""
+        pix = self._cache.get(path)
+        if pix is not None:
+            self._cache.move_to_end(path)
+        return pix
 
     def invalidate(self, path: str):
         """Removes a specific path from thumbnail cache to force reload."""
         self._cache.pop(path, None)
         self._pending_callbacks.pop(path, None)
 
+    def _put_cache(self, path: str, pix: QPixmap):
+        if path in self._cache:
+            self._cache.move_to_end(path)
+        self._cache[path] = pix
+        while len(self._cache) > self._max_cache:
+            self._cache.popitem(last=False)
+
     def _on_thumbnail_loaded(self, path: str, qimg: QImage):
         if qimg.isNull():
+            self._pending_callbacks.pop(path, None)
             return
         pix = QPixmap.fromImage(qimg)
-
-        # LRU eviction if cache exceeds capacity
-        if len(self._cache) >= self._max_cache:
-            keys_to_remove = list(self._cache.keys())[:max(1, len(self._cache) - self._max_cache + 15)]
-            for k in keys_to_remove:
-                self._cache.pop(k, None)
-
-        self._cache[path] = pix
+        self._put_cache(path, pix)
 
         callbacks = self._pending_callbacks.pop(path, [])
         for cb in callbacks:
@@ -142,13 +153,14 @@ class AsyncThumbnailManager:
         """
         Fetches a downscaled thumbnail.
         If sync is True (e.g. for single-image drops), decodes immediately on caller thread.
-        Otherwise offloads image decoding to QThreadPool.
+        Otherwise offloads image decoding to QThreadPool with LIFO priority so newly visible items decode first.
         """
         if not path:
             return
 
-        if path in self._cache:
-            callback(self._cache[path])
+        cached = self.get_cached(path)
+        if cached is not None:
+            callback(cached)
             return
 
         if sync:
@@ -157,7 +169,7 @@ class AsyncThumbnailManager:
             scaled = _decode_scaled_qimage(path, target_size[0], target_size[1])
             if not scaled.isNull():
                 pix = QPixmap.fromImage(scaled)
-                self._cache[path] = pix
+                self._put_cache(path, pix)
                 callback(pix)
             return
 
@@ -166,8 +178,9 @@ class AsyncThumbnailManager:
         else:
             self._pending_callbacks[path] = [callback]
             worker = ThumbnailWorker(path, target_size[0], target_size[1], self.signals)
+            self._priority_seq = (self._priority_seq + 1) % 1000000
             try:
-                QThreadPool.globalInstance().start(worker)
+                QThreadPool.globalInstance().start(worker, self._priority_seq)
             except RuntimeError:
                 pass
 
@@ -175,3 +188,4 @@ class AsyncThumbnailManager:
         """Clears in-memory thumbnail cache."""
         self._cache.clear()
         self._pending_callbacks.clear()
+        self._priority_seq = 0

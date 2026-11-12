@@ -468,10 +468,17 @@ class OCREngine:
         """Returns True if the current language was explicitly configured (not auto)."""
         return getattr(self, "is_manual", False)
 
+    _GLOBAL_CTD_CACHE: Dict[str, Any] = {}
+
     def _init_ctd(self):
         if self._ctd_detector is None:
-            from app.core.ocr.ctd_engine import ComicTextDetectorEngine
-            self._ctd_detector = ComicTextDetectorEngine(use_gpu=self.use_gpu)
+            cache_key = f"ctd_{bool(self.use_gpu)}"
+            if cache_key in OCREngine._GLOBAL_CTD_CACHE:
+                self._ctd_detector = OCREngine._GLOBAL_CTD_CACHE[cache_key]
+            else:
+                from app.core.ocr.ctd_engine import ComicTextDetectorEngine
+                self._ctd_detector = ComicTextDetectorEngine(use_gpu=self.use_gpu)
+                OCREngine._GLOBAL_CTD_CACHE[cache_key] = self._ctd_detector
 
     def _init_paddle(self):
         if self._paddle_ocr is None:
@@ -607,6 +614,14 @@ class OCREngine:
                     langs = ['ch_sim', 'en']
                 else:
                     langs = ['ja', 'en']
+                if len(OCREngine._GLOBAL_EASYOCR_CACHE) >= 2:
+                    oldest_key = next(iter(OCREngine._GLOBAL_EASYOCR_CACHE))
+                    OCREngine._GLOBAL_EASYOCR_CACHE.pop(oldest_key, None)
+                    try:
+                        from app.core.hardware import cleanup_gpu_memory
+                        cleanup_gpu_memory(trim_ram=False)
+                    except Exception:
+                        pass
                 print(f"[*] Initializing EasyOCR for {target_norm} (langs={langs}, gpu={self.use_gpu})...")
                 reader = easyocr.Reader(langs, gpu=self.use_gpu)
                 OCREngine._GLOBAL_EASYOCR_CACHE[cache_key] = reader

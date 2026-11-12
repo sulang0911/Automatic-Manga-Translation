@@ -1,7 +1,9 @@
 """
 app/core/typography/stroke_renderer.py
 ITU-R BT.709 Luminance Auto-Contrast Stroke, Drop Shadow, and Dual PIL/QPainter Pipelines.
+Optimized with ROI-bounded drop shadow Gaussian blur to eliminate full-page RGBA allocations.
 """
+import math
 from dataclasses import dataclass
 from typing import Tuple, Optional, Any
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
@@ -106,25 +108,59 @@ class StrokeRenderer:
     ) -> None:
         """
         Render text glyph with stroke, bolding, and drop shadow using PIL onto target_image.
+        Uses ROI-bounded shadow layer rendering to avoid allocating full-page RGBA buffers per line/glyph.
         """
+        if not text:
+            return
+
         font_size = getattr(font, "size", 20)
         bold_extra = int(round(font_size * 0.035)) if (is_bold and font_size >= 30) else 0
 
-        # 1. Drop shadow layer
+        # 1. ROI-bounded Drop Shadow Layer
         if shadow and shadow.enabled:
-            shadow_layer = Image.new("RGBA", target_image.size, (0, 0, 0, 0))
-            shadow_draw = ImageDraw.Draw(shadow_layer)
             shadow_stroke_w = int(round(stroke.width + bold_extra)) if (stroke and stroke.width > 0) else bold_extra
-            shadow_draw.text(
-                (x + shadow.offset_x, y + shadow.offset_y),
-                text,
-                font=font,
-                fill=shadow.color_rgba,
-                stroke_width=shadow_stroke_w,
-                stroke_fill=shadow.color_rgba if shadow_stroke_w > 0 else None
-            )
-            blurred_shadow = shadow_layer.filter(ImageFilter.GaussianBlur(shadow.blur_radius))
-            target_image.alpha_composite(blurred_shadow)
+            sx = x + shadow.offset_x
+            sy = y + shadow.offset_y
+            blur_pad = int(math.ceil(shadow.blur_radius * 3.0)) + shadow_stroke_w + 6
+
+            try:
+                bbox = font.getbbox(text)
+                tw = max(1, int(math.ceil(bbox[2] - bbox[0])))
+                th = max(1, int(math.ceil(bbox[3] - bbox[1])))
+                bx0 = int(math.floor(sx + min(0, bbox[0]))) - blur_pad
+                by0 = int(math.floor(sy + min(0, bbox[1]))) - blur_pad
+                bx1 = int(math.ceil(sx + bbox[2])) + blur_pad
+                by1 = int(math.ceil(sy + bbox[3])) + blur_pad
+            except Exception:
+                tw = int(math.ceil(len(text) * font_size * 1.2))
+                th = int(math.ceil(font_size * 1.5))
+                bx0 = int(math.floor(sx)) - blur_pad
+                by0 = int(math.floor(sy)) - blur_pad
+                bx1 = int(math.ceil(sx + tw)) + blur_pad
+                by1 = int(math.ceil(sy + th)) + blur_pad
+
+            img_w, img_h = target_image.size
+            rx0 = max(0, bx0)
+            ry0 = max(0, by0)
+            rx1 = min(img_w, bx1)
+            ry1 = min(img_h, by1)
+
+            if rx1 > rx0 and ry1 > ry0:
+                roi_w = rx1 - rx0
+                roi_h = ry1 - ry0
+                shadow_roi = Image.new("RGBA", (roi_w, roi_h), (0, 0, 0, 0))
+                shadow_draw = ImageDraw.Draw(shadow_roi)
+                shadow_draw.text(
+                    (sx - rx0, sy - ry0),
+                    text,
+                    font=font,
+                    fill=shadow.color_rgba,
+                    stroke_width=shadow_stroke_w,
+                    stroke_fill=shadow.color_rgba if shadow_stroke_w > 0 else None
+                )
+                blurred_roi = shadow_roi.filter(ImageFilter.GaussianBlur(shadow.blur_radius))
+                target_image.alpha_composite(blurred_roi, dest=(rx0, ry0))
+                del shadow_roi, blurred_roi
 
         # 2. Text with stroke & fill
         draw = ImageDraw.Draw(target_image)

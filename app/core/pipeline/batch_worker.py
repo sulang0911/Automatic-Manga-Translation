@@ -190,48 +190,52 @@ class BatchWorker(QThread):
                             cached_is_valid = True
 
                 if cached_is_valid:
-                    self.sig_batch_progress.emit(idx + 1, total, filename, 90, "已命中本地缓存，正在检查导出...")
+                    self.sig_batch_progress.emit(idx + 1, total, filename, 90, "已命中本地缓存，正在检查渲染与导出...")
                     cached_data = cache_mgr.load_page_cache(img_path, load_images=False)
-                    if export_path:
-                        if not os.path.exists(export_path):
-                            full_c = cache_mgr.load_page_cache(img_path, load_images=True)
-                            rendered_to_export = full_c.get("rendered_img")
-                            if rendered_to_export is None:
-                                base_bg = full_c.get("erased_img")
-                                if base_bg is None:
-                                    base_bg = safe_cv2_imread(img_path)
-                                if base_bg is not None:
-                                    c_blocks = cached_data.get("blocks", [])
-                                    onoma_mode = "normal"
-                                    if hasattr(self.config, "style"):
-                                        onoma_mode = getattr(self.config.style, "onomatopoeia_mode", "normal")
-                                    elif isinstance(self.config, dict):
-                                        style_cfg = self.config.get("style", {})
-                                        if isinstance(style_cfg, dict):
-                                            onoma_mode = style_cfg.get("onomatopoeia_mode", "normal")
-
-                                    render_blocks = [
-                                        b for b in c_blocks 
-                                        if (b.type if hasattr(b, "type") else b.get("type", "")) != "onomatopoeia" or onoma_mode != "ignore" or (b.force_erase if hasattr(b, "force_erase") else b.get("force_erase", False))
-                                    ]
-                                    rendered_to_export = typo_eng.render_translations(base_bg, render_blocks, self.config)
-                                del base_bg
-                            if rendered_to_export is not None:
-                                compressed = False
+                    c_stat_now = cache_mgr.has_cache(img_path)
+                    need_render_cache = not c_stat_now.get("rendered", False)
+                    need_export_file = bool(export_path and not os.path.exists(export_path))
+                    if need_render_cache or need_export_file:
+                        full_c = cache_mgr.load_page_cache(img_path, load_images=True)
+                        rendered_to_export = full_c.get("rendered_img")
+                        if rendered_to_export is None:
+                            base_bg = full_c.get("erased_img")
+                            if base_bg is None:
+                                base_bg = safe_cv2_imread(img_path)
+                            if base_bg is not None:
+                                c_blocks = cached_data.get("blocks", [])
+                                onoma_mode = "normal"
                                 if hasattr(self.config, "style"):
-                                    compressed = getattr(self.config.style, "export_compressed", False)
+                                    onoma_mode = getattr(self.config.style, "onomatopoeia_mode", "normal")
                                 elif isinstance(self.config, dict):
                                     style_cfg = self.config.get("style", {})
                                     if isinstance(style_cfg, dict):
-                                        compressed = style_cfg.get("export_compressed", False)
-                                MangaExporter.export_hierarchical_image(
-                                    rendered_to_export,
-                                    export_path,
-                                    source_path=img_path,
-                                    compressed=compressed
-                                )
-                            del rendered_to_export, full_c
-                            cleanup_gpu_memory(trim_ram=False)
+                                        onoma_mode = style_cfg.get("onomatopoeia_mode", "normal")
+
+                                render_blocks = [
+                                    b for b in c_blocks 
+                                    if (b.type if hasattr(b, "type") else b.get("type", "")) != "onomatopoeia" or onoma_mode != "ignore" or (b.force_erase if hasattr(b, "force_erase") else b.get("force_erase", False))
+                                ]
+                                rendered_to_export = typo_eng.render_translations(base_bg, render_blocks, self.config)
+                                if rendered_to_export is not None:
+                                    cache_mgr.save_page_cache(img_path, rendered_img=rendered_to_export)
+                            del base_bg
+                        if need_export_file and rendered_to_export is not None:
+                            compressed = False
+                            if hasattr(self.config, "style"):
+                                compressed = getattr(self.config.style, "export_compressed", False)
+                            elif isinstance(self.config, dict):
+                                style_cfg = self.config.get("style", {})
+                                if isinstance(style_cfg, dict):
+                                    compressed = style_cfg.get("export_compressed", False)
+                            MangaExporter.export_hierarchical_image(
+                                rendered_to_export,
+                                export_path,
+                                source_path=img_path,
+                                compressed=compressed
+                            )
+                        del rendered_to_export, full_c
+                        cleanup_gpu_memory(trim_ram=False)
 
                     self.sig_batch_progress.emit(idx + 1, total, filename, 100, "秒速恢复(缓存)")
                     self.sig_item_completed.emit(img_id, {
@@ -285,9 +289,7 @@ class BatchWorker(QThread):
                 if cache_status["erased"]:
                     self.sig_batch_progress.emit(idx + 1, total, filename, 50, "正在载入已消除底图缓存...")
                     erased_already_saved = True
-                    # Only decode erased_img into RAM if export_path requires rendering!
-                    if export_path:
-                        erased_img = cache_mgr.load_page_cache(img_path, load_images=True)["erased_img"]
+                    erased_img = cache_mgr.load_page_cache(img_path, load_images=True, load_rendered=False)["erased_img"]
                 else:
                     self.sig_batch_progress.emit(idx + 1, total, filename, 55, "正在消除背景...")
                     onoma_mode = "normal"
@@ -308,15 +310,10 @@ class BatchWorker(QThread):
                     cache_mgr.save_page_cache(img_path, erased_img=erased_img, blocks=blocks)
                     erased_already_saved = True
 
-                # Free heavy bitmaps and GPU VRAM BEFORE calling LLM Translation (especially critical for local Ollama on 8GB RAM + 1080 Ti!)
-                if not export_path:
+                # Free original_img and GPU VRAM BEFORE calling LLM Translation while keeping erased_img ready for rendering
+                if erased_img is not None:
                     original_img = None
-                    erased_img = None
-                    cleanup_gpu_memory(trim_ram=True)
-                else:
-                    if erased_img is not None:
-                        original_img = None
-                    cleanup_gpu_memory(trim_ram=False)
+                cleanup_gpu_memory(trim_ram=False)
 
                 # 5. Translate Stage (Check if blocks already have translations)
                 if self.force_retranslate:
@@ -338,26 +335,27 @@ class BatchWorker(QThread):
                     blocks = trans_mgr.translate(blocks=blocks, mode="text", source_lang=source_lang, target_lang=target_lang)
                     cache_mgr.save_page_cache(img_path, blocks=blocks)
 
-                # 6. Render & Export Stage (Deferred Typography if no export path)
-                if export_path:
-                    self.sig_batch_progress.emit(idx + 1, total, filename, 90, "正在生成排版并导出...")
-                    base_bg = erased_img if erased_img is not None else original_img
-                    if base_bg is None:
-                        base_bg = safe_cv2_imread(img_path)
-                    onoma_mode = "normal"
-                    if hasattr(self.config, "style"):
-                        onoma_mode = getattr(self.config.style, "onomatopoeia_mode", "normal")
-                    elif isinstance(self.config, dict):
-                        style_cfg = self.config.get("style", {})
-                        if isinstance(style_cfg, dict):
-                            onoma_mode = style_cfg.get("onomatopoeia_mode", "normal")
+                # 6. Render & Persist Stage (Always pre-bake rendered_img into .amt_cache for zero-lag page switching)
+                self.sig_batch_progress.emit(idx + 1, total, filename, 90, "正在生成排版并写入缓存..." if not export_path else "正在生成排版并导出...")
+                base_bg = erased_img if erased_img is not None else original_img
+                if base_bg is None:
+                    base_bg = safe_cv2_imread(img_path)
+                onoma_mode = "normal"
+                if hasattr(self.config, "style"):
+                    onoma_mode = getattr(self.config.style, "onomatopoeia_mode", "normal")
+                elif isinstance(self.config, dict):
+                    style_cfg = self.config.get("style", {})
+                    if isinstance(style_cfg, dict):
+                        onoma_mode = style_cfg.get("onomatopoeia_mode", "normal")
 
-                    render_blocks = [
-                        b for b in blocks 
-                        if (getattr(b, "type", "") if hasattr(b, "type") else b.get("type", "")) != "onomatopoeia" or onoma_mode != "ignore" or (getattr(b, "force_erase", False) if hasattr(b, "force_erase") else b.get("force_erase", False))
-                    ]
-                    translated_img = typo_eng.render_translations(base_bg, render_blocks, self.config)
-                    del base_bg
+                render_blocks = [
+                    b for b in blocks 
+                    if (getattr(b, "type", "") if hasattr(b, "type") else b.get("type", "")) != "onomatopoeia" or onoma_mode != "ignore" or (getattr(b, "force_erase", False) if hasattr(b, "force_erase") else b.get("force_erase", False))
+                ]
+                translated_img = typo_eng.render_translations(base_bg, render_blocks, self.config)
+                del base_bg
+
+                if export_path and translated_img is not None:
                     compressed = False
                     if hasattr(self.config, "style"):
                         compressed = getattr(self.config.style, "export_compressed", False)
@@ -371,19 +369,13 @@ class BatchWorker(QThread):
                         source_path=img_path,
                         compressed=compressed
                     )
-                    cache_mgr.save_page_cache(
-                        img_path,
-                        erased_img=None if erased_already_saved else erased_img,
-                        blocks=blocks,
-                        rendered_img=translated_img
-                    )
-                else:
-                    self.sig_batch_progress.emit(idx + 1, total, filename, 90, "已保存译文数据 (按需排版)...")
-                    cache_mgr.save_page_cache(
-                        img_path,
-                        erased_img=None if erased_already_saved else erased_img,
-                        blocks=blocks
-                    )
+
+                cache_mgr.save_page_cache(
+                    img_path,
+                    erased_img=None if erased_already_saved else erased_img,
+                    blocks=blocks,
+                    rendered_img=translated_img
+                )
 
                 self.sig_batch_progress.emit(idx + 1, total, filename, 100, "完成并已存盘")
                 self.sig_item_completed.emit(img_id, {

@@ -559,7 +559,15 @@ class MainWindow(QMainWindow):
         self._on_view_mode_changed(mode)
 
     def _on_view_mode_changed(self, mode: str):
-        """Switches view mode and manages split-slider bar visibility."""
+        """Switches view mode (lazily loading erased_img if switching to inpainted) and manages split-slider bar visibility."""
+        if mode == "inpainted" and self.current_image_data and self.canvas_view.erased_cv is None:
+            path = self.current_image_data.get("path")
+            erased = self.current_image_data.get("erased_img")
+            if erased is None and path:
+                erased = get_cache_manager().load_page_cache(path, load_images=True, load_erased=True, load_rendered=False).get("erased_img")
+            if erased is not None:
+                self.current_image_data["erased_img"] = erased
+                self.canvas_view.erased_cv = erased
         self.canvas_view.set_view_mode(mode)
         if mode == "split_slider":
             self.slider_bar.show()
@@ -749,7 +757,7 @@ class MainWindow(QMainWindow):
             if active_path in self._recent_memory_paths:
                 self._recent_memory_paths.remove(active_path)
             self._recent_memory_paths.append(active_path)
-        keep_paths = set(self._recent_memory_paths[-2:])
+        keep_paths = set(self._recent_memory_paths[-4:])
         cache_mgr = get_cache_manager()
         for it in getattr(self.page_list, "items_data", []):
             p = it.get("path")
@@ -764,24 +772,79 @@ class MainWindow(QMainWindow):
                     it.pop("original_cv", None)
                     it.pop("img", None)
 
+    def _prefetch_adjacent_translated_page(self, current_path: str):
+        """Pre-decodes the next translated page's rendered cache into RAM during idle time for zero-lag page switching."""
+        if not self.isVisible():
+            return
+        if (self.active_worker and self.active_worker.isRunning()) or (self.active_batch_worker and self.active_batch_worker.isRunning()):
+            return
+        items = getattr(self.page_list, "items_data", [])
+        if len(items) <= 1:
+            return
+        curr_idx = -1
+        for idx, it in enumerate(items):
+            if it.get("path") == current_path:
+                curr_idx = idx
+                break
+        if curr_idx < 0 or curr_idx + 1 >= len(items):
+            return
+        next_item = items[curr_idx + 1]
+        next_path = next_item.get("path")
+        if not next_path or not os.path.exists(next_path):
+            return
+        if next_item.get("translated_img") is not None and next_item.get("original_cv") is not None:
+            return
+        cache_mgr = get_cache_manager()
+        c_stat = cache_mgr.has_cache(next_path)
+        if not c_stat.get("rendered", False):
+            return
+        try:
+            if next_item.get("original_cv") is None:
+                next_item["original_cv"] = safe_cv2_imread(next_path)
+            cached = cache_mgr.load_page_cache(next_path, load_images=True, load_erased=False, load_rendered=True)
+            if cached.get("rendered_img") is not None:
+                next_item["translated_img"] = cached["rendered_img"]
+            if cached.get("blocks"):
+                next_item["blocks"] = cached["blocks"]
+            if next_path not in self._recent_memory_paths:
+                self._recent_memory_paths.insert(0, next_path)
+        except Exception:
+            pass
+
     def _on_page_selected(self, item_data: Dict[str, Any]):
         path = item_data.get("path")
         if path and os.path.exists(path):
             self.current_image_data = item_data
             self._evict_inactive_page_memory(path)
-            cv_img = safe_cv2_imread(path)
+            cv_img = item_data.get("original_cv")
+            if cv_img is None:
+                cv_img = safe_cv2_imread(path)
+                if cv_img is not None:
+                    item_data["original_cv"] = cv_img
             if cv_img is not None:
                 cache_mgr = get_cache_manager()
-                cached = cache_mgr.load_page_cache(path, load_images=True)
+                c_stat = cache_mgr.has_cache(path)
+                mem_translated = item_data.get("translated_img")
+                mem_erased = item_data.get("erased_img")
+                need_erased_now = (
+                    self.canvas_view.view_mode == "inpainted"
+                    or (not c_stat.get("rendered", False) and mem_translated is None)
+                )
+                cached = cache_mgr.load_page_cache(
+                    path,
+                    load_images=True,
+                    load_erased=need_erased_now and (mem_erased is None),
+                    load_rendered=(mem_translated is None)
+                )
 
                 cached_blocks = cached.get("blocks")
                 blocks = cached_blocks if cached_blocks else item_data.get("blocks", [])
 
                 cached_erased = cached.get("erased_img")
-                erased = cached_erased if cached_erased is not None else item_data.get("erased_img")
+                erased = cached_erased if cached_erased is not None else mem_erased
 
                 cached_rendered = cached.get("rendered_img")
-                translated = cached_rendered if cached_rendered is not None else item_data.get("translated_img")
+                translated = cached_rendered if cached_rendered is not None else mem_translated
 
                 has_translations = any(
                     bool(getattr(b, "translated_text", "") if hasattr(b, "translated_text") else b.get("translated_text", ""))
@@ -843,21 +906,21 @@ class MainWindow(QMainWindow):
                 self.current_image_data["erased_img"] = erased
                 self.current_image_data["translated_img"] = translated
 
-                self.canvas_view.set_data(cv_img, translated_cv=translated, erased_cv=erased, blocks=blocks)
-                self.canvas_view.fit_in_view()
-                self.inspector_panel.set_blocks(blocks)
-
-                # Automatically switch to translated view mode if translation result is available
+                # Pre-switch view_mode BEFORE set_data so set_data only converts the active mode's QPixmap!
                 if translated is not None or (erased is not None and has_translations):
                     if self.canvas_view.view_mode in ("original", "inpainted"):
-                        self.canvas_view.set_view_mode("translated")
+                        self.canvas_view.view_mode = "translated"
                         if hasattr(self, "_mode_buttons") and "translated" in self._mode_buttons:
                             self._mode_buttons["translated"].setChecked(True)
                 elif translated is None and (not blocks or not has_translations):
                     if self.canvas_view.view_mode == "translated":
-                        self.canvas_view.set_view_mode("original")
+                        self.canvas_view.view_mode = "original"
                         if hasattr(self, "_mode_buttons") and "original" in self._mode_buttons:
                             self._mode_buttons["original"].setChecked(True)
+
+                self.canvas_view.set_data(cv_img, translated_cv=translated, erased_cv=erased, blocks=blocks)
+                self.canvas_view.fit_in_view()
+                self.inspector_panel.set_blocks(blocks)
 
                 # Update breadcrumb and status chips
                 fname = os.path.basename(path)
@@ -881,6 +944,8 @@ class MainWindow(QMainWindow):
                         self.canvas_view.hud.set_page_info(curr_idx + 1, len(self.page_list.items_data))
                     else:
                         self.canvas_view.hud.set_page_info(0, len(self.page_list.items_data))
+                if translated is not None and self.isVisible():
+                    QTimer.singleShot(50, lambda p=path: self._prefetch_adjacent_translated_page(p))
 
     def _on_zoom_changed(self, zoom: float):
         """Updates zoom percentage chip on status bar and status label."""
@@ -1115,7 +1180,8 @@ class MainWindow(QMainWindow):
 
         original_cv = getattr(self.canvas_view, "original_cv", None)
         if original_cv is None:
-            original_cv = self.current_image_data.get("original_cv") or self.current_image_data.get("img")
+            orig_val = self.current_image_data.get("original_cv")
+            original_cv = orig_val if orig_val is not None else self.current_image_data.get("img")
         if original_cv is None:
             path = self.current_image_data.get("path")
             if path and os.path.exists(path):
@@ -1183,7 +1249,8 @@ class MainWindow(QMainWindow):
             path = self.current_image_data.get("path")
             original_cv = getattr(self.canvas_view, "original_cv", None)
             if original_cv is None:
-                original_cv = self.current_image_data.get("original_cv") or self.current_image_data.get("img")
+                orig_val = self.current_image_data.get("original_cv")
+                original_cv = orig_val if orig_val is not None else self.current_image_data.get("img")
             if original_cv is None and path and os.path.exists(path):
                 original_cv = safe_cv2_imread(path)
                 if original_cv is not None:
@@ -1293,10 +1360,12 @@ class MainWindow(QMainWindow):
             self.canvas_view.translated_cv = rendered
             self.canvas_view.update_translated_image(rendered, erased_cv=base_img)
             if path:
-                get_cache_manager().save_page_cache(
+                cache_mgr = get_cache_manager()
+                has_eras = cache_mgr.has_cache(path).get("erased", False)
+                cache_mgr.save_page_cache(
                     path,
                     blocks=[],
-                    erased_img=base_img,
+                    erased_img=None if has_eras else base_img,
                     rendered_img=rendered
                 )
             self.status_label.setText("气泡已删除，已还原原图底图")
@@ -1327,10 +1396,12 @@ class MainWindow(QMainWindow):
                     (b if isinstance(b, TranslationBlock) else TranslationBlock.from_dict(b)) 
                     for b in blocks
                 ]
-                get_cache_manager().save_page_cache(
+                cache_mgr = get_cache_manager()
+                has_eras = cache_mgr.has_cache(path).get("erased", False)
+                cache_mgr.save_page_cache(
                     path,
                     blocks=full_blocks_to_save,
-                    erased_img=base_img,
+                    erased_img=None if has_eras else base_img,
                     rendered_img=rendered
                 )
             self.status_label.setText("排版重绘完成并已自动保存")
@@ -1464,12 +1535,13 @@ class MainWindow(QMainWindow):
         self.current_image_data["translated_img"] = None
 
         # Reset canvas to original image
-        original_cv = self.current_image_data.get("original_cv") or self.current_image_data.get("img")
+        orig_val = self.current_image_data.get("original_cv")
+        original_cv = orig_val if orig_val is not None else self.current_image_data.get("img")
         if original_cv is None:
             # Try to reload from disk
             import cv2
             if path and os.path.exists(path):
-                original_cv = cv2.imread(path)
+                original_cv = safe_cv2_imread(path)
                 if original_cv is not None:
                     self.current_image_data["original_cv"] = original_cv
                     self.current_image_data["img"] = original_cv
@@ -1507,10 +1579,11 @@ class MainWindow(QMainWindow):
             if item_widget:
                 item_widget.reload_thumbnail()
 
-        original_cv = self.current_image_data.get("original_cv") or self.current_image_data.get("img")
+        orig_val = self.current_image_data.get("original_cv")
+        original_cv = orig_val if orig_val is not None else self.current_image_data.get("img")
         if original_cv is None and path and os.path.exists(path):
             import cv2
-            original_cv = cv2.imread(path)
+            original_cv = safe_cv2_imread(path)
             if original_cv is not None:
                 self.current_image_data["original_cv"] = original_cv
                 self.current_image_data["img"] = original_cv
@@ -1548,10 +1621,11 @@ class MainWindow(QMainWindow):
                 if item_widget:
                     item_widget.reload_thumbnail()
 
-        original_cv = self.current_image_data.get("original_cv") or self.current_image_data.get("img")
+        orig_val = self.current_image_data.get("original_cv")
+        original_cv = orig_val if orig_val is not None else self.current_image_data.get("img")
         if original_cv is None and path and os.path.exists(path):
             import cv2
-            original_cv = cv2.imread(path)
+            original_cv = safe_cv2_imread(path)
             if original_cv is not None:
                 self.current_image_data["original_cv"] = original_cv
                 self.current_image_data["img"] = original_cv
@@ -1933,10 +2007,11 @@ class MainWindow(QMainWindow):
                 if item_widget:
                     item_widget.reload_thumbnail()
 
+        slim_result = {k: v for k, v in result.items() if k != "original_img"}
         if hasattr(self.page_list, "items_data"):
             for item in self.page_list.items_data:
                 if item.get("id") == page_id:
-                    item.update(result)
+                    item.update(slim_result)
                     break
 
         if self.current_image_data is not None and (not page_id or self.current_image_data.get("id") == page_id):
@@ -2060,6 +2135,11 @@ class MainWindow(QMainWindow):
 
     def _on_batch_item_completed(self, image_id: str, result: Dict[str, Any]):
         self.page_list.update_item_status(image_id, "completed", "已完成")
+        for it in getattr(self.page_list, "items_data", []):
+            if it.get("id") == image_id:
+                it["translated_img"] = None
+                it["erased_img"] = None
+                break
         # If this is the currently active page on canvas, reload immediately if batch is not actively running
         # a multi-page queue (otherwise _on_batch_finished will refresh it without stalling the worker mid-batch).
         if self.current_image_data and self.current_image_data.get("id") == image_id:
@@ -2311,4 +2391,37 @@ class MainWindow(QMainWindow):
             desc_r = self.undo_manager.get_redo_description()
             self.redo_btn.setToolTip(f"重做: {desc_r} (Ctrl+Y / Ctrl+Shift+Z)" if desc_r else "重做 (Ctrl+Y)")
 
+    def closeEvent(self, event):
+        """Gracefully stops background workers, removes temporary archives, and reclaims memory on exit."""
+        try:
+            if hasattr(self, "_rerender_timer") and self._rerender_timer.isActive():
+                self._rerender_timer.stop()
+        except Exception:
+            pass
+
+        for worker_attr in ("active_worker", "active_batch_worker", "block_worker"):
+            worker = getattr(self, worker_attr, None)
+            if worker is not None:
+                try:
+                    if hasattr(worker, "cancel"):
+                        worker.cancel()
+                    if hasattr(worker, "isRunning") and worker.isRunning():
+                        worker.quit()
+                        worker.wait(300)
+                except Exception:
+                    pass
+
+        try:
+            if hasattr(self, "page_list") and hasattr(self.page_list, "cleanup_temp_dirs"):
+                self.page_list.cleanup_temp_dirs()
+        except Exception:
+            pass
+
+        try:
+            from app.core.hardware import cleanup_gpu_memory
+            cleanup_gpu_memory(trim_ram=True)
+        except Exception:
+            pass
+
+        super().closeEvent(event)
 

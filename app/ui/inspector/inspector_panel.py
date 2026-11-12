@@ -323,6 +323,7 @@ class InspectorPanel(QFrame):
         self.block_size_slider.setRange(5, 30)
         self.block_size_slider.setValue(10)
         self.block_size_slider.valueChanged.connect(self._on_block_font_scale_changed)
+        self.block_size_slider.sliderReleased.connect(self.sig_re_render_requested.emit)
         sc_layout.addWidget(self.block_size_slider)
 
         # Bold & Italic
@@ -359,6 +360,7 @@ class InspectorPanel(QFrame):
         self.block_stroke_w_slider.setRange(5, 50)
         self.block_stroke_w_slider.setValue(20)
         self.block_stroke_w_slider.valueChanged.connect(self._on_block_stroke_w_changed)
+        self.block_stroke_w_slider.sliderReleased.connect(self.sig_re_render_requested.emit)
         sc_layout.addWidget(self.block_stroke_w_slider)
 
         # Text Color Presets + Custom
@@ -398,6 +400,7 @@ class InspectorPanel(QFrame):
         self.block_angle_slider.setRange(-90, 90)
         self.block_angle_slider.setValue(0)
         self.block_angle_slider.valueChanged.connect(self._on_block_angle_changed)
+        self.block_angle_slider.sliderReleased.connect(self.sig_re_render_requested.emit)
         sc_layout.addWidget(self.block_angle_slider)
 
         # Quick angle buttons
@@ -965,7 +968,6 @@ class InspectorPanel(QFrame):
         base_size = self.selected_block.get("font_size", 16.0) or 16.0
         self.selected_block["font_size_override"] = round(base_size * scale, 1)
         self.sig_block_updated.emit(self.selected_block)
-        self.sig_re_render_requested.emit()
 
     def _on_block_bold_toggled(self, checked: bool):
         if not self.selected_block or not self.block_style_override_cb.isChecked():
@@ -995,7 +997,6 @@ class InspectorPanel(QFrame):
             return
         self.selected_block["stroke_width_override"] = sw
         self.sig_block_updated.emit(self.selected_block)
-        self.sig_re_render_requested.emit()
 
     def _set_quick_text_color(self, hex_color: str):
         if not self.selected_block:
@@ -1029,7 +1030,6 @@ class InspectorPanel(QFrame):
             self.block_style_override_cb.setChecked(True)
         self.selected_block["angle_override"] = float(val)
         self.sig_block_updated.emit(self.selected_block)
-        self.sig_re_render_requested.emit()
 
     def _set_quick_angle(self, angle: float):
         if not self.selected_block:

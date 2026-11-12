@@ -187,28 +187,53 @@ class MangaExporter:
             return False
 
         pil_images = []
-        for path in sorted_paths:
+        raw_handles = []
+        try:
+            for path in sorted_paths:
+                try:
+                    raw_im = Image.open(path)
+                    raw_handles.append(raw_im)
+                    if raw_im.mode != "RGB":
+                        rgb_im = raw_im.convert("RGB")
+                        raw_im.close()
+                        pil_images.append(rgb_im)
+                    else:
+                        raw_im.load()
+                        pil_images.append(raw_im)
+                except Exception as e:
+                    print(f"[-] Warning: Failed to load {path} for PDF: {e}")
+
+            if not pil_images:
+                return False
+
+            first_img = pil_images[0]
+            remaining = pil_images[1:] if len(pil_images) > 1 else []
+            first_img.save(
+                output_pdf_path,
+                "PDF",
+                resolution=100.0,
+                save_all=True,
+                append_images=remaining
+            )
+            return True
+        finally:
+            for im in pil_images:
+                try:
+                    im.close()
+                except Exception:
+                    pass
+            for im in raw_handles:
+                try:
+                    im.close()
+                except Exception:
+                    pass
+            pil_images.clear()
+            raw_handles.clear()
             try:
-                img = Image.open(path)
-                if img.mode != "RGB":
-                    img = img.convert("RGB")
-                pil_images.append(img)
-            except Exception as e:
-                print(f"[-] Warning: Failed to load {path} for PDF: {e}")
-
-        if not pil_images:
-            return False
-
-        first_img = pil_images[0]
-        remaining = pil_images[1:] if len(pil_images) > 1 else []
-        first_img.save(
-            output_pdf_path,
-            "PDF",
-            resolution=100.0,
-            save_all=True,
-            append_images=remaining
-        )
-        return True
+                from app.core.hardware import cleanup_gpu_memory
+                cleanup_gpu_memory(trim_ram=True)
+            except Exception:
+                pass
 
     @staticmethod
     def package_chapter_zip(image_paths: List[str], output_zip_path: str) -> bool:

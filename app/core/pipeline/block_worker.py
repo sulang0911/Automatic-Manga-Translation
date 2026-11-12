@@ -55,6 +55,11 @@ class BlockOcrTranslateWorker(QThread):
 
     def run(self):
         try:
+            from app.core.hardware import lower_worker_priority
+            lower_worker_priority()
+        except Exception:
+            pass
+        try:
             if self.original_cv is None or self.original_cv.size == 0:
                 self.sig_error.emit("原图数据为空，无法执行框选识别。")
                 return
@@ -205,6 +210,12 @@ class BlockOcrTranslateWorker(QThread):
             import traceback
             traceback.print_exc()
             self.sig_error.emit(f"框选识别翻译失败: {str(e)}")
+        finally:
+            try:
+                from app.core.hardware import cleanup_gpu_memory
+                cleanup_gpu_memory(trim_ram=True)
+            except Exception:
+                pass
 
     def _run_context_ocr(
         self,

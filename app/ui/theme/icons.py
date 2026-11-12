@@ -203,8 +203,17 @@ SVG_TEMPLATES: Dict[str, str] = {
 }
 
 
+_SVG_PIXMAP_CACHE: Dict[tuple, QPixmap] = {}
+_SVG_ICON_CACHE: Dict[tuple, QIcon] = {}
+
+
 def render_svg_pixmap(name: str, color: str = "#F4F4F5", size: int = 18) -> QPixmap:
-    """Renders a vector SVG path into a high-DPI QPixmap with given color and size."""
+    """Renders a vector SVG path into a high-DPI QPixmap with given color and size (with in-memory caching)."""
+    cache_key = (name, color, int(size))
+    cached = _SVG_PIXMAP_CACHE.get(cache_key)
+    if cached is not None and not cached.isNull():
+        return cached
+
     body = SVG_TEMPLATES.get(name, SVG_TEMPLATES["alert"])
     filled_body = body.format(color=color)
     svg_data = (
@@ -220,11 +229,19 @@ def render_svg_pixmap(name: str, color: str = "#F4F4F5", size: int = 18) -> QPix
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     renderer.render(painter)
     painter.end()
+    if len(_SVG_PIXMAP_CACHE) >= 256:
+        _SVG_PIXMAP_CACHE.clear()
+    _SVG_PIXMAP_CACHE[cache_key] = pixmap
     return pixmap
 
 
 def get_icon(name: str, color: str = "#F4F4F5", active_color: Optional[str] = None, size: int = 18) -> QIcon:
-    """Constructs a multi-state QIcon from vector SVG."""
+    """Constructs a cached multi-state QIcon from vector SVG."""
+    cache_key = (name, color, active_color, int(size))
+    cached_icon = _SVG_ICON_CACHE.get(cache_key)
+    if cached_icon is not None and not cached_icon.isNull():
+        return cached_icon
+
     icon = QIcon()
     pix_normal = render_svg_pixmap(name, color=color, size=size)
     icon.addPixmap(pix_normal, QIcon.Mode.Normal, QIcon.State.Off)
@@ -233,4 +250,7 @@ def get_icon(name: str, color: str = "#F4F4F5", active_color: Optional[str] = No
         pix_active = render_svg_pixmap(name, color=active_color, size=size)
         icon.addPixmap(pix_active, QIcon.Mode.Normal, QIcon.State.On)
         icon.addPixmap(pix_active, QIcon.Mode.Active, QIcon.State.On)
+    if len(_SVG_ICON_CACHE) >= 256:
+        _SVG_ICON_CACHE.clear()
+    _SVG_ICON_CACHE[cache_key] = icon
     return icon

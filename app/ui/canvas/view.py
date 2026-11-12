@@ -276,7 +276,7 @@ class MangaCanvasView(QGraphicsView):
             QPainter.RenderHint.SmoothPixmapTransform |
             QPainter.RenderHint.TextAntialiasing
         )
-        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
+        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.SmartViewportUpdate)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
@@ -554,6 +554,38 @@ class MangaCanvasView(QGraphicsView):
             for item in self.bubble_items:
                 item.setVisible(show)
 
+    def _ensure_pixmaps_for_mode(self, mode: str):
+        """Lazily converts numpy arrays to QPixmaps only when required by the active view mode."""
+        bg_item = getattr(self._scene, "background_item", None)
+        orig_pix = getattr(bg_item, "_original_pixmap", QPixmap()) if bg_item else QPixmap()
+        trans_pix = getattr(bg_item, "_translated_pixmap", QPixmap()) if bg_item else QPixmap()
+        eras_pix = getattr(bg_item, "_erased_pixmap", QPixmap()) if bg_item else QPixmap()
+        changed = False
+
+        need_trans = mode in ("translated", "split_slider", "side_by_side")
+        need_orig = (
+            mode in ("original", "split_slider", "side_by_side")
+            or (mode == "translated" and (self.translated_cv is None or self.translated_cv.size == 0))
+            or (mode == "inpainted" and (self.erased_cv is None or self.erased_cv.size == 0))
+        )
+        need_eras = (
+            mode == "inpainted"
+            or (mode == "side_by_side" and (self.translated_cv is None or self.translated_cv.size == 0))
+        )
+
+        if need_trans and (trans_pix is None or trans_pix.isNull()) and self.translated_cv is not None and self.translated_cv.size > 0:
+            trans_pix = cvimg_to_qpixmap(self.translated_cv)
+            changed = True
+        if need_orig and (orig_pix is None or orig_pix.isNull()) and self.original_cv is not None and self.original_cv.size > 0:
+            orig_pix = cvimg_to_qpixmap(self.original_cv)
+            changed = True
+        if need_eras and (eras_pix is None or eras_pix.isNull()) and self.erased_cv is not None and self.erased_cv.size > 0:
+            eras_pix = cvimg_to_qpixmap(self.erased_cv)
+            changed = True
+
+        if changed:
+            self._scene.set_images(orig_pix, trans_pix, eras_pix)
+
     def set_data(
         self,
         original_cv: Optional[np.ndarray],
@@ -561,39 +593,41 @@ class MangaCanvasView(QGraphicsView):
         erased_cv: Optional[np.ndarray] = None,
         blocks: Optional[List[Any]] = None
     ):
-        """Sets raw image data, generates pixmaps, and resets layout."""
+        """Sets raw image data, generates only the active view mode pixmaps, and resets layout."""
         self.original_cv = original_cv
         self.translated_cv = translated_cv
         self.erased_cv = erased_cv
         self.blocks = blocks if blocks is not None else []
 
-        if original_cv is not None and original_cv.size > 0:
+        has_any_img = (
+            (original_cv is not None and original_cv.size > 0)
+            or (translated_cv is not None and translated_cv.size > 0)
+        )
+        if has_any_img:
             if hasattr(self, "empty_state"):
                 self.empty_state.hide()
         else:
             if hasattr(self, "empty_state"):
                 self.empty_state.show()
 
-        orig_pix = cvimg_to_qpixmap(original_cv)
-        trans_pix = cvimg_to_qpixmap(translated_cv)
-        eras_pix = cvimg_to_qpixmap(erased_cv)
-
-        self._scene.set_images(orig_pix, trans_pix, eras_pix)
+        self._scene.set_images(QPixmap(), QPixmap(), QPixmap())
+        self._ensure_pixmaps_for_mode(self.view_mode)
         self.set_view_mode(self.view_mode)
         self._rebuild_bubbles()
 
     def update_translated_image(self, translated_cv: Optional[np.ndarray], erased_cv: Optional[np.ndarray] = None):
         """Updates translated pixmap in scene background without destroying or recreating interactive bubble items."""
+        prev_erased = self.erased_cv
         self.translated_cv = translated_cv
         if erased_cv is not None:
             self.erased_cv = erased_cv
         bg_item = getattr(self._scene, "background_item", None)
-        existing_orig = getattr(bg_item, "_orig_pix", None) if bg_item else None
-        existing_eras = getattr(bg_item, "_eras_pix", None) if bg_item else None
+        existing_orig = getattr(bg_item, "_original_pixmap", None) if bg_item else None
+        existing_eras = getattr(bg_item, "_erased_pixmap", None) if bg_item else None
 
         orig_pix = existing_orig if (existing_orig is not None and not existing_orig.isNull()) else cvimg_to_qpixmap(self.original_cv)
         trans_pix = cvimg_to_qpixmap(self.translated_cv)
-        if erased_cv is None and existing_eras is not None and not existing_eras.isNull():
+        if (erased_cv is None or erased_cv is prev_erased) and existing_eras is not None and not existing_eras.isNull():
             eras_pix = existing_eras
         else:
             eras_pix = cvimg_to_qpixmap(self.erased_cv)
@@ -616,6 +650,7 @@ class MangaCanvasView(QGraphicsView):
         'original' | 'translated' | 'inpainted' | 'side_by_side' | 'split_slider'
         """
         self.view_mode = mode
+        self._ensure_pixmaps_for_mode(mode)
         self._scene.set_view_mode(mode)
         if mode == "side_by_side":
             self._clear_bubbles()
