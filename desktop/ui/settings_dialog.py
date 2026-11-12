@@ -1,12 +1,20 @@
+from typing import Tuple
 from PyQt6.QtWidgets import (
-    QWidget, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QLineEdit, QTextEdit, QComboBox, QSlider, QCheckBox,
+    QApplication, QWidget, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QLineEdit, QTextEdit, QComboBox, QSlider, QCheckBox, QListView,
     QFrame, QStackedWidget, QListWidget, QListWidgetItem,
     QSpinBox, QFileDialog, QGroupBox, QScrollArea
 )
 from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal
 from ..core.config_manager import ConfigManager, DEFAULT_SYSTEM_PROMPT
 from ..core.translation_engine import TranslationEngine
+from .styles import get_stylesheet
+
+
+def _configure_combo_popup(combo: QComboBox) -> None:
+    view = QListView(combo)
+    view.setUniformItemSizes(True)
+    combo.setView(view)
 
 
 class ModelTestWorker(QThread):
@@ -43,8 +51,12 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.config_manager = config_manager
         self.setWindowTitle("系统偏好设置")
-        self.resize(720, 640)
-        self.setMinimumSize(680, 560)
+        self.resize(760, 660)
+        self.setMinimumSize(700, 580)
+
+        app_inst = QApplication.instance()
+        if app_inst and not app_inst.styleSheet():
+            self.setStyleSheet(get_stylesheet("dark"))
 
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(16, 16, 16, 16)
@@ -52,22 +64,34 @@ class SettingsDialog(QDialog):
 
         # Left Category Navigation List (Apple Settings style)
         self.nav_list = QListWidget(self)
-        self.nav_list.setFixedWidth(160)
+        self.nav_list.setObjectName("settingsNavList")
+        self.nav_list.setFixedWidth(184)
+        self.nav_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.nav_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.nav_list.setSpacing(2)
         self.nav_list.setStyleSheet("""
-            QListWidget {
-                background-color: #1A1A1C;
-                border: 1px solid rgba(255,255,255,0.06);
+            QListWidget#settingsNavList {
+                background-color: #1E1E22;
+                border: 1px solid #2C2C30;
                 border-radius: 10px;
-                padding: 4px;
+                padding: 6px;
+                outline: none;
             }
-            QListWidget::item {
-                border-radius: 8px;
-                padding: 10px 12px;
+            QListWidget#settingsNavList::item {
+                border-radius: 7px;
+                padding: 6px 10px;
+                margin: 2px 0px;
+                font-size: 12px;
                 font-weight: 500;
+                color: #F5F5F7;
             }
-            QListWidget::item:selected {
+            QListWidget#settingsNavList::item:hover:!selected {
+                background-color: #2C2C31;
+            }
+            QListWidget#settingsNavList::item:selected {
                 background-color: #0A84FF;
                 color: #FFFFFF;
+                font-weight: 600;
             }
         """)
 
@@ -79,15 +103,17 @@ class SettingsDialog(QDialog):
         ]
         for name, _ in categories:
             item = QListWidgetItem(name)
-            item.setSizeHint(QSize(140, 38))
+            item.setSizeHint(QSize(164, 38))
             self.nav_list.addItem(item)
 
         main_layout.addWidget(self.nav_list)
 
         # Right Stacked Pages
         right_container = QVBoxLayout()
+        right_container.setContentsMargins(0, 0, 0, 0)
+        right_container.setSpacing(12)
         self.stack = QStackedWidget(self)
-        right_container.addWidget(self.stack)
+        right_container.addWidget(self.stack, 1)
 
         self.stack.addWidget(self._create_llm_page())
         self.stack.addWidget(self._create_ocr_page())
@@ -99,32 +125,47 @@ class SettingsDialog(QDialog):
 
         # Bottom Action Bar
         bottom_bar = QHBoxLayout()
+        bottom_bar.setContentsMargins(8, 4, 12, 0)
+        bottom_bar.setSpacing(10)
         bottom_bar.addStretch()
 
         cancel_btn = QPushButton("取消", self)
+        cancel_btn.setMinimumHeight(32)
+        cancel_btn.setMinimumWidth(76)
         cancel_btn.clicked.connect(self.reject)
         bottom_bar.addWidget(cancel_btn)
 
         save_btn = QPushButton("保存配置", self)
         save_btn.setObjectName("primaryBtn")
+        save_btn.setProperty("class", "primaryBtn")
+        save_btn.setMinimumHeight(32)
+        save_btn.setMinimumWidth(96)
         save_btn.clicked.connect(self._save_and_close)
         bottom_bar.addWidget(save_btn)
 
         right_container.addLayout(bottom_bar)
-        main_layout.addLayout(right_container)
+        main_layout.addLayout(right_container, 1)
 
         self._load_values()
 
-    def _create_llm_page(self) -> QWidget:
+    def _create_scroll_page(self) -> Tuple[QScrollArea, QWidget, QVBoxLayout]:
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setStyleSheet("background: transparent;")
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea { background-color: transparent; border: none; }")
 
         page = QWidget()
+        page.setObjectName("settingsScrollContent")
+        page.setStyleSheet("QWidget#settingsScrollContent { background-color: transparent; }")
+
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(8, 4, 12, 4)
-        layout.setSpacing(10)
+        layout.setContentsMargins(8, 4, 12, 8)
+        layout.setSpacing(12)
+        return scroll, page, layout
+
+    def _create_llm_page(self) -> QWidget:
+        scroll, page, layout = self._create_scroll_page()
 
         title = QLabel("AI 翻译服务与端点配置")
         title.setObjectName("headingLabel")
@@ -133,6 +174,7 @@ class SettingsDialog(QDialog):
         # Provider
         layout.addWidget(QLabel("服务提供商:"))
         self.llm_provider_combo = QComboBox()
+        _configure_combo_popup(self.llm_provider_combo)
         self.llm_provider_combo.addItems(["DeepSeek", "OpenAI", "Google Gemini", "自定义 API (OpenAI 兼容)"])
         layout.addWidget(self.llm_provider_combo)
 
@@ -162,37 +204,46 @@ class SettingsDialog(QDialog):
         prompt_header.addStretch()
 
         reset_prompt_btn = QPushButton("🔄 恢复默认提示词")
-        reset_prompt_btn.setStyleSheet("font-size: 11px; padding: 2px 8px; border-radius: 4px;")
+        reset_prompt_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 11px;
+                padding: 3px 10px;
+                border-radius: 5px;
+                min-height: 18px;
+            }
+        """)
         reset_prompt_btn.clicked.connect(lambda: self.sys_prompt_edit.setPlainText(DEFAULT_SYSTEM_PROMPT))
         prompt_header.addWidget(reset_prompt_btn)
         layout.addLayout(prompt_header)
 
         self.sys_prompt_edit = QTextEdit()
         self.sys_prompt_edit.setPlaceholderText("输入大模型的系统提示词...")
-        self.sys_prompt_edit.setMinimumHeight(85)
-        self.sys_prompt_edit.setMaximumHeight(130)
+        self.sys_prompt_edit.setMinimumHeight(96)
+        self.sys_prompt_edit.setMaximumHeight(140)
         layout.addWidget(self.sys_prompt_edit)
 
         # Test Connectivity Group
         test_group = QGroupBox("🔗 模型连通性测试")
         test_layout = QVBoxLayout(test_group)
+        test_layout.setContentsMargins(12, 10, 12, 12)
         test_layout.setSpacing(8)
 
         test_layout.addWidget(QLabel("测试文本 (向模型发送以检验连通与翻译):"))
         test_input_row = QHBoxLayout()
+        test_input_row.setSpacing(8)
         self.test_text_input = QLineEdit("Hello! This is a translation connectivity test.")
         self.test_text_input.setPlaceholderText("输入测试语句...")
-        test_input_row.addWidget(self.test_text_input)
+        test_input_row.addWidget(self.test_text_input, 1)
 
         self.test_conn_btn = QPushButton("🚀 测试连通性")
-        self.test_conn_btn.setFixedWidth(110)
+        self.test_conn_btn.setMinimumWidth(118)
         self.test_conn_btn.clicked.connect(self._run_connection_test)
         test_input_row.addWidget(self.test_conn_btn)
         test_layout.addLayout(test_input_row)
 
         self.test_result_label = QLabel("点击“测试连通性”验证当前配置是否可以正常调用并翻译。")
         self.test_result_label.setWordWrap(True)
-        self.test_result_label.setStyleSheet("color: rgba(255,255,255,0.6); padding: 4px; font-size: 12px;")
+        self.test_result_label.setStyleSheet("color: #8E8E93; padding: 4px 2px; font-size: 12px;")
         test_layout.addWidget(self.test_result_label)
 
         layout.addWidget(test_group)
@@ -202,10 +253,7 @@ class SettingsDialog(QDialog):
         return scroll
 
     def _create_ocr_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(8, 4, 8, 4)
-        layout.setSpacing(12)
+        scroll, page, layout = self._create_scroll_page()
 
         title = QLabel("本地 OCR 图像文字识别引擎")
         title.setObjectName("headingLabel")
@@ -214,6 +262,7 @@ class SettingsDialog(QDialog):
         # Engine Choice
         layout.addWidget(QLabel("OCR 引擎核心:"))
         self.ocr_engine_combo = QComboBox()
+        _configure_combo_popup(self.ocr_engine_combo)
         self.ocr_engine_combo.addItems([
             "Comic-Text-Detector + Manga-OCR (纯 PyTorch 漫画专属，强烈推荐)",
             "PaddleOCR 3.x (通用中/日/英，国漫推荐)",
@@ -230,37 +279,38 @@ class SettingsDialog(QDialog):
         # Source Language
         layout.addWidget(QLabel("识别源语言排版:"))
         self.ocr_lang_combo = QComboBox()
+        _configure_combo_popup(self.ocr_lang_combo)
         self.ocr_lang_combo.addItems(["日语 (japan - 竖排/横排深度对齐)", "简体中文 (ch)", "英语 (en)", "韩语 (korean)"])
         layout.addWidget(self.ocr_lang_combo)
 
         # Dual-Model Ensemble & Fusion Settings
         ens_group = QGroupBox("双模型增强模式 (Ensemble & Fusion)")
         ens_layout = QVBoxLayout(ens_group)
+        ens_layout.setContentsMargins(12, 10, 12, 12)
+        ens_layout.setSpacing(8)
 
         self.ensemble_det_cb = QCheckBox("启用双模型联合找框 (CTD + 通用检测器互补，大幅减少漏识)")
         ens_layout.addWidget(self.ensemble_det_cb)
         det_tip = QLabel("说明：结合气泡检测模型与通用文本检测器，使用 IoU 覆盖度去重，可大幅召回矩形独白框、背景招牌等文字，降低漏翻率。")
-        det_tip.setStyleSheet("color: #8E8E93; font-size: 11px; margin-left: 20px; margin-bottom: 6px;")
+        det_tip.setStyleSheet("color: #8E8E93; font-size: 11px; padding-left: 24px; padding-bottom: 4px;")
         det_tip.setWordWrap(True)
         ens_layout.addWidget(det_tip)
 
         self.ensemble_rec_cb = QCheckBox("启用双模型交叉验证识字 (Manga-OCR + 通用识别器融合)")
         ens_layout.addWidget(self.ensemble_rec_cb)
         rec_tip = QLabel("说明：利用通用识别器辅助纠正日文模型在纯英文人名、年龄数字（如 Friend B (20)、Chris）上的假名幻觉，强强互补。")
-        rec_tip.setStyleSheet("color: #8E8E93; font-size: 11px; margin-left: 20px;")
+        rec_tip.setStyleSheet("color: #8E8E93; font-size: 11px; padding-left: 24px;")
         rec_tip.setWordWrap(True)
         ens_layout.addWidget(rec_tip)
 
         layout.addWidget(ens_group)
-
         layout.addStretch()
-        return page
+
+        scroll.setWidget(page)
+        return scroll
 
     def _create_inpaint_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(8, 4, 8, 4)
-        layout.setSpacing(12)
+        scroll, page, layout = self._create_scroll_page()
 
         title = QLabel("图像背景消除与高保真修复")
         title.setObjectName("headingLabel")
@@ -269,6 +319,7 @@ class SettingsDialog(QDialog):
         # Engine Choice
         layout.addWidget(QLabel("修复算法引擎:"))
         self.inpaint_engine_combo = QComboBox()
+        _configure_combo_popup(self.inpaint_engine_combo)
         self.inpaint_engine_combo.addItems([
             "自动选择 (优先 LaMa 深度学习，回退 OpenCV)",
             "OpenCV 智能羽化算法 (Telea - 极速)",
@@ -279,37 +330,41 @@ class SettingsDialog(QDialog):
         # Dilation parameters
         dil_box = QGroupBox("智能掩码膨胀与羽化参数")
         dil_layout = QVBoxLayout(dil_box)
+        dil_layout.setContentsMargins(12, 10, 12, 12)
+        dil_layout.setSpacing(10)
 
         b_row = QHBoxLayout()
-        b_row.addWidget(QLabel("对话气泡膨胀像素 (Bubble Dilation):"))
+        b_row.addWidget(QLabel("对话气泡膨胀像素 (Bubble Dilation):"), 1)
         self.bubble_dil_spin = QSpinBox()
         self.bubble_dil_spin.setRange(1, 20)
+        self.bubble_dil_spin.setFixedWidth(90)
         b_row.addWidget(self.bubble_dil_spin)
         dil_layout.addLayout(b_row)
 
         o_row = QHBoxLayout()
-        o_row.addWidget(QLabel("拟声词膨胀像素 (Onomatopoeia Dilation):"))
+        o_row.addWidget(QLabel("拟声词膨胀像素 (Onomatopoeia Dilation):"), 1)
         self.onoma_dil_spin = QSpinBox()
         self.onoma_dil_spin.setRange(1, 30)
+        self.onoma_dil_spin.setFixedWidth(90)
         o_row.addWidget(self.onoma_dil_spin)
         dil_layout.addLayout(o_row)
 
         f_row = QHBoxLayout()
-        f_row.addWidget(QLabel("羽化融合半径 (Feather Radius):"))
+        f_row.addWidget(QLabel("羽化融合半径 (Feather Radius):"), 1)
         self.feather_spin = QSpinBox()
         self.feather_spin.setRange(1, 20)
+        self.feather_spin.setFixedWidth(90)
         f_row.addWidget(self.feather_spin)
         dil_layout.addLayout(f_row)
 
         layout.addWidget(dil_box)
         layout.addStretch()
-        return page
+
+        scroll.setWidget(page)
+        return scroll
 
     def _create_typo_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(8, 4, 8, 4)
-        layout.setSpacing(12)
+        scroll, page, layout = self._create_scroll_page()
 
         title = QLabel("排版与导出设置")
         title.setObjectName("headingLabel")
@@ -318,23 +373,28 @@ class SettingsDialog(QDialog):
         # Onomatopoeia strategy
         layout.addWidget(QLabel("拟声词处理策略:"))
         self.onoma_mode_combo = QComboBox()
+        _configure_combo_popup(self.onoma_mode_combo)
         self.onoma_mode_combo.addItems(["正常消除并翻译 (Normal)", "半透明艺术保留 (Transparent)", "跳过不处理 (Ignore)"])
         layout.addWidget(self.onoma_mode_combo)
 
         # Default export directory
         layout.addWidget(QLabel("默认导出文件夹:"))
         export_row = QHBoxLayout()
+        export_row.setSpacing(8)
         self.export_dir_input = QLineEdit()
         self.export_dir_input.setPlaceholderText("留空则保存至原图所在目录")
-        export_row.addWidget(self.export_dir_input)
+        export_row.addWidget(self.export_dir_input, 1)
 
         browse_btn = QPushButton("浏览...")
+        browse_btn.setMinimumWidth(76)
         browse_btn.clicked.connect(self._browse_export_dir)
         export_row.addWidget(browse_btn)
         layout.addLayout(export_row)
 
         layout.addStretch()
-        return page
+
+        scroll.setWidget(page)
+        return scroll
 
     def _browse_export_dir(self):
         dir_path = QFileDialog.getExistingDirectory(self, "选择默认导出目录")
@@ -371,7 +431,7 @@ class SettingsDialog(QDialog):
             self.ocr_lang_combo.setCurrentIndex(lang_map.index(cur_lang))
         self.ensemble_det_cb.setChecked(bool(cfg.get("ocr_ensemble_detection", False)))
         self.ensemble_rec_cb.setChecked(bool(cfg.get("ocr_ensemble_recognition", False)))
-        
+
         # Inpaint
         inpaint_eng = cfg.get("inpaint_engine", "auto")
         if inpaint_eng == "opencv_telea": self.inpaint_engine_combo.setCurrentIndex(1)

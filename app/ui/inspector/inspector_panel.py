@@ -909,6 +909,22 @@ class InspectorPanel(QFrame):
         else:
             merged_trans = tt1 or tt2
 
+        prev_merged = list(first.get("_merged_boxes", []))
+        for src_b in (b1, b2):
+            prev_merged.append({
+                "xmin": float(src_b.get("xmin", 0.0)),
+                "ymin": float(src_b.get("ymin", 0.0)),
+                "xmax": float(src_b.get("xmax", 0.0)),
+                "ymax": float(src_b.get("ymax", 0.0)),
+                "polygon": src_b.get("polygon") or src_b.get("_orig_polygon"),
+            })
+            if src_b.get("_orig_box"):
+                ob = src_b["_orig_box"]
+                prev_merged.append({"xmin": ob[0], "ymin": ob[1], "xmax": ob[2], "ymax": ob[3]})
+            if src_b.get("_merged_boxes"):
+                prev_merged.extend(src_b["_merged_boxes"])
+        first["_merged_boxes"] = prev_merged
+        first["polygon"] = None
         first["xmin"] = merged_xmin
         first["ymin"] = merged_ymin
         first["xmax"] = merged_xmax

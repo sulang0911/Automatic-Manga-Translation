@@ -241,8 +241,25 @@ class MainWindow(QMainWindow):
                 b for b in blocks if str(b.get("id") if isinstance(b, dict) else getattr(b, "id", None)) != str(block_id)
             ]
 
+            path = self.current_image_data.get("path")
             original_cv = getattr(self.canvas_view, "original_cv", None)
-            erased_cv = self.current_image_data.get("erased_img") or getattr(self.canvas_view, "erased_cv", None)
+            if original_cv is None and path and os.path.exists(path):
+                from app.core.cache.cache_manager import safe_cv2_imread
+                original_cv = safe_cv2_imread(path)
+                if original_cv is not None:
+                    self.canvas_view.original_cv = original_cv
+
+            erased_cv = self.current_image_data.get("erased_img")
+            if erased_cv is None:
+                erased_cv = getattr(self.canvas_view, "erased_cv", None)
+            if erased_cv is None and path:
+                try:
+                    from app.core.cache.cache_manager import get_cache_manager
+                    erased_cv = get_cache_manager().load_page_cache(
+                        path, load_images=True, load_erased=True, load_rendered=False
+                    ).get("erased_img")
+                except Exception:
+                    pass
 
             if target_block and original_cv is not None and erased_cv is not None:
                 from app.core.inpaint.restore_helper import restore_block_pixels
@@ -278,7 +295,9 @@ class MainWindow(QMainWindow):
         if not self.current_image_data:
             return
         blocks = self.current_image_data.get("blocks", [])
-        base_img = self.current_image_data.get("erased_img") or getattr(self.canvas_view, "original_cv", None)
+        base_img = self.current_image_data.get("erased_img")
+        if base_img is None:
+            base_img = getattr(self.canvas_view, "original_cv", None)
         if base_img is None:
             return
 
@@ -418,20 +437,50 @@ class MainWindow(QMainWindow):
     def _re_render_current_page(self):
         if not self.current_image_data:
             return
-        blocks = self.current_image_data.get("blocks")
-        if not blocks:
-            return
-
+        blocks = self.current_image_data.get("blocks") or []
         base_img = self.current_image_data.get("erased_img")
         if base_img is None:
-            base_img = self.canvas_view.original_cv
+            base_img = getattr(self.canvas_view, "original_cv", None)
+        if base_img is None:
+            return
 
-        if base_img is not None:
-            typo_eng = TypographyEngine()
-            translated_cv = typo_eng.render_translations(base_img, blocks, self.config_manager.data)
-            self.current_image_data["translated_img"] = translated_cv
-            self.canvas_view.translated_cv = translated_cv
+        path = self.current_image_data.get("path")
+        if not blocks:
+            rendered = base_img.copy()
+            self.current_image_data["translated_img"] = rendered
+            self.canvas_view.translated_cv = rendered
+            if hasattr(self.canvas_view, "update_translated_image"):
+                self.canvas_view.update_translated_image(rendered, erased_cv=base_img)
+            elif hasattr(self.canvas_view, "refresh_display"):
+                self.canvas_view.refresh_display()
+            if path:
+                try:
+                    from app.core.cache.cache_manager import get_cache_manager
+                    get_cache_manager().save_page_cache(
+                        path, blocks=[], erased_img=base_img, rendered_img=rendered
+                    )
+                except Exception:
+                    pass
+            return
+
+        typo_eng = TypographyEngine()
+        cfg_data = getattr(self, "config_manager", None)
+        style_arg = cfg_data.data if cfg_data is not None and hasattr(cfg_data, "data") else None
+        translated_cv = typo_eng.render_translations(base_img, blocks, style_arg)
+        self.current_image_data["translated_img"] = translated_cv
+        self.canvas_view.translated_cv = translated_cv
+        if hasattr(self.canvas_view, "update_translated_image"):
+            self.canvas_view.update_translated_image(translated_cv, erased_cv=base_img)
+        elif hasattr(self.canvas_view, "refresh_display"):
             self.canvas_view.refresh_display()
+        if path:
+            try:
+                from app.core.cache.cache_manager import get_cache_manager
+                get_cache_manager().save_page_cache(
+                    path, blocks=blocks, erased_img=base_img, rendered_img=rendered if "rendered" in locals() else translated_cv
+                )
+            except Exception:
+                pass
 
     def _export_current_page(self):
         if not self.current_image_data or self.canvas_view.translated_cv is None:

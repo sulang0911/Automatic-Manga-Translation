@@ -322,3 +322,48 @@ def test_disk_file_cache_persistence_on_block_deleted(qapp, tmp_path):
     assert np.all(np.abs(loaded_cache["erased_img"][40, 40].astype(int) - np.array([15, 30, 45])) <= 2)
 
 
+def test_restore_expanded_unboxed_and_feathered_inpaint_halo():
+    """Verifies that when padding > 0, the entire expanded unboxed & feathered halo is restored."""
+    H, W = 300, 300
+    orig = np.full((H, W, 3), [40, 80, 120], dtype=np.uint8)
+    # Draw simulated text + extended unboxed halo up to 25px outside the tight OCR box (100..150, 100..180)
+    erased = orig.copy()
+    erased[72:178, 68:212] = [200, 200, 200]
+
+    deleted_block = {
+        "id": "b_unboxed",
+        "xmin": (100.0 / W) * 100.0,
+        "ymin": (100.0 / H) * 100.0,
+        "xmax": (180.0 / W) * 100.0,
+        "ymax": (150.0 / H) * 100.0,
+        "type": "onomatopoeia"
+    }
+
+    restored = restore_block_pixels(
+        original_img=orig,
+        erased_img=erased,
+        deleted_block=deleted_block,
+        remaining_blocks=[],
+        padding=4
+    )
+    assert np.array_equal(restored, orig)
+
+
+def test_restore_moved_and_merged_blocks():
+    """Verifies that deleting a moved (_orig_box) or merged (_merged_boxes) bubble restores all original erased areas."""
+    H, W = 200, 200
+    orig = np.full((H, W, 3), [10, 50, 90], dtype=np.uint8)
+    erased = np.full((H, W, 3), [240, 240, 240], dtype=np.uint8)
+
+    # Simulate a block originally at (10..30%, 10..30%) that was dragged to (60..80%, 60..80%)
+    moved_block = {
+        "id": "b_moved",
+        "xmin": 60.0,
+        "ymin": 60.0,
+        "xmax": 80.0,
+        "ymax": 80.0,
+        "_orig_box": [10.0, 10.0, 30.0, 30.0]
+    }
+    restored = restore_block_pixels(orig, erased, moved_block, remaining_blocks=[], padding=0)
+    assert np.array_equal(restored[20, 20], [10, 50, 90])
+    assert np.array_equal(restored[140, 140], [10, 50, 90])

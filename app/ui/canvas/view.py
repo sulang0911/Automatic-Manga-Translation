@@ -617,7 +617,6 @@ class MangaCanvasView(QGraphicsView):
 
     def update_translated_image(self, translated_cv: Optional[np.ndarray], erased_cv: Optional[np.ndarray] = None):
         """Updates translated pixmap in scene background without destroying or recreating interactive bubble items."""
-        prev_erased = self.erased_cv
         self.translated_cv = translated_cv
         if erased_cv is not None:
             self.erased_cv = erased_cv
@@ -627,7 +626,7 @@ class MangaCanvasView(QGraphicsView):
 
         orig_pix = existing_orig if (existing_orig is not None and not existing_orig.isNull()) else cvimg_to_qpixmap(self.original_cv)
         trans_pix = cvimg_to_qpixmap(self.translated_cv)
-        if (erased_cv is None or erased_cv is prev_erased) and existing_eras is not None and not existing_eras.isNull():
+        if erased_cv is None and existing_eras is not None and not existing_eras.isNull():
             eras_pix = existing_eras
         else:
             eras_pix = cvimg_to_qpixmap(self.erased_cv)
@@ -820,6 +819,17 @@ class MangaCanvasView(QGraphicsView):
             self.toggle_draw_tool()
             event.accept()
             return
+        elif event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            if hasattr(self, "in_place_editor") and self.in_place_editor.isVisible():
+                super().keyPressEvent(event)
+                return
+            for it in self.bubble_items:
+                if it.isSelected():
+                    bid = str(it.block_data.get("id", ""))
+                    if bid:
+                        self.sig_bubble_delete.emit(bid)
+                        event.accept()
+                        return
         elif event.key() == Qt.Key.Key_Escape:
             if hasattr(self, "in_place_editor") and self.in_place_editor.isVisible():
                 self.in_place_editor.close_editor()

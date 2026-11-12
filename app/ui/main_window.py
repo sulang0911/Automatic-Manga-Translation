@@ -978,7 +978,7 @@ class MainWindow(QMainWindow):
                     b.update(block_data)
                 else:
                     for k, v in block_data.items():
-                        if hasattr(b, k):
+                        if hasattr(b, k) or str(k).startswith("_"):
                             setattr(b, k, v)
                 break
         if self.inspector_panel.selected_block and str(self.inspector_panel.selected_block.get("id")) == target_id:
@@ -1180,8 +1180,9 @@ class MainWindow(QMainWindow):
 
         original_cv = getattr(self.canvas_view, "original_cv", None)
         if original_cv is None:
-            orig_val = self.current_image_data.get("original_cv")
-            original_cv = orig_val if orig_val is not None else self.current_image_data.get("img")
+            original_cv = self.current_image_data.get("original_cv")
+        if original_cv is None:
+            original_cv = self.current_image_data.get("img")
         if original_cv is None:
             path = self.current_image_data.get("path")
             if path and os.path.exists(path):
@@ -1222,7 +1223,7 @@ class MainWindow(QMainWindow):
                     b.update(block_data)
                 else:
                     for k, v in block_data.items():
-                        if hasattr(b, k):
+                        if hasattr(b, k) or str(k).startswith("_"):
                             setattr(b, k, v)
                 break
         self.canvas_view.update_bubble_item(block_data)
@@ -1238,30 +1239,59 @@ class MainWindow(QMainWindow):
             if target_block is None:
                 return
 
+            # Merge any pre-drag or merged box metadata from canvas BubbleItem / InspectorPanel
+            for it in getattr(self.canvas_view, "bubble_items", []):
+                if str(it.block_data.get("id", "")) == str(block_id):
+                    for meta_k in ("_orig_box", "_orig_polygon", "_merged_boxes"):
+                        if meta_k in it.block_data:
+                            if isinstance(target_block, dict):
+                                target_block.setdefault(meta_k, it.block_data[meta_k])
+                            else:
+                                if getattr(target_block, meta_k, None) is None:
+                                    setattr(target_block, meta_k, it.block_data[meta_k])
+                    break
+
+            for ib in getattr(self.inspector_panel, "current_blocks", []):
+                if isinstance(ib, dict) and str(ib.get("id", "")) == str(block_id):
+                    for meta_k in ("_orig_box", "_orig_polygon", "_merged_boxes"):
+                        if meta_k in ib:
+                            if isinstance(target_block, dict):
+                                target_block.setdefault(meta_k, ib[meta_k])
+                            else:
+                                if getattr(target_block, meta_k, None) is None:
+                                    setattr(target_block, meta_k, ib[meta_k])
+                    break
+
+            path = self.current_image_data.get("path")
+            original_cv = getattr(self.canvas_view, "original_cv", None)
+            if original_cv is None:
+                original_cv = self.current_image_data.get("original_cv")
+            if original_cv is None:
+                original_cv = self.current_image_data.get("img")
+            if original_cv is None and path and os.path.exists(path):
+                original_cv = safe_cv2_imread(path)
+                if original_cv is not None:
+                    self.current_image_data["original_cv"] = original_cv
+                    self.canvas_view.original_cv = original_cv
+
+            erased_cv = self.current_image_data.get("erased_img")
+            if erased_cv is None:
+                erased_cv = getattr(self.canvas_view, "erased_cv", None)
+            if erased_cv is None and path:
+                cached = get_cache_manager().load_page_cache(
+                    path, load_images=True, load_erased=True, load_rendered=False
+                )
+                erased_cv = cached.get("erased_img")
+                if erased_cv is not None:
+                    self.current_image_data["erased_img"] = erased_cv
+                    self.canvas_view.erased_cv = erased_cv
+
             self._push_undo_snapshot("删除气泡")
 
             remaining_blocks = [
                 b for b in blocks
                 if str(b.get("id") if isinstance(b, dict) else getattr(b, "id", None)) != str(block_id)
             ]
-
-            # Pixel restoration: restore original comic artwork pixels at deleted block location
-            path = self.current_image_data.get("path")
-            original_cv = getattr(self.canvas_view, "original_cv", None)
-            if original_cv is None:
-                orig_val = self.current_image_data.get("original_cv")
-                original_cv = orig_val if orig_val is not None else self.current_image_data.get("img")
-            if original_cv is None and path and os.path.exists(path):
-                original_cv = safe_cv2_imread(path)
-                if original_cv is not None:
-                    self.current_image_data["original_cv"] = original_cv
-
-            erased_cv = self.current_image_data.get("erased_img")
-            if erased_cv is None:
-                erased_cv = getattr(self.canvas_view, "erased_cv", None)
-            if erased_cv is None and path:
-                cached = get_cache_manager().load_page_cache(path, load_images=True)
-                erased_cv = cached.get("erased_img")
 
             if original_cv is not None and erased_cv is not None:
                 from app.core.inpaint.restore_helper import restore_block_pixels
@@ -1274,7 +1304,7 @@ class MainWindow(QMainWindow):
                 )
                 self.current_image_data["erased_img"] = restored_erased
                 self.canvas_view.erased_cv = restored_erased
-            elif len(remaining_blocks) == 0 and original_cv is not None:
+            elif original_cv is not None:
                 self.current_image_data["erased_img"] = original_cv.copy()
                 self.canvas_view.erased_cv = original_cv.copy()
 
@@ -1361,11 +1391,10 @@ class MainWindow(QMainWindow):
             self.canvas_view.update_translated_image(rendered, erased_cv=base_img)
             if path:
                 cache_mgr = get_cache_manager()
-                has_eras = cache_mgr.has_cache(path).get("erased", False)
                 cache_mgr.save_page_cache(
                     path,
                     blocks=[],
-                    erased_img=None if has_eras else base_img,
+                    erased_img=base_img,
                     rendered_img=rendered
                 )
             self.status_label.setText("气泡已删除，已还原原图底图")
@@ -1374,14 +1403,33 @@ class MainWindow(QMainWindow):
         page_style = self.current_image_data.get("style") or self.config.style
         onoma_mode = getattr(page_style, "onomatopoeia_mode", "normal")
         model_blocks = []
+        ignored_blocks = []
         for b in blocks:
             tb = b if isinstance(b, TranslationBlock) else TranslationBlock.from_dict(b)
             if tb.type == "onomatopoeia" and onoma_mode == "ignore" and not getattr(tb, "force_erase", False):
+                ignored_blocks.append(b)
                 continue
             model_blocks.append(tb)
 
+        render_base = base_img
+        if ignored_blocks:
+            orig_for_ignore = getattr(self.canvas_view, "original_cv", None)
+            if orig_for_ignore is None:
+                orig_for_ignore = self.current_image_data.get("original_cv")
+            if orig_for_ignore is not None and render_base is not None:
+                from app.core.inpaint.restore_helper import restore_block_pixels
+                render_base = render_base.copy()
+                for ig_b in ignored_blocks:
+                    render_base = restore_block_pixels(
+                        original_img=orig_for_ignore,
+                        erased_img=render_base,
+                        deleted_block=ig_b,
+                        remaining_blocks=model_blocks,
+                        padding=4
+                    )
+
         try:
-            rendered = self.typo_engine.render_page(base_img, model_blocks, page_style)
+            rendered = self.typo_engine.render_page(render_base, model_blocks, page_style)
             self.current_image_data["translated_img"] = rendered
             self.canvas_view.translated_cv = rendered
             self.canvas_view.update_translated_image(rendered, erased_cv=base_img)
@@ -1535,8 +1583,9 @@ class MainWindow(QMainWindow):
         self.current_image_data["translated_img"] = None
 
         # Reset canvas to original image
-        orig_val = self.current_image_data.get("original_cv")
-        original_cv = orig_val if orig_val is not None else self.current_image_data.get("img")
+        original_cv = self.current_image_data.get("original_cv")
+        if original_cv is None:
+            original_cv = self.current_image_data.get("img")
         if original_cv is None:
             # Try to reload from disk
             import cv2
@@ -1579,8 +1628,9 @@ class MainWindow(QMainWindow):
             if item_widget:
                 item_widget.reload_thumbnail()
 
-        orig_val = self.current_image_data.get("original_cv")
-        original_cv = orig_val if orig_val is not None else self.current_image_data.get("img")
+        original_cv = self.current_image_data.get("original_cv")
+        if original_cv is None:
+            original_cv = self.current_image_data.get("img")
         if original_cv is None and path and os.path.exists(path):
             import cv2
             original_cv = safe_cv2_imread(path)
@@ -1621,8 +1671,9 @@ class MainWindow(QMainWindow):
                 if item_widget:
                     item_widget.reload_thumbnail()
 
-        orig_val = self.current_image_data.get("original_cv")
-        original_cv = orig_val if orig_val is not None else self.current_image_data.get("img")
+        original_cv = self.current_image_data.get("original_cv")
+        if original_cv is None:
+            original_cv = self.current_image_data.get("img")
         if original_cv is None and path and os.path.exists(path):
             import cv2
             original_cv = safe_cv2_imread(path)
@@ -2254,6 +2305,17 @@ class MainWindow(QMainWindow):
         path = self.current_image_data.get("path", "")
         blocks = self.current_image_data.get("blocks", [])
         erased_img = self.current_image_data.get("erased_img")
+        if erased_img is None:
+            erased_img = getattr(self.canvas_view, "erased_cv", None)
+        if erased_img is None and path:
+            try:
+                erased_img = get_cache_manager().load_page_cache(
+                    path, load_images=True, load_erased=True, load_rendered=False
+                ).get("erased_img")
+                if erased_img is not None:
+                    self.current_image_data["erased_img"] = erased_img
+            except Exception:
+                pass
         style = self.current_image_data.get("style")
         return PageSnapshot.create(
             page_path=path,

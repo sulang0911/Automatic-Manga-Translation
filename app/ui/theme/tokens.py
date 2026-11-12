@@ -3,6 +3,7 @@ app/ui/theme/tokens.py
 Apple macOS Human Interface Guidelines (Sonoma / Sequoia) Design Tokens and Stylesheet Generator.
 Supports macOS Dark Vibrancy (#18181B) and macOS Studio Light (#F8F9FA) themes.
 """
+import os
 from dataclasses import dataclass
 from typing import Dict
 
@@ -98,6 +99,50 @@ THEMES: Dict[str, ThemeTokens] = {
 }
 
 
+def _ensure_theme_svg_assets() -> Dict[str, str]:
+    """Ensures vector SVG indicator icons exist on disk for QSS url() references."""
+    asset_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+    svg_files = {
+        "check_white": (
+            "check_white.svg",
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="12" height="12">'
+            '<polyline points="3.5 8.5 6.5 11.5 12.5 4.5" stroke="#FFFFFF" stroke-width="2.2" '
+            'stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>',
+        ),
+        "check_disabled": (
+            "check_disabled.svg",
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="12" height="12">'
+            '<polyline points="3.5 8.5 6.5 11.5 12.5 4.5" stroke="#8E8E93" stroke-width="2.0" '
+            'stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>',
+        ),
+        "chevron_down_dark": (
+            "chevron_down_dark.svg",
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="12" height="12">'
+            '<polyline points="4 6 8 10 12 6" stroke="#98989D" stroke-width="1.8" '
+            'stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>',
+        ),
+        "chevron_down_light": (
+            "chevron_down_light.svg",
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="12" height="12">'
+            '<polyline points="4 6 8 10 12 6" stroke="#6E6E73" stroke-width="1.8" '
+            'stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>',
+        ),
+    }
+    paths: Dict[str, str] = {}
+    try:
+        os.makedirs(asset_dir, exist_ok=True)
+        for key, (fname, content) in svg_files.items():
+            full_path = os.path.join(asset_dir, fname)
+            if not os.path.exists(full_path):
+                with open(full_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+            paths[key] = full_path.replace("\\", "/")
+    except Exception:
+        for key, (fname, _) in svg_files.items():
+            paths[key] = os.path.join(asset_dir, fname).replace("\\", "/")
+    return paths
+
+
 def get_tokens(theme_name: str = "dark") -> ThemeTokens:
     """Retrieves design tokens for the specified theme, defaulting to dark."""
     return THEMES.get(theme_name.lower(), DARK_TOKENS)
@@ -110,13 +155,22 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
     unified toolbar vibrancy, and zero nested box clutter.
     """
     is_dark = tokens.name == "dark"
-    input_bg = "rgba(255, 255, 255, 0.05)" if is_dark else "rgba(0, 0, 0, 0.04)"
-    input_focus_bg = "rgba(255, 255, 255, 0.08)" if is_dark else "#FFFFFF"
+    svg_paths = _ensure_theme_svg_assets()
+    check_white_svg = svg_paths["check_white"]
+    check_disabled_svg = svg_paths["check_disabled"]
+    chevron_down_svg = svg_paths["chevron_down_dark"] if is_dark else svg_paths["chevron_down_light"]
+
+    group_bg = "rgba(255, 255, 255, 0.03)" if is_dark else "#FFFFFF"
+    input_bg = "#141417" if is_dark else "#FFFFFF"
+    input_focus_bg = "#1C1C21" if is_dark else "#FFFFFF"
+    control_border = "#38383E" if is_dark else "#D1D1D6"
     seg_track_bg = "rgba(0, 0, 0, 0.28)" if is_dark else "rgba(0, 0, 0, 0.06)"
-    btn_bg = "rgba(255, 255, 255, 0.07)" if is_dark else "#FFFFFF"
-    btn_border = "rgba(255, 255, 255, 0.09)" if is_dark else "rgba(0, 0, 0, 0.10)"
+    btn_bg = "#26262B" if is_dark else "#FFFFFF"
+    btn_border = "#38383E" if is_dark else "rgba(0, 0, 0, 0.12)"
     scroll_thumb = "rgba(255, 255, 255, 0.18)" if is_dark else "rgba(0, 0, 0, 0.18)"
     scroll_thumb_hover = "rgba(255, 255, 255, 0.32)" if is_dark else "rgba(0, 0, 0, 0.32)"
+    nav_list_bg = "#1E1E22" if is_dark else "#F2F2F7"
+    table_header_bg = "#242429" if is_dark else "#F2F2F7"
 
     return f"""
     /* Global Application Typography & Reset */
@@ -132,6 +186,19 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
 
     QMainWindow, QDialog {{
         background-color: {tokens.bg_base};
+    }}
+
+    QLabel {{
+        color: {tokens.text_primary};
+        background-color: transparent;
+    }}
+
+    QScrollArea,
+    QScrollArea > QWidget,
+    QScrollArea > QWidget > QWidget,
+    QWidget#settingsScrollContent {{
+        background-color: transparent;
+        border: none;
     }}
 
     /* Elevated Card Containers */
@@ -154,6 +221,34 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
     QWidget[class="sidebar"], QFrame[class="sidebar"] {{
         background-color: {tokens.bg_sidebar};
         border-right: 1px solid {tokens.border_subtle};
+    }}
+
+    /* Settings Dialog Left Category Navigation List */
+    QListWidget#settingsNavList {{
+        background-color: {nav_list_bg};
+        border: 1px solid {tokens.border_subtle};
+        border-radius: 10px;
+        padding: 6px;
+        outline: none;
+    }}
+
+    QListWidget#settingsNavList::item {{
+        border-radius: 7px;
+        padding: 6px 10px;
+        margin: 2px 0px;
+        font-size: 12px;
+        font-weight: 500;
+        color: {tokens.text_primary};
+    }}
+
+    QListWidget#settingsNavList::item:hover:!selected {{
+        background-color: {tokens.bg_surface_hover};
+    }}
+
+    QListWidget#settingsNavList::item:selected {{
+        background-color: {tokens.accent_primary};
+        color: #FFFFFF;
+        font-weight: 600;
     }}
 
     /* Optional NavRail (compact & unobtrusive) */
@@ -188,6 +283,32 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
         background-color: {tokens.bg_surface};
         border-bottom: 1px solid {tokens.border_subtle};
         padding: 4px 12px;
+    }}
+
+    QToolBar {{
+        background-color: transparent;
+        border: none;
+        spacing: 6px;
+        padding: 2px 0px;
+    }}
+
+    QToolBar QToolButton {{
+        background-color: {btn_bg};
+        color: {tokens.text_primary};
+        border: 1px solid {btn_border};
+        border-radius: {tokens.radius_sm}px;
+        padding: 4px 12px;
+        font-size: 12px;
+        font-weight: 500;
+    }}
+
+    QToolBar QToolButton:hover {{
+        background-color: {tokens.bg_surface_hover};
+        border-color: {tokens.border_focus};
+    }}
+
+    QToolBar QToolButton:pressed {{
+        background-color: {tokens.bg_surface_active};
     }}
 
     /* Split Comparison Bottom Slider Bar */
@@ -243,14 +364,15 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
         color: {tokens.text_primary};
         border: 1px solid {btn_border};
         border-radius: {tokens.radius_sm}px;
-        padding: 5px 11px;
+        padding: 5px 12px;
         font-size: 12px;
         font-weight: 500;
+        min-height: 20px;
     }}
 
     QPushButton:hover {{
         background-color: {tokens.bg_surface_hover};
-        border-color: {tokens.border_subtle};
+        border-color: {control_border};
     }}
 
     QPushButton:pressed {{
@@ -312,7 +434,7 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
     #dropZone {{
         border: 1px dashed {tokens.border_subtle};
         border-radius: {tokens.radius_md}px;
-        background-color: {input_bg};
+        background-color: {group_bg};
         padding: 10px;
     }}
 
@@ -384,7 +506,9 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
         background: {scroll_thumb_hover};
     }}
 
-    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
+    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+        background: none;
         height: 0px;
     }}
 
@@ -405,7 +529,9 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
         background: {scroll_thumb_hover};
     }}
 
-    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal,
+    QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+        background: none;
         width: 0px;
     }}
 
@@ -434,20 +560,84 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
         font-weight: 600;
     }}
 
-    /* Soft Rounded Text Inputs (Natural SF Pro Typography) */
-    QLineEdit, QTextEdit, QPlainTextEdit {{
+    /* Soft Rounded Text Inputs & SpinBoxes (Natural SF Pro Typography) */
+    QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox {{
         background-color: {input_bg};
+        color: {tokens.text_primary};
+        border: 1px solid {control_border};
+        border-radius: {tokens.radius_sm}px;
+        padding: 5px 9px;
+        font-family: {tokens.font_family};
+        font-size: 12px;
+        min-height: 20px;
+    }}
+
+    QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
+        border-color: {tokens.border_focus};
+        background-color: {input_focus_bg};
+    }}
+
+    QLineEdit:disabled, QTextEdit:disabled, QPlainTextEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {{
+        color: {tokens.text_muted};
+        background-color: transparent;
+        border-color: {tokens.border_subtle};
+    }}
+
+    /* Glossary & Data Tables */
+    QTableWidget, QTableView {{
+        background-color: {input_bg};
+        alternate-background-color: {group_bg};
         color: {tokens.text_primary};
         border: 1px solid {tokens.border_subtle};
         border-radius: {tokens.radius_sm}px;
-        padding: 6px 9px;
-        font-family: {tokens.font_family};
-        font-size: 12px;
+        gridline-color: {tokens.border_subtle};
+        selection-background-color: {tokens.accent_subtle};
+        selection-color: {tokens.text_primary};
+        outline: none;
     }}
 
-    QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {{
-        border-color: {tokens.border_focus};
-        background-color: {input_focus_bg};
+    QTableWidget::item, QTableView::item {{
+        padding: 4px 8px;
+        color: {tokens.text_primary};
+        border: none;
+    }}
+
+    QTableWidget::item:selected, QTableView::item:selected {{
+        background-color: {tokens.accent_subtle};
+        color: {tokens.accent_primary};
+    }}
+
+    QTableWidget QLineEdit, QTableView QLineEdit {{
+        background-color: {tokens.bg_surface};
+        color: {tokens.text_primary};
+        border: 1px solid {tokens.border_focus};
+        border-radius: 4px;
+        padding: 1px 6px;
+        margin: 0px;
+        min-height: 18px;
+    }}
+
+    QHeaderView {{
+        background-color: transparent;
+        border: none;
+    }}
+
+    QHeaderView::section {{
+        background-color: {table_header_bg};
+        color: {tokens.text_secondary};
+        font-weight: 600;
+        font-size: 11px;
+        padding: 6px 8px;
+        border: none;
+        border-bottom: 1px solid {tokens.border_subtle};
+        border-right: 1px solid {tokens.border_subtle};
+    }}
+
+    QTableCornerButton::section {{
+        background-color: {table_header_bg};
+        border: none;
+        border-bottom: 1px solid {tokens.border_subtle};
+        border-right: 1px solid {tokens.border_subtle};
     }}
 
     /* macOS Rounded Context Menus */
@@ -490,8 +680,8 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
         color: {tokens.text_primary};
         border: 1px solid {btn_border};
         border-radius: {tokens.radius_sm}px;
-        padding: 4px 10px;
-        min-height: 20px;
+        padding: 5px 28px 5px 10px;
+        min-height: 22px;
         font-size: 12px;
     }}
 
@@ -500,11 +690,24 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
         border-color: {tokens.border_focus};
     }}
 
+    QComboBox:disabled {{
+        color: {tokens.text_muted};
+        background-color: transparent;
+        border-color: {tokens.border_subtle};
+    }}
+
     QComboBox::drop-down {{
         subcontrol-origin: padding;
         subcontrol-position: top right;
-        width: 20px;
-        border-left-width: 0px;
+        width: 24px;
+        border: none;
+        background: transparent;
+    }}
+
+    QComboBox::down-arrow {{
+        image: url("{chevron_down_svg}");
+        width: 12px;
+        height: 12px;
     }}
 
     QComboBoxPrivateContainer,
@@ -512,8 +715,8 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
     QComboBox QListView {{
         background-color: {tokens.bg_surface};
         color: {tokens.text_primary};
-        border: 1px solid {tokens.border_subtle};
-        border-radius: 8px;
+        border: 1px solid {control_border};
+        border-radius: 6px;
         padding: 4px;
         selection-background-color: {tokens.accent_primary};
         selection-color: #FFFFFF;
@@ -522,9 +725,9 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
 
     QComboBox QAbstractItemView::item,
     QComboBox QListView::item {{
-        background-color: transparent;
+        background-color: {tokens.bg_surface};
         color: {tokens.text_primary};
-        min-height: 24px;
+        min-height: 26px;
         padding: 4px 10px;
         border-radius: 5px;
     }}
@@ -532,6 +735,7 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
     QComboBox QAbstractItemView::item:hover,
     QComboBox QListView::item:hover {{
         background-color: {tokens.bg_surface_hover};
+        color: {tokens.text_primary};
     }}
 
     QComboBox QAbstractItemView::item:selected,
@@ -573,29 +777,34 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
         color: {tokens.text_primary};
     }}
 
-    /* Clean Borderless / Flat macOS Form Sections (No Box-in-Box Clutter) */
+    /* Clean macOS Form Sections */
     QGroupBox {{
-        background-color: {input_bg};
+        background-color: {group_bg};
         border: 1px solid {tokens.border_subtle};
         border-radius: {tokens.radius_md}px;
-        margin-top: 16px;
-        padding: 12px 10px 10px 10px;
-        color: {tokens.text_secondary};
-        font-size: 11px;
+        margin-top: 22px;
+        padding: 14px 12px 12px 12px;
+        color: {tokens.text_primary};
+        font-size: 12px;
         font-weight: 600;
     }}
 
     QGroupBox::title {{
         subcontrol-origin: margin;
         subcontrol-position: top left;
-        left: 4px;
-        top: 0px;
-        padding: 0 4px;
+        left: 6px;
+        top: 2px;
+        padding: 0px 4px;
         color: {tokens.text_secondary};
+        font-size: 12px;
         font-weight: 600;
     }}
 
     /* Smooth macOS Sliders */
+    QSlider:horizontal {{
+        min-height: 22px;
+    }}
+
     QSlider::groove:horizontal {{
         height: 4px;
         background: {tokens.border_subtle};
@@ -607,14 +816,23 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
         border-radius: 2px;
     }}
 
+    QSlider::sub-page:horizontal:disabled {{
+        background: {tokens.border_subtle};
+    }}
+
     QSlider::handle:horizontal {{
         background: #FFFFFF;
-        border: 1.5px solid {tokens.accent_primary};
-        width: 14px;
-        height: 14px;
+        border: 2px solid {tokens.accent_primary};
+        width: 12px;
+        height: 12px;
         margin-top: -6px;
         margin-bottom: -6px;
-        border-radius: 7px;
+        border-radius: 8px;
+    }}
+
+    QSlider::handle:horizontal:disabled {{
+        background: {tokens.bg_surface};
+        border: 2px solid {tokens.text_muted};
     }}
 
     /* Slim Pill Progress Bar */
@@ -635,22 +853,45 @@ def build_stylesheet(tokens: ThemeTokens) -> str:
 
     /* macOS CheckBox */
     QCheckBox {{
-        spacing: 6px;
+        spacing: 8px;
         font-size: 12px;
         color: {tokens.text_primary};
+        background-color: transparent;
+        min-height: 20px;
+    }}
+
+    QCheckBox:disabled {{
+        color: {tokens.text_muted};
     }}
 
     QCheckBox::indicator {{
-        width: 15px;
-        height: 15px;
+        width: 16px;
+        height: 16px;
         border-radius: 4px;
-        border: 1px solid {tokens.border_subtle};
+        border: 1px solid {control_border};
         background-color: {input_bg};
+    }}
+
+    QCheckBox::indicator:hover:unchecked {{
+        border-color: {tokens.accent_primary};
+        background-color: {tokens.bg_surface_hover};
     }}
 
     QCheckBox::indicator:checked {{
         background-color: {tokens.accent_primary};
         border-color: {tokens.accent_primary};
+        image: url("{check_white_svg}");
+    }}
+
+    QCheckBox::indicator:checked:disabled {{
+        background-color: {tokens.bg_surface_active};
+        border-color: {tokens.border_subtle};
+        image: url("{check_disabled_svg}");
+    }}
+
+    QCheckBox::indicator:unchecked:disabled {{
+        background-color: transparent;
+        border-color: {tokens.border_subtle};
     }}
 
     /* Tooltips */

@@ -9,14 +9,15 @@ from typing import Optional, Dict, Any
 from copy import deepcopy
 
 from PyQt6.QtWidgets import (
-    QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QComboBox, QSlider, QCheckBox, QGroupBox, QFrame, QColorDialog
+    QApplication, QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QComboBox, QSlider, QCheckBox, QGroupBox, QFrame, QColorDialog, QScrollArea, QListView
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from PyQt6.QtGui import QColor, QPixmap, QIcon
 
 from app.core.models import StyleConfig, TextColorMode, BgColorMode, StrokeMode, OnomatopoeiaMode
 from app.ui.theme.icons import get_icon
+from app.ui.theme.tokens import get_tokens, build_stylesheet
 
 
 FONT_CHOICES = [
@@ -31,6 +32,20 @@ FONT_CHOICES = [
     ("黑体 (标准黑体)", "SimHei"),
     ("Arial", "Arial"),
 ]
+
+
+def _configure_combo_popup(combo: QComboBox) -> None:
+    view = QListView(combo)
+    view.setUniformItemSizes(True)
+    combo.setView(view)
+
+
+def _contrast_text_color(hex_color: str) -> str:
+    c = QColor(hex_color or "#000000")
+    if not c.isValid():
+        return "#FFFFFF"
+    lum = 0.299 * c.red() + 0.587 * c.green() + 0.114 * c.blue()
+    return "#000000" if lum > 165 else "#FFFFFF"
 
 
 class PageStyleDialog(QDialog):
@@ -53,25 +68,29 @@ class PageStyleDialog(QDialog):
         self.has_custom_override = current_page_style is not None
         self.applied_style: Optional[StyleConfig] = None
 
+        app_inst = QApplication.instance()
+        if app_inst and not app_inst.styleSheet():
+            self.setStyleSheet(build_stylesheet(get_tokens("dark")))
+
         self.setWindowTitle(f"单页排版样式 — {os.path.basename(item_data.get('path', '当前页'))}")
-        self.resize(520, 620)
-        self.setMinimumSize(460, 500)
+        self.resize(540, 660)
+        self.setMinimumSize(480, 520)
 
         self._init_ui()
         self._load_values()
 
     def _init_ui(self):
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(20, 18, 20, 18)
+        main_layout.setContentsMargins(18, 16, 18, 16)
         main_layout.setSpacing(12)
 
         # Header Info Card (macOS Inset Banner)
         header = QFrame(self)
         header.setObjectName("pageStyleHeader")
         header.setStyleSheet("""
-            #pageStyleHeader {
-                background-color: rgba(255, 255, 255, 0.05);
-                border: 1px solid rgba(255, 255, 255, 0.08);
+            QFrame#pageStyleHeader {
+                background-color: rgba(255, 255, 255, 0.04);
+                border: 1px solid rgba(128, 128, 128, 0.18);
                 border-radius: 10px;
                 padding: 8px 12px;
             }
@@ -82,7 +101,7 @@ class PageStyleDialog(QDialog):
 
         self.thumb_lbl = QLabel(header)
         self.thumb_lbl.setFixedSize(36, 48)
-        self.thumb_lbl.setStyleSheet("background: rgba(0, 0, 0, 0.25); border-radius: 5px; border: 1px solid rgba(255, 255, 255, 0.08);")
+        self.thumb_lbl.setStyleSheet("background: rgba(0, 0, 0, 0.25); border-radius: 5px; border: 1px solid rgba(128, 128, 128, 0.2);")
         self.thumb_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         path = self.item_data.get("path", "")
         if path and os.path.exists(path):
@@ -112,18 +131,35 @@ class PageStyleDialog(QDialog):
         self.override_cb.toggled.connect(self._on_override_toggled)
         main_layout.addWidget(self.override_cb)
 
+        # Scrollable form body to prevent vertical clipping on compact screens or high DPI
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea { background-color: transparent; border: none; }")
+
+        scroll_content = QWidget()
+        scroll_content.setObjectName("settingsScrollContent")
+        scroll_content.setStyleSheet("QWidget#settingsScrollContent { background-color: transparent; }")
+        form_layout = QVBoxLayout(scroll_content)
+        form_layout.setContentsMargins(2, 2, 6, 4)
+        form_layout.setSpacing(12)
+
         # Group 1: Typography & Font
-        box_font = QGroupBox("字体与字号", self)
+        box_font = QGroupBox("字体与字号", scroll_content)
         box_font_layout = QVBoxLayout(box_font)
-        box_font_layout.setSpacing(8)
+        box_font_layout.setContentsMargins(12, 10, 12, 12)
+        box_font_layout.setSpacing(10)
 
         box_font_layout.addWidget(QLabel("字体:"))
         self.font_combo = QComboBox(box_font)
+        _configure_combo_popup(self.font_combo)
         for label, _ in FONT_CHOICES:
             self.font_combo.addItem(label)
         box_font_layout.addWidget(self.font_combo)
 
         row_checks = QHBoxLayout()
+        row_checks.setSpacing(16)
         self.bold_cb = QCheckBox("粗体", box_font)
         self.bold_cb.setStyleSheet("font-weight: 500;")
         row_checks.addWidget(self.bold_cb)
@@ -149,30 +185,35 @@ class PageStyleDialog(QDialog):
         self.scale_slider.valueChanged.connect(self._on_scale_changed)
         box_font_layout.addWidget(self.scale_slider)
 
-        main_layout.addWidget(box_font)
+        form_layout.addWidget(box_font)
 
         # Group 2: Color & Stroke
-        box_color = QGroupBox("颜色、描边与拟声词", self)
+        box_color = QGroupBox("颜色、描边与拟声词", scroll_content)
         box_color_layout = QVBoxLayout(box_color)
-        box_color_layout.setSpacing(8)
+        box_color_layout.setContentsMargins(12, 10, 12, 12)
+        box_color_layout.setSpacing(10)
 
         row_txt_color = QHBoxLayout()
+        row_txt_color.setSpacing(8)
         row_txt_color.addWidget(QLabel("文字颜色:"))
         self.txt_color_mode_combo = QComboBox(box_color)
+        _configure_combo_popup(self.txt_color_mode_combo)
         self.txt_color_mode_combo.addItem("原文提取颜色", TextColorMode.ORIGINAL.value)
         self.txt_color_mode_combo.addItem("自定义纯色", TextColorMode.CUSTOM.value)
         self.txt_color_mode_combo.currentIndexChanged.connect(self._on_txt_color_mode_changed)
         row_txt_color.addWidget(self.txt_color_mode_combo, 1)
 
         self.txt_color_btn = QPushButton("选择颜色", box_color)
-        self.txt_color_btn.setFixedWidth(84)
+        self.txt_color_btn.setFixedWidth(88)
         self.txt_color_btn.clicked.connect(self._pick_text_color)
         row_txt_color.addWidget(self.txt_color_btn)
         box_color_layout.addLayout(row_txt_color)
 
         row_stroke = QHBoxLayout()
+        row_stroke.setSpacing(8)
         row_stroke.addWidget(QLabel("文字描边:"))
         self.stroke_mode_combo = QComboBox(box_color)
+        _configure_combo_popup(self.stroke_mode_combo)
         self.stroke_mode_combo.addItem("智能对比度 (推荐)", StrokeMode.AUTO.value)
         self.stroke_mode_combo.addItem("自定义描边", StrokeMode.MANUAL.value)
         self.stroke_mode_combo.addItem("关闭描边", StrokeMode.OFF.value)
@@ -183,7 +224,7 @@ class PageStyleDialog(QDialog):
         row_stroke_w = QHBoxLayout()
         row_stroke_w.addWidget(QLabel("描边粗细:"))
         self.stroke_w_lbl = QLabel("3.5px", box_color)
-        self.stroke_w_lbl.setStyleSheet("font-weight: 500; color: #98989D;")
+        self.stroke_w_lbl.setStyleSheet("font-weight: 600; color: #0A84FF;")
         row_stroke_w.addWidget(self.stroke_w_lbl)
         row_stroke_w.addStretch()
         self.auto_stroke_w_cb = QCheckBox("自动识别描边粗细", box_color)
@@ -196,8 +237,10 @@ class PageStyleDialog(QDialog):
         box_color_layout.addWidget(self.stroke_w_slider)
 
         row_bg = QHBoxLayout()
+        row_bg.setSpacing(8)
         row_bg.addWidget(QLabel("背景覆盖:"))
         self.bg_mode_combo = QComboBox(box_color)
+        _configure_combo_popup(self.bg_mode_combo)
         self.bg_mode_combo.addItem("原图周边环境自适应", BgColorMode.ORIGINAL.value)
         self.bg_mode_combo.addItem("纯白覆盖", BgColorMode.CUSTOM.value)
         self.bg_mode_combo.addItem("透明无背景仅文字", BgColorMode.NONE.value)
@@ -205,20 +248,27 @@ class PageStyleDialog(QDialog):
         box_color_layout.addLayout(row_bg)
 
         row_onoma = QHBoxLayout()
+        row_onoma.setSpacing(8)
         row_onoma.addWidget(QLabel("拟声词处理:"))
         self.onoma_mode_combo = QComboBox(box_color)
+        _configure_combo_popup(self.onoma_mode_combo)
         self.onoma_mode_combo.addItem("正常消除并翻译 (推荐)", OnomatopoeiaMode.NORMAL.value)
         self.onoma_mode_combo.addItem("半透明艺术保留", OnomatopoeiaMode.TRANSPARENT.value)
         self.onoma_mode_combo.addItem("跳过不处理 (保持原图)", OnomatopoeiaMode.IGNORE.value)
         row_onoma.addWidget(self.onoma_mode_combo, 1)
         box_color_layout.addLayout(row_onoma)
 
-        main_layout.addWidget(box_color)
-        main_layout.addStretch()
+        form_layout.addWidget(box_color)
+        form_layout.addStretch()
+
+        scroll.setWidget(scroll_content)
+        main_layout.addWidget(scroll, 1)
 
         # Bottom Buttons
         btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
         self.reset_btn = QPushButton("重置为全局默认", self)
+        self.reset_btn.setMinimumHeight(32)
         self.reset_btn.setIcon(get_icon("refresh", color="#98989D", size=12))
         self.reset_btn.setToolTip("将本页文字设置恢复与全局设置一致")
         self.reset_btn.clicked.connect(self._reset_to_global)
@@ -227,11 +277,15 @@ class PageStyleDialog(QDialog):
         btn_layout.addStretch()
 
         self.cancel_btn = QPushButton("取消", self)
+        self.cancel_btn.setMinimumHeight(32)
+        self.cancel_btn.setMinimumWidth(72)
         self.cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(self.cancel_btn)
 
         self.apply_btn = QPushButton("应用至当前页", self)
         self.apply_btn.setProperty("class", "primaryBtn")
+        self.apply_btn.setObjectName("primaryBtn")
+        self.apply_btn.setMinimumHeight(32)
         self.apply_btn.setIcon(get_icon("check", color="#FFFFFF", size=13))
         self.apply_btn.clicked.connect(self._on_apply)
         btn_layout.addWidget(self.apply_btn)
@@ -298,6 +352,7 @@ class PageStyleDialog(QDialog):
         self.scale_slider.setEnabled(checked)
         self.txt_color_mode_combo.setEnabled(checked)
         self.txt_color_btn.setEnabled(checked and self.txt_color_mode_combo.currentIndex() == 1)
+        self._update_txt_color_btn()
         self.stroke_mode_combo.setEnabled(checked)
         self.stroke_w_slider.setEnabled(checked and self.stroke_mode_combo.currentIndex() != 2)
         self.auto_stroke_w_cb.setEnabled(checked and self.stroke_mode_combo.currentIndex() != 2)
@@ -314,14 +369,30 @@ class PageStyleDialog(QDialog):
 
     def _on_txt_color_mode_changed(self, idx: int):
         self.txt_color_btn.setEnabled(self.override_cb.isChecked() and idx == 1)
+        self._update_txt_color_btn()
 
     def _on_stroke_mode_changed(self, idx: int):
         self.stroke_w_slider.setEnabled(self.override_cb.isChecked() and idx != 2)
         self.auto_stroke_w_cb.setEnabled(self.override_cb.isChecked() and idx != 2)
 
     def _update_txt_color_btn(self):
-        text_fg = "#000000" if self._custom_text_color.upper() in ("#FFFFFF", "#FFF") else "#FFFFFF"
-        self.txt_color_btn.setStyleSheet(f"background-color: {self._custom_text_color}; color: {text_fg}; font-size: 11px; border-radius: 6px;")
+        text_fg = _contrast_text_color(self._custom_text_color)
+        self.txt_color_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {self._custom_text_color};
+                color: {text_fg};
+                border: 1px solid rgba(128, 128, 128, 0.45);
+                border-radius: 6px;
+                font-size: 11px;
+                font-weight: 600;
+                padding: 4px 8px;
+            }}
+            QPushButton:disabled {{
+                background-color: transparent;
+                color: #636366;
+                border: 1px solid #2C2C30;
+            }}
+        """)
 
     def _pick_text_color(self):
         color = QColorDialog.getColor(QColor(self._custom_text_color), self, "选择文字颜色")
