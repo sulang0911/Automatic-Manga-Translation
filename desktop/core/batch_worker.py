@@ -9,6 +9,7 @@ from .inpaint_engine import InpaintEngine
 from .translation_engine import TranslationEngine
 from .typography_engine import TypographyEngine
 from app.core.pipeline.exporter import MangaExporter
+from app.core.hardware import cleanup_gpu_memory, lower_worker_priority
 
 class BatchWorker(QThread):
     sig_batch_progress = pyqtSignal(int, int, str, int, str) # current, total, filename, pct, msg
@@ -68,6 +69,8 @@ class BatchWorker(QThread):
         return os.path.join(self.export_dir, f"{name_without_ext}_translated.png")
 
     def run(self):
+        lower_worker_priority()
+
         total = len(self.queue_items)
         success_count = 0
         fail_count = 0
@@ -106,6 +109,9 @@ class BatchWorker(QThread):
             img_id = item["id"]
             img_path = item["path"]
             filename = os.path.basename(img_path)
+            original_img = None
+            erased_img = None
+            translated_img = None
 
             try:
                 self.sig_batch_progress.emit(idx + 1, total, filename, 10, "正在读取图像...")
@@ -115,6 +121,7 @@ class BatchWorker(QThread):
                 stream.close()
                 nparr = np.asarray(bytes_data, dtype=np.uint8)
                 original_img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                del bytes_data, nparr
 
                 if original_img is None:
                     raise RuntimeError("无法解码图像文件")
@@ -122,6 +129,7 @@ class BatchWorker(QThread):
                 # OCR
                 self.sig_batch_progress.emit(idx + 1, total, filename, 30, "正在识别文字...")
                 blocks = ocr_eng.detect_and_recognize(original_img)
+                cleanup_gpu_memory(trim_ram=False)
 
                 # Inpaint
                 self.sig_batch_progress.emit(idx + 1, total, filename, 55, "正在消除背景...")
@@ -133,6 +141,9 @@ class BatchWorker(QThread):
                     feather_radius=self.config.get("feather_radius", 4),
                     onomatopoeia_mode=onoma_mode
                 )
+                if erased_img is not None:
+                    original_img = None
+                cleanup_gpu_memory(trim_ram=True)
 
                 # Translate
                 self.sig_batch_progress.emit(idx + 1, total, filename, 75, "正在大模型翻译...")
@@ -146,6 +157,7 @@ class BatchWorker(QThread):
                     if (getattr(b, "type", "") if hasattr(b, "type") else b.get("type", "")) != "onomatopoeia" or onoma_mode != "ignore" or (getattr(b, "force_erase", False) if hasattr(b, "force_erase") else b.get("force_erase", False))
                 ]
                 translated_img = typo_eng.render_translations(base_bg, render_blocks, self.config)
+                del base_bg
 
                 # Auto save if export_dir specified
                 export_path = self.resolve_export_path(item)
@@ -171,29 +183,22 @@ class BatchWorker(QThread):
                 })
                 success_count += 1
 
-                # Clean memory per page immediately
-                del original_img
-                del erased_img
-                del translated_img
-                try:
-                    from app.core.hardware import cleanup_gpu_memory
-                    cleanup_gpu_memory()
-                except Exception:
-                    pass
-
             except Exception as e:
                 print(f"[-] Batch item failed: {filename}: {e}")
                 self.sig_item_failed.emit(img_id, str(e))
                 fail_count += 1
+            finally:
+                original_img = None
+                erased_img = None
+                translated_img = None
                 try:
-                    from app.core.hardware import cleanup_gpu_memory
-                    cleanup_gpu_memory()
+                    cleanup_gpu_memory(trim_ram=True)
                 except Exception:
                     pass
+                QThread.msleep(15)
 
         try:
-            from app.core.hardware import cleanup_gpu_memory
-            cleanup_gpu_memory()
+            cleanup_gpu_memory(trim_ram=True)
         except Exception:
             pass
         self.sig_batch_finished.emit(success_count, fail_count)

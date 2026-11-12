@@ -15,6 +15,7 @@ from app.core.typography.engine import TypographyEngine
 from app.core.translation import TranslationManager, ProviderConfig
 from app.core.models import TranslationBlock
 from app.core.cache.cache_manager import get_cache_manager
+from app.core.hardware import cleanup_gpu_memory, lower_worker_priority
 
 
 class PipelineWorker(QThread):
@@ -46,6 +47,7 @@ class PipelineWorker(QThread):
         self._is_cancelled = True
 
     def run(self):
+        lower_worker_priority()
         try:
             if not os.path.exists(self.image_path):
                 self.sig_error.emit(f"文件不存在: {self.image_path}")
@@ -58,6 +60,7 @@ class PipelineWorker(QThread):
             stream.close()
             nparr = np.asarray(bytes_data, dtype=np.uint8)
             original_img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            del bytes_data, nparr
 
             if original_img is None:
                 self.sig_error.emit("无法解码图像文件，请检查格式。")
@@ -122,6 +125,7 @@ class PipelineWorker(QThread):
 
                     blocks = ocr_eng.detect_and_recognize(original_img, progress_callback=ocr_cb)
                     cache_mgr.save_page_cache(self.image_path, blocks=blocks)
+                    cleanup_gpu_memory(trim_ram=False)
                     # Since OCR produced fresh blocks, force Stage 2 to re-inpaint cleanly
                     erased_img = None
 
@@ -138,9 +142,11 @@ class PipelineWorker(QThread):
                     return
 
             # 2. Inpainting Stage
+            erased_saved = False
             if erased_img is None and cache_status["erased"] and self.mode not in ("full", "inpaint_only"):
                 self.sig_progress.emit(50, "从本地缓存直接载入无字底图(免重复擦除)...")
                 erased_img = cache_mgr.load_page_cache(self.image_path, load_images=True)["erased_img"]
+                erased_saved = True
                 self.sig_step_done.emit("inpaint", erased_img)
             elif erased_img is None or self.mode in ["full", "inpaint_only"]:
                 if self._is_cancelled:
@@ -170,6 +176,8 @@ class PipelineWorker(QThread):
                     onomatopoeia_mode=onoma_mode
                 )
                 cache_mgr.save_page_cache(self.image_path, erased_img=erased_img, blocks=blocks)
+                erased_saved = True
+                cleanup_gpu_memory(trim_ram=False)
                 self.sig_step_done.emit("inpaint", erased_img)
 
                 if self.mode == "inpaint_only":
@@ -252,7 +260,12 @@ class PipelineWorker(QThread):
             ]
             
             translated_img = typo_eng.render_translations(base_bg, render_blocks, self.config)
-            cache_mgr.save_page_cache(self.image_path, erased_img=erased_img, blocks=blocks, rendered_img=translated_img)
+            cache_mgr.save_page_cache(
+                self.image_path,
+                erased_img=None if erased_saved else erased_img,
+                blocks=blocks,
+                rendered_img=translated_img
+            )
             self.sig_step_done.emit("render", translated_img)
 
             self.sig_progress.emit(100, "处理完成并已存入缓存！")
@@ -269,7 +282,6 @@ class PipelineWorker(QThread):
             self.sig_error.emit(f"处理失败: {str(e)}")
         finally:
             try:
-                from app.core.hardware import cleanup_gpu_memory
-                cleanup_gpu_memory()
+                cleanup_gpu_memory(trim_ram=True)
             except Exception:
                 pass

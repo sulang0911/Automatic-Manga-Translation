@@ -2,12 +2,13 @@
 app/core/inpaint/lama_engine.py
 Deep learning neural inpainter using SimpleLama with:
 - Dimension padding compensation
-- VRAM safety downsampling for ultra-high-resolution images (> 2048px)
+- ROI-bounded inference & VRAM safety downsampling for high-resolution images
 - Automatic fallback to OpenCVInpainter on CUDA OOM or load failure
-- PyTorch GPU cache cleanup
+- PyTorch GPU cache cleanup & torch.no_grad() guard
 """
 import gc
 import logging
+from contextlib import nullcontext
 from typing import List, Optional, Callable
 import cv2
 import numpy as np
@@ -41,11 +42,11 @@ def blend_inpainted_image(
     """
     Blends inpainted texture into the original artwork using Gaussian blurred alpha feathering.
     Ensures core mask retains full opacity and prevents bleeding original white text edges
-    into dark/black background boxes.
+    into dark/black background boxes. Bounded to the active mask ROI for minimal RAM usage.
     """
     if original_img is None:
         return None
-    if inpainted_img is None or mask is None or np.sum(mask) == 0:
+    if inpainted_img is None or mask is None or not np.any(mask):
         return original_img.copy()
 
     if feather_radius <= 0:
@@ -53,24 +54,45 @@ def blend_inpainted_image(
         result[mask > 0] = inpainted_img[mask > 0]
         return result
 
-    ksize = feather_radius * 2 + 1
-    alpha = cv2.GaussianBlur(mask.astype(np.float32) / 255.0, (ksize, ksize), 0)
-    # Ensure core mask regions retain full inpainting opacity so thin text strokes don't bleed original text
-    alpha = np.maximum(alpha, (mask.astype(np.float32) / 255.0))
-    alpha_3d = np.expand_dims(alpha, axis=2)
+    h_img, w_img = original_img.shape[:2]
+    nz_y, nz_x = np.nonzero(mask)
+    if len(nz_y) == 0:
+        return original_img.copy()
 
-    blended = inpainted_img.astype(np.float32) * alpha_3d + original_img.astype(np.float32) * (1.0 - alpha_3d)
-    blended = np.clip(blended, 0, 255).astype(np.uint8)
+    pad = feather_radius * 3 + 2
+    y1 = max(0, int(nz_y.min()) - pad)
+    y2 = min(h_img, int(nz_y.max()) + pad + 1)
+    x1 = max(0, int(nz_x.min()) - pad)
+    x2 = min(w_img, int(nz_x.max()) + pad + 1)
+
+    orig_roi = original_img[y1:y2, x1:x2]
+    inp_roi = inpainted_img[y1:y2, x1:x2]
+    mask_roi = mask[y1:y2, x1:x2]
+
+    ksize = feather_radius * 2 + 1
+    mask_f = mask_roi.astype(np.float32) * (1.0 / 255.0)
+    alpha = cv2.GaussianBlur(mask_f, (ksize, ksize), 0)
+    # Ensure core mask regions retain full inpainting opacity so thin text strokes don't bleed original text
+    np.maximum(alpha, mask_f, out=alpha)
+    del mask_f
+
+    alpha_3d = np.expand_dims(alpha, axis=2)
+    blended_roi = inp_roi.astype(np.float32) * alpha_3d + orig_roi.astype(np.float32) * (1.0 - alpha_3d)
+    blended_roi = np.clip(blended_roi, 0, 255).astype(np.uint8)
+    del alpha_3d
 
     # Inverted dark/mid-tone background protection:
-    orig_gray = cv2.cvtColor(original_img, cv2.COLOR_BGR2GRAY)
-    inpaint_gray = cv2.cvtColor(inpainted_img, cv2.COLOR_BGR2GRAY)
+    orig_gray = cv2.cvtColor(orig_roi, cv2.COLOR_BGR2GRAY)
+    inpaint_gray = cv2.cvtColor(inp_roi, cv2.COLOR_BGR2GRAY)
     dark_inpaint = inpaint_gray < 140
     bright_orig = orig_gray > (inpaint_gray + 15)
     bleed_mask = (alpha > 0.05) & dark_inpaint & bright_orig
-    blended[bleed_mask] = inpainted_img[bleed_mask]
+    blended_roi[bleed_mask] = inp_roi[bleed_mask]
+    del alpha, orig_gray, inpaint_gray, dark_inpaint, bright_orig, bleed_mask
 
-    return blended
+    result = original_img.copy()
+    result[y1:y2, x1:x2] = blended_roi
+    return result
 
 
 class LaMaInpainter(BaseInpainter):
@@ -150,7 +172,7 @@ class LaMaInpainter(BaseInpainter):
                 erased_img, unboxed_mask = erase_unboxed_text_block(
                     erased_img, block, qr_mask=qr_mask, min_dilation=3
                 )
-                if unboxed_mask is not None and np.sum(unboxed_mask) > 0:
+                if unboxed_mask is not None and np.any(unboxed_mask):
                     inpaint_mask = cv2.bitwise_or(inpaint_mask, unboxed_mask)
                 continue
 
@@ -246,7 +268,7 @@ class LaMaInpainter(BaseInpainter):
             if explicit_black_box or (is_dark_bg and uniform) or (block_type == "bubble" and uniform):
                 fill_color = target_bg_bgr if is_dark_bg else bg_bgr
                 dilated = dilate_mask(text_mask, adaptive_dil)
-                if np.sum(text_mask) == 0:
+                if not np.any(text_mask):
                     dilated = dilate_mask(poly_mask, adaptive_dil)
                 crop[(dilated == 255) & (qr_mask_crop == 0)] = fill_color
                 erased_img[py_min:py_max, px_min:px_max] = crop
@@ -267,7 +289,7 @@ class LaMaInpainter(BaseInpainter):
                     )
                 else:
                     dilated = dilate_mask(text_mask, adaptive_dil)
-                    if np.sum(text_mask) == 0:
+                    if not np.any(text_mask):
                         dilated = dilate_mask(poly_mask, adaptive_dil)
                     inpaint_mask[py_min:py_max, px_min:px_max] = cv2.bitwise_or(
                         inpaint_mask[py_min:py_max, px_min:px_max], dilated
@@ -277,64 +299,92 @@ class LaMaInpainter(BaseInpainter):
         inpaint_mask[qr_mask > 0] = 0
         erased_img[qr_mask > 0] = image[qr_mask > 0]
 
-        if np.sum(inpaint_mask) > 0:
+        if np.any(inpaint_mask):
             if progress_callback:
                 progress_callback(45, "正在执行 Simple-LaMa 深度图像修复...")
 
-            telea_inpainted = cv2.inpaint(erased_img, inpaint_mask, 4, cv2.INPAINT_TELEA)
-            telea_inpainted[qr_mask > 0] = image[qr_mask > 0]
-            telea_gray = cv2.cvtColor(telea_inpainted, cv2.COLOR_BGR2GRAY)
+            nz_y, nz_x = np.nonzero(inpaint_mask)
+            pad_roi = max(48, feather_radius * 4 + 16)
+            ry1 = max(0, int(nz_y.min()) - pad_roi)
+            ry2 = min(h_img, int(nz_y.max()) + pad_roi + 1)
+            rx1 = max(0, int(nz_x.min()) - pad_roi)
+            rx2 = min(w_img, int(nz_x.max()) + pad_roi + 1)
+            roi_h = ry2 - ry1
+            roi_w = rx2 - rx1
 
-            inpainted = None
+            erased_roi = erased_img[ry1:ry2, rx1:rx2]
+            mask_roi = inpaint_mask[ry1:ry2, rx1:rx2]
+            qr_roi = qr_mask[ry1:ry2, rx1:rx2]
+            orig_roi = image[ry1:ry2, rx1:rx2]
+
+            telea_roi = cv2.inpaint(erased_roi, mask_roi, 4, cv2.INPAINT_TELEA)
+            telea_roi[qr_roi > 0] = orig_roi[qr_roi > 0]
+            telea_gray = cv2.cvtColor(telea_roi, cv2.COLOR_BGR2GRAY)
+
+            inpainted_roi = None
             try:
                 scale_factor = 1.0
-                if base_dim > 2048:
-                    scale_factor = 2048.0 / base_dim
-                    infer_w = int(w_img * scale_factor)
-                    infer_h = int(h_img * scale_factor)
-                    infer_img = cv2.resize(telea_inpainted, (infer_w, infer_h), interpolation=cv2.INTER_AREA)
-                    infer_mask = cv2.resize(inpaint_mask, (infer_w, infer_h), interpolation=cv2.INTER_NEAREST)
+                roi_max_dim = max(roi_h, roi_w)
+                if roi_max_dim > 1536:
+                    scale_factor = 1536.0 / roi_max_dim
+                    infer_w = max(8, int(roi_w * scale_factor))
+                    infer_h = max(8, int(roi_h * scale_factor))
+                    infer_img = cv2.resize(telea_roi, (infer_w, infer_h), interpolation=cv2.INTER_AREA)
+                    infer_mask = cv2.resize(mask_roi, (infer_w, infer_h), interpolation=cv2.INTER_NEAREST)
                 else:
-                    infer_img = telea_inpainted
-                    infer_mask = inpaint_mask
+                    infer_img = telea_roi
+                    infer_mask = mask_roi
 
                 img_rgb = cv2.cvtColor(infer_img, cv2.COLOR_BGR2RGB)
                 img_pil = PILImage.fromarray(img_rgb)
                 mask_pil = PILImage.fromarray(infer_mask)
+                del img_rgb
 
-                # Execute LaMa model
-                res_pil = self._lama(img_pil, mask_pil)
+                grad_ctx = torch.no_grad() if HAS_TORCH else nullcontext()
+                with grad_ctx:
+                    res_pil = self._lama(img_pil, mask_pil)
+
                 res_rgb = np.array(res_pil)
+                del res_pil, img_pil, mask_pil
                 res_bgr = cv2.cvtColor(res_rgb, cv2.COLOR_RGB2BGR)
+                del res_rgb
 
                 infer_h_actual, infer_w_actual = infer_img.shape[:2]
                 res_bgr = res_bgr[:infer_h_actual, :infer_w_actual]
 
                 if scale_factor < 1.0:
-                    inpainted = cv2.resize(res_bgr, (w_img, h_img), interpolation=cv2.INTER_CUBIC)
+                    inpainted_roi = cv2.resize(res_bgr, (roi_w, roi_h), interpolation=cv2.INTER_CUBIC)
                 else:
-                    inpainted = res_bgr
+                    inpainted_roi = res_bgr
+                del res_bgr
 
                 dark_or_mid = np.expand_dims(telea_gray < 185, axis=2)
-                inpainted = np.where(dark_or_mid, np.minimum(inpainted, telea_inpainted), inpainted)
+                inpainted_roi = np.where(dark_or_mid, np.minimum(inpainted_roi, telea_roi), inpainted_roi)
+                del dark_or_mid
 
                 logger.info("LaMa neural inpainting completed successfully.")
             except Exception as e:
                 logger.error(f"LaMa execution encountered error: {e}. Falling back to OpenCV Telea.", exc_info=True)
-                inpainted = None
+                inpainted_roi = None
             finally:
-                if HAS_TORCH and torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                gc.collect()
+                try:
+                    from app.core.hardware import cleanup_gpu_memory
+                    cleanup_gpu_memory(trim_ram=False)
+                except Exception:
+                    if HAS_TORCH and torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    gc.collect()
 
-            if inpainted is None:
+            if inpainted_roi is None:
                 if progress_callback:
                     progress_callback(60, "LaMa 资源受限，正在回退使用 OpenCV Telea 算法...")
-                inpainted = telea_inpainted
+                inpainted_roi = telea_roi
 
-            filtered = cv2.bilateralFilter(inpainted, 5, 50, 50)
-            erased_img = blend_inpainted_image(telea_inpainted, filtered, inpaint_mask, feather_radius)
-            erased_img[qr_mask > 0] = image[qr_mask > 0]
+            filtered = cv2.bilateralFilter(inpainted_roi, 5, 50, 50)
+            blended_roi = blend_inpainted_image(telea_roi, filtered, mask_roi, feather_radius)
+            blended_roi[qr_roi > 0] = orig_roi[qr_roi > 0]
+            erased_img[ry1:ry2, rx1:rx2] = blended_roi
+            del telea_roi, telea_gray, inpainted_roi, filtered, blended_roi
 
         if progress_callback:
             progress_callback(100, "图像修复与去字完成")

@@ -1,12 +1,45 @@
 """
 app/ui/widgets/thumbnail_loader.py
-High-performance asynchronous thumbnail manager with thread-pool offloading
-and in-memory LRU caching to prevent GUI freezes during large folder ingestion.
+High-performance asynchronous thumbnail manager with thread-pool offloading,
+codec-level downsampled decoding (QImageReader), and in-memory LRU caching
+to prevent GUI freezes and RAM spikes during large folder ingestion.
 """
 from typing import Dict, List, Tuple, Callable, Optional
 import os
-from PyQt6.QtCore import QObject, QThreadPool, QRunnable, pyqtSignal, Qt
-from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtCore import QObject, QThreadPool, QRunnable, pyqtSignal, Qt, QSize
+from PyQt6.QtGui import QImage, QPixmap, QImageReader
+
+
+def _decode_scaled_qimage(path: str, target_width: int, target_height: int) -> QImage:
+    """
+    Decodes an image directly into a downscaled QImage using QImageReader so that
+    multi-megapixel manga pages do not allocate full-resolution buffers in RAM.
+    """
+    try:
+        reader = QImageReader(path)
+        reader.setAutoTransform(True)
+        orig_size = reader.size()
+        if orig_size.isValid() and orig_size.width() > 0 and orig_size.height() > 0:
+            scaled_size = orig_size.scaled(
+                QSize(target_width, target_height),
+                Qt.AspectRatioMode.KeepAspectRatio
+            )
+            reader.setScaledSize(scaled_size)
+            qimg = reader.read()
+            if not qimg.isNull():
+                return qimg
+    except Exception:
+        pass
+
+    img = QImage(path)
+    if not img.isNull():
+        return img.scaled(
+            target_width,
+            target_height,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+    return QImage()
 
 
 class ThumbnailSignals(QObject):
@@ -28,14 +61,8 @@ class ThumbnailWorker(QRunnable):
         try:
             if not os.path.exists(self.path):
                 return
-            img = QImage(self.path)
-            if not img.isNull():
-                scaled = img.scaled(
-                    self.target_width,
-                    self.target_height,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation
-                )
+            scaled = _decode_scaled_qimage(self.path, self.target_width, self.target_height)
+            if not scaled.isNull():
                 try:
                     self.signals.loaded.emit(self.path, scaled)
                 except RuntimeError:
@@ -60,7 +87,7 @@ class AsyncThumbnailManager:
         self.signals = ThumbnailSignals()
         self.signals.loaded.connect(self._on_thumbnail_loaded)
         self._cache: Dict[str, QPixmap] = {}
-        self._max_cache = 80
+        self._max_cache = 60
         self._pending_callbacks: Dict[str, List[Callable[[QPixmap], None]]] = {}
 
     @classmethod
@@ -127,14 +154,8 @@ class AsyncThumbnailManager:
         if sync:
             if not os.path.exists(path):
                 return
-            img = QImage(path)
-            if not img.isNull():
-                scaled = img.scaled(
-                    target_size[0],
-                    target_size[1],
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation
-                )
+            scaled = _decode_scaled_qimage(path, target_size[0], target_size[1])
+            if not scaled.isNull():
                 pix = QPixmap.fromImage(scaled)
                 self._cache[path] = pix
                 callback(pix)

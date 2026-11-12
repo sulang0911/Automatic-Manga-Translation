@@ -1,19 +1,113 @@
 """
 app/core/hardware.py
-GPU capability detection, Pascal/Maxwell architecture hazard detection, and VRAM monitoring.
+GPU capability detection, Pascal/Maxwell architecture hazard detection, VRAM monitoring,
+and aggressive system RAM / CUDA working-set reclamation for 8GB RAM + GTX 1080 Ti systems.
 """
 from typing import Dict, Any, Tuple
+import os
+import sys
 import gc
+import ctypes
 import logging
 
 logger = logging.getLogger(__name__)
 
+# Prevent CUDA allocator fragmentation and OpenCV OpenCL duplicate context on Pascal GPUs
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:128")
+os.environ.setdefault("OPENCV_OPENCL_RUNTIME", "disabled")
+os.environ.setdefault("MALLOC_TRIM_THRESHOLD_", "65536")
+
+try:
+    import cv2
+    if hasattr(cv2, "ocl") and hasattr(cv2.ocl, "setUseOpenCL"):
+        cv2.ocl.setUseOpenCL(False)
+except Exception:
+    pass
+
 try:
     import torch
     HAS_TORCH = True
+    try:
+        if hasattr(torch.backends, "cudnn"):
+            # Disable cuDNN auto-tuner to prevent multi-GB workspace spikes on varying crop sizes
+            torch.backends.cudnn.benchmark = False
+    except Exception:
+        pass
 except ImportError:
     torch = None
     HAS_TORCH = False
+
+_VRAM_FRACTION_CONFIGURED = False
+
+
+def configure_low_resource_runtime(max_vram_fraction: float = 0.72) -> None:
+    """
+    Configures PyTorch CUDA allocator and cuDNN for 8GB RAM + GTX 1080 Ti (11GB VRAM) stability.
+    Prevents PyTorch from over-allocating 100% physical VRAM and spilling into Windows WDDM
+    Shared System Memory (which exhausts 8GB RAM and causes system hangs / TDR driver resets).
+    """
+    global _VRAM_FRACTION_CONFIGURED
+    if _VRAM_FRACTION_CONFIGURED:
+        return
+    _VRAM_FRACTION_CONFIGURED = True
+
+    try:
+        if HAS_TORCH and torch.cuda.is_available():
+            if hasattr(torch.backends, "cudnn"):
+                torch.backends.cudnn.benchmark = False
+            if hasattr(torch.cuda, "set_per_process_memory_fraction"):
+                torch.cuda.set_per_process_memory_fraction(max_vram_fraction, 0)
+    except Exception:
+        pass
+
+
+def lower_worker_priority() -> None:
+    """
+    Lowers the OS scheduling priority of the current background worker thread so that
+    heavy OCR/Inpaint compute never starves the Windows Desktop Window Manager (dwm.exe),
+    mouse input, or the main PyQt6 UI thread.
+    """
+    try:
+        from PyQt6.QtCore import QThread
+        curr_thread = QThread.currentThread()
+        if curr_thread is not None:
+            curr_thread.setPriority(QThread.Priority.LowPriority)
+    except Exception:
+        pass
+
+    if sys.platform == "win32":
+        try:
+            kernel32 = ctypes.windll.kernel32
+            thread_handle = kernel32.GetCurrentThread()
+            # THREAD_PRIORITY_BELOW_NORMAL = -1
+            kernel32.SetThreadPriority(thread_handle, -1)
+        except Exception:
+            pass
+
+
+def trim_process_working_set() -> None:
+    """
+    Forces the OS C/C++ heap and virtual memory manager to reclaim freed NumPy/OpenCV/PyTorch
+    memory pages immediately rather than keeping them committed in the process working set.
+    Critical for preventing pagefile thrashing and OOM freezes on 8GB RAM Windows systems.
+    """
+    if sys.platform == "win32":
+        try:
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.GetCurrentProcess()
+            try:
+                ctypes.windll.psapi.EmptyWorkingSet(handle)
+            except Exception:
+                pass
+            kernel32.SetProcessWorkingSetSize(handle, ctypes.c_size_t(-1), ctypes.c_size_t(-1))
+        except Exception:
+            pass
+    elif sys.platform.startswith("linux"):
+        try:
+            libc = ctypes.CDLL("libc.so.6")
+            libc.malloc_trim(0)
+        except Exception:
+            pass
 
 
 def is_legacy_pascal_or_maxwell_gpu() -> bool:
@@ -82,12 +176,24 @@ def is_vram_constrained(min_free_mb: float = 1200.0) -> bool:
     return info["vram_free_mb"] < min_free_mb
 
 
-def cleanup_gpu_memory() -> None:
-    """Explicitly releases cached PyTorch CUDA tensors and triggers garbage collection."""
+def cleanup_gpu_memory(trim_ram: bool = True) -> None:
+    """
+    Explicitly triggers Python garbage collection, releases cached PyTorch/Paddle CUDA tensors,
+    and trims the OS process working set so 8GB RAM systems never accumulate dead heap pages.
+    """
+    gc.collect()
     try:
         if HAS_TORCH and torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.ipc_collect()
     except Exception:
         pass
-    gc.collect()
+    try:
+        if "paddle" in sys.modules:
+            import paddle
+            if hasattr(paddle, "device") and hasattr(paddle.device, "cuda"):
+                paddle.device.cuda.empty_cache()
+    except Exception:
+        pass
+    if trim_ram:
+        trim_process_working_set()

@@ -68,7 +68,8 @@ class MainWindow(QMainWindow):
 
         self.config = AppConfig.load("desktop_config.json")
         self.typo_engine = TypographyEngine()
-        self.undo_manager = UndoManager(max_depth=50)
+        self.undo_manager = UndoManager(max_depth=10, max_bitmap_snapshots=4)
+        self._recent_memory_paths: List[str] = []
         self._pending_drag_snapshot: Optional[PageSnapshot] = None
         self._pending_inspector_snapshot: Optional[PageSnapshot] = None
         self.current_image_data: Optional[Dict[str, Any]] = None
@@ -736,10 +737,38 @@ class MainWindow(QMainWindow):
                 self.active_batch_worker.resume()
                 self.toast.show_message("批处理已恢复", "success")
 
+    def _evict_inactive_page_memory(self, active_path: Optional[str] = None):
+        """
+        Bounds in-memory numpy arrays across page_list.items_data to at most the 2 most
+        recently accessed pages whose caches are already persisted on disk (.amt_cache).
+        Prevents 50-200 pages of uncompressed images from exhausting 8GB RAM.
+        """
+        if not hasattr(self, "_recent_memory_paths"):
+            self._recent_memory_paths = []
+        if active_path:
+            if active_path in self._recent_memory_paths:
+                self._recent_memory_paths.remove(active_path)
+            self._recent_memory_paths.append(active_path)
+        keep_paths = set(self._recent_memory_paths[-2:])
+        cache_mgr = get_cache_manager()
+        for it in getattr(self.page_list, "items_data", []):
+            p = it.get("path")
+            if not p or p in keep_paths:
+                continue
+            if it.get("erased_img") is not None or it.get("translated_img") is not None or it.get("original_img") is not None or it.get("original_cv") is not None:
+                c_stat = cache_mgr.has_cache(p)
+                if c_stat.get("erased") or c_stat.get("rendered") or c_stat.get("blocks"):
+                    it["erased_img"] = None
+                    it["translated_img"] = None
+                    it.pop("original_img", None)
+                    it.pop("original_cv", None)
+                    it.pop("img", None)
+
     def _on_page_selected(self, item_data: Dict[str, Any]):
         path = item_data.get("path")
         if path and os.path.exists(path):
             self.current_image_data = item_data
+            self._evict_inactive_page_memory(path)
             cv_img = safe_cv2_imread(path)
             if cv_img is not None:
                 cache_mgr = get_cache_manager()
@@ -1711,8 +1740,12 @@ class MainWindow(QMainWindow):
             ]
             try:
                 rendered = self.typo_engine.render_page(erased_img, render_blocks, effective_style)
-                item["translated_img"] = rendered
-                cache_mgr.save_page_cache(path, erased_img=erased_img, blocks=model_blocks, rendered_img=rendered)
+                cache_mgr.save_page_cache(path, erased_img=None if cache_mgr.has_cache(path).get("erased") else erased_img, blocks=model_blocks, rendered_img=rendered)
+                if len(items) <= 2:
+                    item["translated_img"] = rendered
+                else:
+                    item["translated_img"] = None
+                    item["erased_img"] = None
                 re_rendered_count += 1
             except Exception as e:
                 print(f"[-] Re-render page error for {path}: {e}")
@@ -2027,9 +2060,16 @@ class MainWindow(QMainWindow):
 
     def _on_batch_item_completed(self, image_id: str, result: Dict[str, Any]):
         self.page_list.update_item_status(image_id, "completed", "已完成")
-        # If this is the currently active page on canvas, reload from disk cache and update view
+        # If this is the currently active page on canvas, reload immediately if batch is not actively running
+        # a multi-page queue (otherwise _on_batch_finished will refresh it without stalling the worker mid-batch).
         if self.current_image_data and self.current_image_data.get("id") == image_id:
-            self._on_page_selected(self.current_image_data)
+            is_multi_batch_running = (
+                self.active_batch_worker is not None
+                and self.active_batch_worker.isRunning()
+                and len(getattr(self.page_list, "items_data", [])) > 1
+            )
+            if not is_multi_batch_running:
+                self._on_page_selected(self.current_image_data)
 
     def _on_batch_item_failed(self, image_id: str, error_msg: str):
         short_err = error_msg.strip().split("\n")[-1][:20]

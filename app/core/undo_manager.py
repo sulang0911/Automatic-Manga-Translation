@@ -68,12 +68,22 @@ class PageSnapshot:
 class UndoManager:
     """
     Manages undo and redo stacks for user operations.
-    Supports bounded stack depth to conserve memory.
+    Supports bounded stack depth and automatic bitmap pruning on older snapshots to conserve RAM on 8GB systems.
     """
-    def __init__(self, max_depth: int = 50):
+    def __init__(self, max_depth: int = 10, max_bitmap_snapshots: int = 4):
         self.max_depth = max(1, int(max_depth))
+        self.max_bitmap_snapshots = max(2, int(max_bitmap_snapshots))
         self._undo_stack: List[PageSnapshot] = []
         self._redo_stack: List[PageSnapshot] = []
+
+    def _prune_old_bitmaps(self) -> None:
+        """Evicts heavy uncompressed erased_img arrays from older snapshots beyond max_bitmap_snapshots."""
+        if len(self._undo_stack) > self.max_bitmap_snapshots:
+            for snap in self._undo_stack[:-self.max_bitmap_snapshots]:
+                snap.erased_img = None
+        if len(self._redo_stack) > self.max_bitmap_snapshots:
+            for snap in self._redo_stack[:-self.max_bitmap_snapshots]:
+                snap.erased_img = None
 
     def push(self, snapshot: PageSnapshot) -> None:
         """Pushes a pre-action state onto the undo stack and invalidates redo stack."""
@@ -81,6 +91,7 @@ class UndoManager:
         if len(self._undo_stack) > self.max_depth:
             self._undo_stack.pop(0)
         self._redo_stack.clear()
+        self._prune_old_bitmaps()
 
     def can_undo(self) -> bool:
         return len(self._undo_stack) > 0
@@ -117,6 +128,7 @@ class UndoManager:
         self._redo_stack.append(redo_snapshot)
         if len(self._redo_stack) > self.max_depth:
             self._redo_stack.pop(0)
+        self._prune_old_bitmaps()
         return target
 
     def redo(self, current_snapshot: PageSnapshot) -> Optional[PageSnapshot]:
@@ -137,6 +149,7 @@ class UndoManager:
         self._undo_stack.append(undo_snapshot)
         if len(self._undo_stack) > self.max_depth:
             self._undo_stack.pop(0)
+        self._prune_old_bitmaps()
         return target
 
     def clear(self) -> None:

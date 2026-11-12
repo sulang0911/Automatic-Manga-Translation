@@ -1,11 +1,12 @@
 """
 app/core/ocr/ctd_engine.py
 Comic-Text-Detector (CTD) engine for comic balloon, dialogue, and slanted text detection.
-Pure PyTorch implementation optimized for manga layouts.
+Pure PyTorch implementation optimized for manga layouts and low-VRAM / 8GB RAM stability.
 """
 import os
 import sys
 import logging
+from contextlib import nullcontext
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 import math
@@ -269,7 +270,10 @@ class ComicTextDetectorEngine:
         h_img, w_img = image.shape[:2]
 
         try:
-            mask, mask_refined, blk_list = self._detector(image)
+            grad_ctx = torch.no_grad() if torch is not None else nullcontext()
+            with grad_ctx:
+                mask, mask_refined, blk_list = self._detector(image)
+            del mask
         except Exception as e:
             logger.warning(f"CTD inference error: {e}", exc_info=True)
             return [], None

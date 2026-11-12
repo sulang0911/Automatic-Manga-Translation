@@ -36,15 +36,20 @@ def cvimg_to_qpixmap(cv_img: Optional[np.ndarray]) -> QPixmap:
 
     h, w = cv_img.shape[:2]
     if len(cv_img.shape) == 2:
-        # Grayscale image
-        qimg = QImage(cv_img.data, w, h, w, QImage.Format.Format_Grayscale8)
-        return QPixmap.fromImage(qimg.copy())
+        # Grayscale image - QPixmap.fromImage copies pixel data into Qt backing store without an extra QImage.copy()
+        contig = np.ascontiguousarray(cv_img)
+        qimg = QImage(contig.data, w, h, w, QImage.Format.Format_Grayscale8)
+        pix = QPixmap.fromImage(qimg)
+        del qimg, contig
+        return pix
     elif len(cv_img.shape) == 3:
         # BGR image
         rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
         bytes_per_line = 3 * w
         qimg = QImage(rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
-        return QPixmap.fromImage(qimg.copy())
+        pix = QPixmap.fromImage(qimg)
+        del qimg, rgb
+        return pix
     return QPixmap()
 
 
@@ -582,9 +587,16 @@ class MangaCanvasView(QGraphicsView):
         self.translated_cv = translated_cv
         if erased_cv is not None:
             self.erased_cv = erased_cv
-        orig_pix = cvimg_to_qpixmap(self.original_cv)
+        bg_item = getattr(self._scene, "background_item", None)
+        existing_orig = getattr(bg_item, "_orig_pix", None) if bg_item else None
+        existing_eras = getattr(bg_item, "_eras_pix", None) if bg_item else None
+
+        orig_pix = existing_orig if (existing_orig is not None and not existing_orig.isNull()) else cvimg_to_qpixmap(self.original_cv)
         trans_pix = cvimg_to_qpixmap(self.translated_cv)
-        eras_pix = cvimg_to_qpixmap(self.erased_cv)
+        if erased_cv is None and existing_eras is not None and not existing_eras.isNull():
+            eras_pix = existing_eras
+        else:
+            eras_pix = cvimg_to_qpixmap(self.erased_cv)
         self._scene.set_images(orig_pix, trans_pix, eras_pix)
 
     def select_bubble_by_id(self, block_id: str):

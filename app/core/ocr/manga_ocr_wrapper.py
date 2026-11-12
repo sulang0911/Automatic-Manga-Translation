@@ -7,9 +7,14 @@ and memory safety.
 import os
 import sys
 import logging
+from contextlib import nullcontext
 from typing import Optional, Union, List, Tuple
 import numpy as np
 from PIL import Image
+try:
+    import torch
+except ImportError:
+    torch = None
 
 logger = logging.getLogger(__name__)
 
@@ -98,10 +103,10 @@ class MangaOCRRecognizer:
             elif crop.ndim == 3:
                 # Assume BGR if from OpenCV (3 channels)
                 if crop.shape[2] == 3:
-                    rgb = crop[:, :, ::-1]
+                    rgb = np.ascontiguousarray(crop[:, :, ::-1])
                     pil_img = Image.fromarray(rgb)
                 elif crop.shape[2] == 4:
-                    rgba = crop[:, :, [2, 1, 0, 3]]
+                    rgba = np.ascontiguousarray(crop[:, :, [2, 1, 0, 3]])
                     pil_img = Image.fromarray(rgba).convert("RGB")
                 else:
                     pil_img = Image.fromarray(crop).convert("RGB")
@@ -122,11 +127,15 @@ class MangaOCRRecognizer:
 
         self._ensure_loaded()
         try:
-            text = self._mocr(pil_img)
+            grad_ctx = torch.no_grad() if torch is not None else nullcontext()
+            with grad_ctx:
+                text = self._mocr(pil_img)
             return self._clean_text(text)
         except Exception as e:
             logger.warning(f"Manga-OCR crop inference error: {e}")
             return ""
+        finally:
+            del pil_img
 
     def recognize_crops(self, crops_with_angles: List[Tuple[Union[np.ndarray, Image.Image], float]]) -> List[str]:
         """

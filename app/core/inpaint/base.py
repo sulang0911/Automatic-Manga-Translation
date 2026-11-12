@@ -39,10 +39,11 @@ def blend_inpainted_image(
     """
     Blends inpainted texture into the original artwork using Gaussian blurred alpha feathering.
     Eliminates visible seams along the boundary of the inpainting mask.
+    Bounded to the active mask ROI to avoid full-page float32 RAM spikes.
     """
     if original_img is None:
         return None
-    if inpainted_img is None or mask is None or np.sum(mask) == 0:
+    if inpainted_img is None or mask is None or not np.any(mask):
         return original_img.copy()
 
     if feather_radius <= 0:
@@ -50,10 +51,29 @@ def blend_inpainted_image(
         result[mask > 0] = inpainted_img[mask > 0]
         return result
 
+    h_img, w_img = original_img.shape[:2]
+    nz_y, nz_x = np.nonzero(mask)
+    if len(nz_y) == 0:
+        return original_img.copy()
+
+    pad = feather_radius * 3 + 2
+    y1 = max(0, int(nz_y.min()) - pad)
+    y2 = min(h_img, int(nz_y.max()) + pad + 1)
+    x1 = max(0, int(nz_x.min()) - pad)
+    x2 = min(w_img, int(nz_x.max()) + pad + 1)
+
+    orig_roi = original_img[y1:y2, x1:x2]
+    inp_roi = inpainted_img[y1:y2, x1:x2]
+    mask_roi = mask[y1:y2, x1:x2]
+
     ksize = feather_radius * 2 + 1
-    # Normalized Gaussian alpha mask
-    alpha = cv2.GaussianBlur(mask.astype(np.float32) / 255.0, (ksize, ksize), 0)
+    alpha = cv2.GaussianBlur(mask_roi.astype(np.float32) * (1.0 / 255.0), (ksize, ksize), 0)
     alpha = np.expand_dims(alpha, axis=2)
 
-    blended = inpainted_img.astype(np.float32) * alpha + original_img.astype(np.float32) * (1.0 - alpha)
-    return np.clip(blended, 0, 255).astype(np.uint8)
+    blended_roi = inp_roi.astype(np.float32) * alpha + orig_roi.astype(np.float32) * (1.0 - alpha)
+    blended_roi = np.clip(blended_roi, 0, 255).astype(np.uint8)
+    del alpha
+
+    result = original_img.copy()
+    result[y1:y2, x1:x2] = blended_roi
+    return result

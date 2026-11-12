@@ -569,7 +569,8 @@ class OCREngine:
     _GLOBAL_EASYOCR_CACHE: Dict[str, Any] = {}
 
     def _init_easyocr(self, is_english: bool = False, lang: Optional[str] = None):
-        target_norm = "en" if is_english else self.normalize_lang(lang or self.lang)
+        raw_norm = "en" if is_english else self.normalize_lang(lang or self.lang)
+        target_norm = "ja" if raw_norm in ("ja", "auto") else raw_norm
         cache_key = f"{target_norm}_{self.use_gpu}"
         if target_norm == "en":
             if getattr(self, "_easyocr_en_reader", None) is not None:
@@ -614,7 +615,8 @@ class OCREngine:
                 self._easyocr_reader = reader
 
     def _get_easyocr_reader(self, is_english: bool = False, lang: Optional[str] = None):
-        target_norm = "en" if is_english else self.normalize_lang(lang or self.lang)
+        raw_norm = "en" if is_english else self.normalize_lang(lang or self.lang)
+        target_norm = "ja" if raw_norm in ("ja", "auto") else raw_norm
         if target_norm == "en":
             if getattr(self, "_easyocr_en_reader", None) is not None:
                 return self._easyocr_en_reader
@@ -736,14 +738,20 @@ class OCREngine:
 
         reader = self._get_easyocr_reader(is_english=is_english, lang=lang)
 
+        from contextlib import nullcontext
+        grad_ctx = torch.no_grad() if (torch is not None and hasattr(torch, "no_grad")) else nullcontext()
         if abs(angle) >= 2.5:
             crop_upright, _ = rotate_crop_upright(crop, angle)
             rgb_upright = cv2.cvtColor(crop_upright, cv2.COLOR_BGR2RGB)
-            res_upright = reader.readtext(rgb_upright)
+            with grad_ctx:
+                res_upright = reader.readtext(rgb_upright)
+            del rgb_upright, crop_upright
             text_up, conf_up = sort_easyocr_fragments_2d(res_upright)
 
             rgb_raw = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-            res_raw = reader.readtext(rgb_raw)
+            with grad_ctx:
+                res_raw = reader.readtext(rgb_raw)
+            del rgb_raw
             text_raw, conf_raw = sort_easyocr_fragments_2d(res_raw)
 
             if len(text_up.strip()) >= len(text_raw.strip()) and conf_up >= 0.25:
@@ -754,7 +762,9 @@ class OCREngine:
                 text, conf = text_up, conf_up
         else:
             rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-            res = reader.readtext(rgb)
+            with grad_ctx:
+                res = reader.readtext(rgb)
+            del rgb
             text, conf = sort_easyocr_fragments_2d(res)
 
         text = clean_ocr_syntax(text)
@@ -1272,6 +1282,12 @@ class OCREngine:
 
         if progress_callback:
             progress_callback(95, f"OCR 识别完成，共提取 {len(blocks)} 个对话气泡")
+
+        try:
+            if self.use_gpu and torch is not None and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
 
         return blocks
 

@@ -4,6 +4,7 @@ PyTorch-accelerated OCR backend based on EasyOCR.
 Reliable GPU execution across all NVIDIA architectures (including Pascal GTX 10-series).
 """
 import logging
+from contextlib import nullcontext
 from typing import List, Dict, Any, Optional, Callable, Tuple
 import cv2
 import numpy as np
@@ -155,9 +156,9 @@ class EasyOCREngine(BaseOCREngine):
     def __init__(self, languages: Optional[List[str]] = None, use_gpu: Optional[bool] = None):
         self.languages = languages or ['ja', 'en']
         if use_gpu is None:
-            self.use_gpu = torch.cuda.is_available()
+            self.use_gpu = bool(torch is not None and torch.cuda.is_available())
         else:
-            self.use_gpu = use_gpu and torch.cuda.is_available()
+            self.use_gpu = bool(use_gpu and torch is not None and torch.cuda.is_available())
         self._reader = None
         self._reader_en = None
 
@@ -183,12 +184,12 @@ class EasyOCREngine(BaseOCREngine):
 
     def get_device_info(self) -> Dict[str, Any]:
         device_name = "CPU"
-        if self.use_gpu and torch.cuda.is_available():
+        if self.use_gpu and torch is not None and torch.cuda.is_available():
             device_name = f"GPU ({torch.cuda.get_device_name(0)})"
         return {
             "engine": "EasyOCR",
             "device": device_name,
-            "cuda_available": torch.cuda.is_available(),
+            "cuda_available": bool(torch is not None and torch.cuda.is_available()),
             "languages": self.languages
         }
 
@@ -212,7 +213,9 @@ class EasyOCREngine(BaseOCREngine):
             progress_callback(35, "正在执行文字检测与多语言识别...")
 
         rgb_img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        raw_results = reader.readtext(rgb_img)
+        grad_ctx = torch.no_grad() if torch is not None else nullcontext()
+        with grad_ctx:
+            raw_results = reader.readtext(rgb_img)
 
         # Pre-detect language if auto/default and check if page is actually English
         if not is_english and raw_results:
@@ -223,7 +226,9 @@ class EasyOCREngine(BaseOCREngine):
             if (len(lat_w) >= 3 and len("".join(lat_w)) > len(cjk_c) * 2) or (len(lat_w) >= 2 and len(cjk_c) == 0):
                 is_english = True
                 reader = self._get_reader(is_english=True)
-                raw_results = reader.readtext(rgb_img)
+                with grad_ctx:
+                    raw_results = reader.readtext(rgb_img)
+        del rgb_img
 
         raw_boxes = []
         for bbox, text, conf in raw_results:
