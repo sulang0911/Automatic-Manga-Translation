@@ -302,8 +302,31 @@ def has_dark_boundary_barrier(
 
         lum1 = _box_lum(b1, x1_min, y1_min, x1_max, y1_max)
         lum2 = _box_lum(b2, x2_min, y2_min, x2_max, y2_max)
-        if lum1 < 115.0 and lum2 < 115.0:
+        if lum1 < 150.0 and lum2 < 150.0:
+            # On dark/mid-tone scenes (e.g. CG comics), dark backgrounds aren't bubble borders,
+            # EXCEPT a bright white panel gutter/divider (>= 4 consecutive >= 225 samples) separating panels.
+            cx1 = (x1_min + x1_max) / 2.0
+            cy1 = (y1_min + y1_max) / 2.0
+            cx2 = (x2_min + x2_max) / 2.0
+            cy2 = (y2_min + y2_max) / 2.0
+            dist = math.hypot(cx2 - cx1, cy2 - cy1)
+            if dist > 2.0:
+                num_samples = max(10, int(dist))
+                bright_run = 0
+                for x, y in zip(np.linspace(cx1, cx2, num_samples), np.linspace(cy1, cy2, num_samples)):
+                    in_b1 = (x1_min <= x <= x1_max) and (y1_min <= y <= y1_max)
+                    in_b2 = (x2_min <= x <= x2_max) and (y2_min <= y <= y2_max)
+                    if not in_b1 and not in_b2:
+                        ix, iy = int(round(x)), int(round(y))
+                        if 0 <= iy < h_img and 0 <= ix < w_img and float(gray[iy, ix]) >= 225.0:
+                            bright_run += 1
+                            if bright_run >= 4:
+                                return True
+                            continue
+                    bright_run = 0
             return False
+
+        is_light_pair = (max(lum1, lum2) >= 190.0)
 
         # Ray-casting between centroids
         cx1 = (x1_min + x1_max) / 2.0
@@ -323,47 +346,52 @@ def has_dark_boundary_barrier(
                     ix = int(round(x))
                     iy = int(round(y))
                     if 0 <= iy < h_img and 0 <= ix < w_img:
-                        if float(gray[iy, ix]) < luminance_threshold:
+                        if float(gray[iy, ix]) < luminance_threshold and is_light_pair:
                             return True
 
         # Gap strip check for vertically stacked boxes
+        def _strip_has_dark_barrier(strip_arr: np.ndarray, axis: int) -> bool:
+            if strip_arr.size == 0 or float(strip_arr.min()) >= luminance_threshold:
+                return False
+            if is_light_pair:
+                return True
+            # On non-white shaded/CG scenes, require a continuous dark border across >= 70% of columns/rows
+            col_dark = np.min(strip_arr, axis=axis) < luminance_threshold
+            return (float(np.mean(col_dark)) >= 0.70)
+
         if y2_min > y1_max:
             y_start = y1_max
             y_end = y2_min
-            x_start = min(x1_min, x2_min)
-            x_end = max(x1_max, x2_max)
+            x_start = max(x1_min, x2_min) if not is_light_pair else min(x1_min, x2_min)
+            x_end = min(x1_max, x2_max) if not is_light_pair else max(x1_max, x2_max)
             if y_end > y_start and x_end > x_start:
-                strip = gray[y_start:y_end, x_start:x_end]
-                if strip.size > 0 and float(strip.min()) < luminance_threshold:
+                if _strip_has_dark_barrier(gray[y_start:y_end, x_start:x_end], axis=0):
                     return True
         elif y1_min > y2_max:
             y_start = y2_max
             y_end = y1_min
-            x_start = min(x1_min, x2_min)
-            x_end = max(x1_max, x2_max)
+            x_start = max(x1_min, x2_min) if not is_light_pair else min(x1_min, x2_min)
+            x_end = min(x1_max, x2_max) if not is_light_pair else max(x1_max, x2_max)
             if y_end > y_start and x_end > x_start:
-                strip = gray[y_start:y_end, x_start:x_end]
-                if strip.size > 0 and float(strip.min()) < luminance_threshold:
+                if _strip_has_dark_barrier(gray[y_start:y_end, x_start:x_end], axis=0):
                     return True
 
         # Gap strip check for horizontally adjacent boxes
         if x2_min > x1_max:
             x_start = x1_max
             x_end = x2_min
-            y_start = min(y1_min, y2_min)
-            y_end = max(y1_max, y2_max)
+            y_start = max(y1_min, y2_min) if not is_light_pair else min(y1_min, y2_min)
+            y_end = min(y1_max, y2_max) if not is_light_pair else max(y1_max, y2_max)
             if x_end > x_start and y_end > y_start:
-                strip = gray[y_start:y_end, x_start:x_end]
-                if strip.size > 0 and float(strip.min()) < luminance_threshold:
+                if _strip_has_dark_barrier(gray[y_start:y_end, x_start:x_end], axis=1):
                     return True
         elif x1_min > x2_max:
             x_start = x2_max
             x_end = x1_min
-            y_start = min(y1_min, y2_min)
-            y_end = max(y1_max, y2_max)
+            y_start = max(y1_min, y2_min) if not is_light_pair else min(y1_min, y2_min)
+            y_end = min(y1_max, y2_max) if not is_light_pair else max(y1_max, y2_max)
             if x_end > x_start and y_end > y_start:
-                strip = gray[y_start:y_end, x_start:x_end]
-                if strip.size > 0 and float(strip.min()) < luminance_threshold:
+                if _strip_has_dark_barrier(gray[y_start:y_end, x_start:x_end], axis=1):
                     return True
 
         return False
@@ -477,8 +505,37 @@ def can_merge_pair(
                 dist = math.sqrt(sum((x - y) ** 2 for x, y in zip(rgb1, rgb2)))
                 lum_c1 = 0.299 * rgb1[0] + 0.587 * rgb1[1] + 0.114 * rgb1[2]
                 lum_c2 = 0.299 * rgb2[0] + 0.587 * rgb2[1] + 0.114 * rgb2[2]
+
+                # For tall multi-line CG/overlay blocks spanning a background lighting gradient,
+                # refine comparison using the facing height-matched edge strip toward the neighbor.
+                if image is not None and dist > 60.0 and max(lum_c1, lum_c2) < 190.0 and min(lum_c1, lum_c2) >= 45.0:
+                    ey1_min = max(0, min(int(round(min(b1["ymin"], b1["ymax"]))), img_h - 1))
+                    ey1_max = max(ey1_min + 1, min(int(round(max(b1["ymin"], b1["ymax"]))), img_h))
+                    ex1_min = max(0, min(int(round(min(b1["xmin"], b1["xmax"]))), img_w - 1))
+                    ex1_max = max(ex1_min + 1, min(int(round(max(b1["xmin"], b1["xmax"]))), img_w))
+                    ey2_min = max(0, min(int(round(min(b2["ymin"], b2["ymax"]))), img_h - 1))
+                    ey2_max = max(ey2_min + 1, min(int(round(max(b2["ymin"], b2["ymax"]))), img_h))
+                    ex2_min = max(0, min(int(round(min(b2["xmin"], b2["xmax"]))), img_w - 1))
+                    ex2_max = max(ex2_min + 1, min(int(round(max(b2["xmin"], b2["xmax"]))), img_w))
+                    eh1, eh2 = ey1_max - ey1_min, ey2_max - ey2_min
+                    if max(eh1, eh2) > 2.0 * min(eh1, eh2) and (ey1_max <= ey2_min or ey2_max <= ey1_min):
+                        strip_h = max(16, min(eh1, eh2, 80))
+                        ov_x1 = max(ex1_min, ex2_min)
+                        ov_x2 = min(ex1_max, ex2_max)
+                        if ov_x2 > ov_x1:
+                            if eh1 > eh2:
+                                sy1, sy2 = (ey1_max - strip_h, ey1_max) if ey1_max <= ey2_min else (ey1_min, ey1_min + strip_h)
+                                rgb1 = _parse_color(get_background_color_hex(image[max(0, sy1):min(img_h, sy2), ov_x1:ov_x2])) or rgb1
+                            else:
+                                sy1, sy2 = (ey2_max - strip_h, ey2_max) if ey2_max <= ey1_min else (ey2_min, ey2_min + strip_h)
+                                rgb2 = _parse_color(get_background_color_hex(image[max(0, sy1):min(img_h, sy2), ov_x1:ov_x2])) or rgb2
+                            dist = math.sqrt(sum((x - y) ** 2 for x, y in zip(rgb1, rgb2)))
+                            lum_c1 = 0.299 * rgb1[0] + 0.587 * rgb1[1] + 0.114 * rgb1[2]
+                            lum_c2 = 0.299 * rgb2[0] + 0.587 * rgb2[1] + 0.114 * rgb2[2]
+
                 both_dark = (lum_c1 < 115.0 and lum_c2 < 115.0)
-                max_color_dist = 150.0 if is_collinear_slanted else (115.0 if both_dark else 60.0)
+                both_cg_grad = (lum_c1 < 185.0 and lum_c2 < 185.0 and min(lum_c1, lum_c2) >= 45.0)
+                max_color_dist = 150.0 if is_collinear_slanted else (115.0 if both_dark else (95.0 if both_cg_grad else 60.0))
                 if dist > max_color_dist:
                     return False
         except Exception:
@@ -717,9 +774,25 @@ def can_merge_pair(
             if u_aligned:
                 return True
 
+    line_h1 = estimate_line_height(b1, has_cjk)
+    line_h2 = estimate_line_height(b2, has_cjk)
+    min_line_h = min(line_h1, line_h2)
+    max_line_h = max(line_h1, line_h2)
+
+    is_multiline_block1 = (b1.get("line_count", 1) > 1 or len(b1.get("lines", [])) > 1 or len(str(b1.get("text", "")).splitlines()) > 1)
+    is_multiline_block2 = (b2.get("line_count", 1) > 1 or len(b2.get("lines", [])) > 1 or len(str(b2.get("text", "")).splitlines()) > 1)
+    is_stacked_multi1 = is_multiline_block1 or (not has_cjk and h1 > line_h1 * 1.45)
+    is_stacked_multi2 = is_multiline_block2 or (not has_cjk and h2 > line_h2 * 1.45)
+
     # Criterion 2: Same-line fragments (horizontal text collinear fragments / words)
+    # Reject horizontally separated multi-line columns (e.g. side-by-side comic panels)
+    # and scale word-gap tolerance by single-line height instead of full block height.
     is_not_vert_columns = not (has_cjk and h1 >= w1 * 1.20 and h2 >= w2 * 1.20)
-    if is_not_vert_columns:
+    allow_same_line = is_not_vert_columns and not (
+        (is_stacked_multi1 or is_stacked_multi2)
+        and (not same_bubble or x_gap > 0 or abs(y1_min - y2_min) > max_line_h * 0.70)
+    )
+    if allow_same_line:
         a1 = float(b1.get("angle", 0.0) or 0.0)
         a2 = float(b2.get("angle", 0.0) or 0.0)
         eff_ang = a1 if abs(a1) >= 15.0 else a2
@@ -730,12 +803,12 @@ def can_merge_pair(
             actual_y_diff = mid_y2 - mid_y1
             y_deviation = abs(actual_y_diff - expected_y_diff)
             slant_gap = math.hypot(x_gap, y_gap)
-            max_word_gap = max(10, int(1.2 * max_h * h_scale))
-            if y_deviation <= max_h * 0.50 and (slant_gap <= max_word_gap or x_gap <= max_word_gap):
+            max_word_gap = max(10, int(1.2 * max_line_h * h_scale))
+            if y_deviation <= max_line_h * 0.50 and (slant_gap <= max_word_gap or x_gap <= max_word_gap):
                 return True
         else:
-            if (y_overlap_ratio >= 0.45 or abs(mid_y1 - mid_y2) <= max_h * 0.40) and (min_h / max_h) >= 0.40:
-                max_word_gap = max(8, int((1.20 if same_bubble else 0.75) * max_h * h_scale))
+            if (y_overlap_ratio >= 0.45 or abs(mid_y1 - mid_y2) <= max_line_h * 0.40) and (min_line_h / max_line_h) >= 0.40:
+                max_word_gap = max(8, int((1.20 if same_bubble else 0.75) * max_line_h * h_scale))
                 if x_gap <= max_word_gap:
                     return True
 
@@ -749,20 +822,21 @@ def can_merge_pair(
                     return True
 
     # Criterion 4: Horizontal multi-line text (lines stacked vertically within bubble/dialogue block)
-    line_h1 = estimate_line_height(b1, has_cjk)
-    line_h2 = estimate_line_height(b2, has_cjk)
-    min_line_h = min(line_h1, line_h2)
-    max_line_h = max(line_h1, line_h2)
-
-    is_multiline_block1 = (b1.get("line_count", 1) > 1 or len(b1.get("lines", [])) > 1 or len(str(b1.get("text", "")).splitlines()) > 1)
-    is_multiline_block2 = (b2.get("line_count", 1) > 1 or len(b2.get("lines", [])) > 1 or len(str(b2.get("text", "")).splitlines()) > 1)
     is_incompatible_multiline = False
     if (is_multiline_block1 or is_multiline_block2) and not same_bubble:
+        is_width_left_aligned = (min_w / max_w >= 0.65) and (abs(x1_min - x2_min) <= max(16, int(0.15 * max_w)))
+        is_tight_continuation = (
+            (y1_max <= y2_min or y2_max <= y1_min)
+            and is_width_left_aligned
+            and y_gap <= max(6, int(0.45 * min_line_h))
+        )
         if is_multiline_block1 and is_multiline_block2 and (min_w / max_w >= 0.75) and abs(x1_min - x2_min) <= max(16, int(0.15 * max_w)):
             if y_gap > max(20, int(1.2 * min_line_h)):
                 is_incompatible_multiline = True
             else:
                 is_incompatible_multiline = False
+        elif is_tight_continuation:
+            is_incompatible_multiline = False
         else:
             is_incompatible_multiline = True
 
@@ -944,14 +1018,15 @@ def merge_adjacent_boxes(
         poly = b.get("polygon")
         if poly is None:
             poly = [[bx1, by1], [bx2, by1], [bx2, by2], [bx1, by2]]
+        single_text = str(b.get("text", "")).strip()
         return [{
             "xmin": bx1,
             "ymin": by1,
             "xmax": bx2,
             "ymax": by2,
-            "text": str(b.get("text", "")).strip(),
+            "text": single_text,
             "conf": float(b.get("conf", 1.0) if b.get("conf") is not None else 1.0),
-            "line_count": 1,
+            "line_count": max(1, int(b.get("line_count", 1) or 1), len(single_text.splitlines())),
             "angle": ang,
             "polygon": poly,
             "bg_color": b.get("bg_color")
@@ -1127,7 +1202,9 @@ def merge_adjacent_boxes(
                     row_texts.append(row_text)
 
             final_text = "\n".join(row_texts)
-            line_count = len(row_texts) if row_texts else 1
+            line_count = max(len(row_texts), len(final_text.splitlines())) if row_texts else max(
+                [1] + [int(b.get("line_count", 1) or 1) for b in comp_boxes]
+            )
 
         angles = [float(b.get("angle", 0.0)) for b in comp_boxes if "angle" in b and b.get("angle") is not None]
         avg_angle = float(np.median(angles)) if angles else 0.0

@@ -127,7 +127,9 @@ def get_stroked_text_mask(crop: np.ndarray) -> Optional[np.ndarray]:
         seed_zone = cv2.dilate(core_seeds, k9)
         aa_bright = (gray > 140).astype(np.uint8) * 255
         stroke_mask = cv2.bitwise_or(chroma_core, cv2.bitwise_and(aa_bright, seed_zone))
-        k_halo = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        max_d = max(crop.shape[:2])
+        halo_k = 19 if max_d >= 1400 else (13 if max_d >= 600 else 7)
+        k_halo = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (halo_k, halo_k))
         return cv2.dilate(stroke_mask, k_halo, iterations=1)
     else:
         # Dark-core with white-outline (or white-core with dark-outline) text:
@@ -182,6 +184,8 @@ def _classify_color_family(hex_color: str) -> str:
         return "purple"
     if b - r >= 25 and b - g >= 10:
         return "blue"
+    if min(g, b) - r >= 25 and (g - b) < 35:
+        return "cyan"
     if g - r >= 20 and g >= b - 9:
         return "green"
     return "other"
@@ -207,10 +211,12 @@ def _extract_dominant_chroma_hex(
     yellow_m = (r_vals > 140) & (g_vals > 110) & (np.minimum(r_vals, g_vals) - b_vals >= 35) & (~red_m)
     purple_m = (b_vals - g_vals >= 25) & (r_vals - g_vals >= 20) & (~red_m)
     blue_m = (b_vals - r_vals >= 25) & (b_vals - g_vals >= 10) & (~purple_m)
-    green_m = (g_vals - r_vals >= 20) & (g_vals >= b_vals - 9) & (~yellow_m)
+    cyan_m = (np.minimum(g_vals, b_vals) - r_vals >= 25) & ((g_vals - b_vals) < 35) & (b_vals - g_vals < 10) & (~yellow_m) & (~purple_m)
+    green_m = (g_vals - r_vals >= 20) & (g_vals >= b_vals - 9) & (~yellow_m) & (~cyan_m)
 
     families = [
         ("red", red_m),
+        ("cyan", cyan_m),
         ("green", green_m),
         ("blue", blue_m),
         ("yellow", yellow_m),
@@ -250,6 +256,10 @@ def _extract_dominant_chroma_hex(
             r_med = min(242, max(205, int(r_med * 1.06)))
             g_med = max(28, min(72, int(g_med * 0.72)))
             b_med = max(28, min(72, int(b_med * 0.72)))
+        elif best_name == "cyan":
+            r_med = max(14, min(52, int(r_med * 0.65)))
+            g_med = min(215, max(172, int(g_med * 1.04)))
+            b_med = min(215, max(168, int(b_med * 1.04)))
         elif best_name == "green":
             r_med = max(24, min(68, int(r_med * 0.62)))
             g_med = min(228, max(182, int(g_med * 1.06)))
@@ -343,8 +353,8 @@ def extract_line_text_colors(crop: np.ndarray, bg_bgr: Tuple[int, int, int]) -> 
     if h < 12 or w < 12:
         return [analyze_text_color(crop, bg_bgr)]
 
-    if w > 360 or h > 540:
-        scale = min(360.0 / w, 540.0 / h)
+    if w > 720 or h > 1080:
+        scale = min(720.0 / w, 1080.0 / h)
         crop = cv2.resize(
             crop,
             (max(12, int(round(w * scale))), max(12, int(round(h * scale)))),
@@ -371,7 +381,8 @@ def extract_line_text_colors(crop: np.ndarray, bg_bgr: Tuple[int, int, int]) -> 
 
     row_counts = np.sum(chroma_px, axis=1)
     min_row_px = max(4, int(w * 0.015))
-    if int(np.sum(row_counts >= min_row_px)) < 6:
+    using_chroma = int(np.sum(row_counts >= min_row_px)) >= 6
+    if not using_chroma:
         row_counts = np.sum(stroke_px, axis=1)
 
     rows: List[Tuple[int, int]] = []
@@ -387,6 +398,19 @@ def extract_line_text_colors(crop: np.ndarray, bg_bgr: Tuple[int, int, int]) -> 
                 rows.append((max(0, start_y - 1), min(h, y_i + 1)))
     if in_row and h - start_y >= 5:
         rows.append((max(0, start_y - 1), h))
+
+    # Reject isolated background specks (e.g. small LED icons / skin highlights between lines)
+    if using_chroma and len(rows) >= 3:
+        row_peaks = [int(np.max(row_counts[ry1:ry2])) for ry1, ry2 in rows]
+        row_totals = [int(np.sum(row_counts[ry1:ry2])) for ry1, ry2 in rows]
+        ref_peak = float(np.percentile(row_peaks, 75))
+        ref_total = float(np.percentile(row_totals, 75))
+        filtered = [
+            r for r, pk, tot in zip(rows, row_peaks, row_totals)
+            if not (tot < ref_total * 0.16 and pk < ref_peak * 0.16)
+        ]
+        if filtered:
+            rows = filtered
 
     if not rows:
         return [analyze_text_color(crop, bg_bgr)]

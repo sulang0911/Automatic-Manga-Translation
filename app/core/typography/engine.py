@@ -373,7 +373,8 @@ class TypographyEngine:
         Learns a consistent mapping from speaker tag (e.g. '悠奈', '锡', '俊', 'yuna', 'suk', 'jun')
         to its extracted original hex color across all blocks on the page.
         """
-        votes: Dict[str, Counter] = {}
+        family_votes: Dict[str, Counter] = {}
+        family_hexes: Dict[str, Dict[str, Counter]] = {}
         for b in blocks:
             raw_text = b.translated_text or b.original_text or ""
             if not raw_text.strip():
@@ -401,10 +402,17 @@ class TypographyEngine:
 
             for para_str, col_hex in paired:
                 spk = _extract_speaker_tag(para_str)
-                if spk and col_hex and _classify_color_family(col_hex) not in ("light", "dark", "achromatic"):
-                    votes.setdefault(spk, Counter())[col_hex] += 1
+                fam = _classify_color_family(col_hex) if col_hex else "achromatic"
+                if spk and col_hex and fam not in ("light", "dark", "achromatic"):
+                    family_votes.setdefault(spk, Counter())[fam] += 1
+                    family_hexes.setdefault(spk, {}).setdefault(fam, Counter())[col_hex] += 1
 
-        return {spk: cnt.most_common(1)[0][0] for spk, cnt in votes.items() if cnt}
+        result: Dict[str, str] = {}
+        for spk, fam_cnt in family_votes.items():
+            if fam_cnt:
+                top_fam = fam_cnt.most_common(1)[0][0]
+                result[spk] = family_hexes[spk][top_fam].most_common(1)[0][0]
+        return result
 
     def render_translations(
         self,

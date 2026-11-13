@@ -1,4 +1,5 @@
 import cv2
+import math
 import numpy as np
 from typing import List, Dict, Any, Optional
 
@@ -275,7 +276,7 @@ class InpaintEngine:
                 crop[(dilated == 255) & (qr_mask_crop == 0)] = fill_color
                 erased_img[py_min:py_max, px_min:px_max] = crop
             else:
-                pad_s = 10
+                pad_s = max(10, min(20, int(round(w_img * 0.005))))
                 epx_min = max(0, px_min - pad_s)
                 epy_min = max(0, py_min - pad_s)
                 epx_max = min(w_img, px_max + pad_s)
@@ -283,6 +284,9 @@ class InpaintEngine:
                 exp_crop = erased_img[epy_min:epy_max, epx_min:epx_max]
                 stroked_mask = get_stroked_text_mask(exp_crop)
                 if stroked_mask is not None:
+                    extra_stroked_dil = max(0, min(5, int(round(max(h_img, w_img) / 640.0)) - 2))
+                    if extra_stroked_dil > 0:
+                        stroked_mask = dilate_mask(stroked_mask, extra_stroked_dil)
                     qr_exp = qr_mask[epy_min:epy_max, epx_min:epx_max]
                     stroked_mask[qr_exp > 0] = 0
                     inpaint_mask[epy_min:epy_max, epx_min:epx_max] = cv2.bitwise_or(
@@ -305,99 +309,123 @@ class InpaintEngine:
                 progress_callback(50, "正在执行深度智能背景修复与羽化消除...")
 
             dyn_feather = max(2, int(base_dim * 0.003)) if feather_radius <= 0 else feather_radius
-
-            # Compute active ROI around inpaint_mask so OpenCV Telea, Simple-LaMa, and bilateralFilter
-            # only process the active masked region rather than allocating massive full-page tensors!
-            nz_y, nz_x = np.nonzero(inpaint_mask)
             pad_roi = max(48, dyn_feather * 4 + 16)
-            ry1 = max(0, int(nz_y.min()) - pad_roi)
-            ry2 = min(h_img, int(nz_y.max()) + pad_roi + 1)
-            rx1 = max(0, int(nz_x.min()) - pad_roi)
-            rx2 = min(w_img, int(nz_x.max()) + pad_roi + 1)
-            roi_h = ry2 - ry1
-            roi_w = rx2 - rx1
 
-            erased_roi = erased_img[ry1:ry2, rx1:rx2]
-            mask_roi = inpaint_mask[ry1:ry2, rx1:rx2]
-            qr_roi = qr_mask[ry1:ry2, rx1:rx2]
-            orig_roi = image[ry1:ry2, rx1:rx2]
+            # Group disjoint masked regions on large high-res pages (>1536px) into per-region ROIs
+            # so each dialogue region runs LaMa near native resolution instead of full-page downscaling.
+            rois = []
+            if max(h_img, w_img) > 1536:
+                scale_c = 8
+                sw, sh = max(1, (w_img + scale_c - 1) // scale_c), max(1, (h_img + scale_c - 1) // scale_c)
+                small_m = (cv2.resize(inpaint_mask, (sw, sh), interpolation=cv2.INTER_AREA) > 0).astype(np.uint8) * 255
+                _, small_m = cv2.threshold(small_m, 1, 255, cv2.THRESH_BINARY)
+                k_grp = max(3, (pad_roi // scale_c) * 2 + 1)
+                small_dil = cv2.dilate(small_m, cv2.getStructuringElement(cv2.MORPH_RECT, (k_grp, k_grp)))
+                n_cc, _, cc_stats, _ = cv2.connectedComponentsWithStats(small_dil)
+                for cid in range(1, n_cc):
+                    cx, cy, cw, ch = cc_stats[cid, cv2.CC_STAT_LEFT], cc_stats[cid, cv2.CC_STAT_TOP], cc_stats[cid, cv2.CC_STAT_WIDTH], cc_stats[cid, cv2.CC_STAT_HEIGHT]
+                    rois.append((
+                        max(0, cx * scale_c - pad_roi // 2),
+                        max(0, cy * scale_c - pad_roi // 2),
+                        min(w_img, (cx + cw) * scale_c + pad_roi // 2),
+                        min(h_img, (cy + ch) * scale_c + pad_roi // 2),
+                    ))
+
+            if not rois:
+                nz_y, nz_x = np.nonzero(inpaint_mask)
+                rois = [(
+                    max(0, int(nz_x.min()) - pad_roi),
+                    max(0, int(nz_y.min()) - pad_roi),
+                    min(w_img, int(nz_x.max()) + pad_roi + 1),
+                    min(h_img, int(nz_y.max()) + pad_roi + 1),
+                )]
 
             inpaint_flag = cv2.INPAINT_NS if self.mode == "opencv_ns" else cv2.INPAINT_TELEA
-            telea_roi = cv2.inpaint(erased_roi, mask_roi, 4, inpaint_flag)
-            telea_roi[qr_roi > 0] = orig_roi[qr_roi > 0]
-            telea_gray = cv2.cvtColor(telea_roi, cv2.COLOR_BGR2GRAY)
 
-            inpainted_roi = None
-            if self.mode != "opencv_telea" and self.mode != "opencv_ns" and self._lama_available and self._lama:
-                try:
-                    from PIL import Image as PILImage
+            for rx1, ry1, rx2, ry2 in rois:
+                roi_h = ry2 - ry1
+                roi_w = rx2 - rx1
+                if roi_h <= 0 or roi_w <= 0:
+                    continue
+
+                erased_roi = erased_img[ry1:ry2, rx1:rx2]
+                mask_roi = inpaint_mask[ry1:ry2, rx1:rx2]
+                if not np.any(mask_roi):
+                    continue
+                qr_roi = qr_mask[ry1:ry2, rx1:rx2]
+                orig_roi = image[ry1:ry2, rx1:rx2]
+
+                inpainted_roi = None
+                if self.mode != "opencv_telea" and self.mode != "opencv_ns" and self._lama_available and self._lama:
                     try:
-                        import torch
-                        grad_ctx = torch.no_grad()
-                    except Exception:
-                        from contextlib import nullcontext
-                        grad_ctx = nullcontext()
+                        from PIL import Image as PILImage
+                        try:
+                            import torch
+                            grad_ctx = torch.no_grad()
+                        except Exception:
+                            from contextlib import nullcontext
+                            grad_ctx = nullcontext()
 
-                    # VRAM-safe downscale cap (1536px max dimension) to prevent 1080 Ti VRAM spill into 8GB System RAM
-                    max_lama_dim = 1536
-                    roi_max_dim = max(roi_h, roi_w)
-                    scale_factor = 1.0
-                    if roi_max_dim > max_lama_dim:
-                        scale_factor = float(max_lama_dim) / float(roi_max_dim)
-                        infer_w = max(8, int(round(roi_w * scale_factor)))
-                        infer_h = max(8, int(round(roi_h * scale_factor)))
-                        infer_img = cv2.resize(telea_roi, (infer_w, infer_h), interpolation=cv2.INTER_AREA)
-                        infer_mask = cv2.resize(mask_roi, (infer_w, infer_h), interpolation=cv2.INTER_NEAREST)
-                    else:
-                        infer_img = telea_roi
-                        infer_mask = mask_roi
+                        # VRAM-safe downscale cap respecting 1536x1536 pixel budget and 2048px max side
+                        # so wide high-res blocks run at native 1:1 clarity without VRAM spill.
+                        max_lama_pixels = 1536 * 1536
+                        max_lama_dim = 2048
+                        roi_pixels = roi_h * roi_w
+                        roi_max_dim = max(roi_h, roi_w)
+                        scale_factor = 1.0
+                        if roi_max_dim > max_lama_dim or roi_pixels > max_lama_pixels:
+                            scale_dim = float(max_lama_dim) / float(roi_max_dim)
+                            scale_area = math.sqrt(float(max_lama_pixels) / float(roi_pixels))
+                            scale_factor = min(1.0, scale_dim, scale_area)
+                            infer_w = max(8, int(round(roi_w * scale_factor)))
+                            infer_h = max(8, int(round(roi_h * scale_factor)))
+                            infer_img = cv2.resize(erased_roi, (infer_w, infer_h), interpolation=cv2.INTER_AREA)
+                            infer_mask = cv2.resize(mask_roi, (infer_w, infer_h), interpolation=cv2.INTER_NEAREST)
+                        else:
+                            infer_img = erased_roi
+                            infer_mask = mask_roi
 
-                    img_rgb = cv2.cvtColor(infer_img, cv2.COLOR_BGR2RGB)
-                    img_pil = PILImage.fromarray(img_rgb)
-                    mask_pil = PILImage.fromarray(infer_mask)
-                    del img_rgb
+                        img_rgb = cv2.cvtColor(infer_img, cv2.COLOR_BGR2RGB)
+                        img_pil = PILImage.fromarray(img_rgb)
+                        mask_pil = PILImage.fromarray(infer_mask)
+                        del img_rgb
 
-                    with grad_ctx:
-                        res_pil = self._lama(img_pil, mask_pil)
+                        with grad_ctx:
+                            res_pil = self._lama(img_pil, mask_pil)
 
-                    inpainted_rgb = np.array(res_pil)
-                    del res_pil, img_pil, mask_pil
-                    res_bgr = cv2.cvtColor(inpainted_rgb, cv2.COLOR_RGB2BGR)
-                    del inpainted_rgb
+                        inpainted_rgb = np.array(res_pil)
+                        del res_pil, img_pil, mask_pil
+                        res_bgr = cv2.cvtColor(inpainted_rgb, cv2.COLOR_RGB2BGR)
+                        del inpainted_rgb
 
-                    infer_h_actual, infer_w_actual = infer_img.shape[:2]
-                    if res_bgr.shape[:2] != (infer_h_actual, infer_w_actual):
-                        res_bgr = res_bgr[:infer_h_actual, :infer_w_actual]
+                        infer_h_actual, infer_w_actual = infer_img.shape[:2]
+                        if res_bgr.shape[:2] != (infer_h_actual, infer_w_actual):
+                            res_bgr = res_bgr[:infer_h_actual, :infer_w_actual]
 
-                    if scale_factor < 1.0:
-                        inpainted_roi = cv2.resize(res_bgr, (roi_w, roi_h), interpolation=cv2.INTER_CUBIC)
-                    else:
-                        inpainted_roi = res_bgr
-                    del res_bgr
+                        if scale_factor < 1.0:
+                            inpainted_roi = cv2.resize(res_bgr, (roi_w, roi_h), interpolation=cv2.INTER_CUBIC)
+                        else:
+                            inpainted_roi = res_bgr
+                        del res_bgr
+                    except Exception as e:
+                        print(f"[-] LaMa execution error: {e}. Fallback to OpenCV.")
+                        inpainted_roi = None
+                    finally:
+                        try:
+                            from app.core.hardware import cleanup_gpu_memory
+                            cleanup_gpu_memory(trim_ram=False)
+                        except Exception:
+                            pass
 
-                    # Prevent Simple-LaMa Fourier convolution from hallucinating bright/white ghost smudges
-                    # over dark or mid-tone backgrounds where Telea diffusion is already clean
-                    dark_or_mid = np.expand_dims(telea_gray < 185, axis=2)
-                    inpainted_roi = np.where(dark_or_mid, np.minimum(inpainted_roi, telea_roi), inpainted_roi)
-                    del dark_or_mid
-                except Exception as e:
-                    print(f"[-] LaMa execution error: {e}. Fallback to OpenCV.")
-                    inpainted_roi = None
-                finally:
-                    try:
-                        from app.core.hardware import cleanup_gpu_memory
-                        cleanup_gpu_memory(trim_ram=False)
-                    except Exception:
-                        pass
+                if inpainted_roi is None:
+                    inpainted_roi = cv2.inpaint(erased_roi, mask_roi, 4, inpaint_flag)
+                    inpainted_roi[qr_roi > 0] = orig_roi[qr_roi > 0]
 
-            if inpainted_roi is None:
-                inpainted_roi = telea_roi
-
-            inpainted_filtered = cv2.bilateralFilter(inpainted_roi, 5, 50, 50)
-            blended_roi = blend_inpainted_image(telea_roi, inpainted_filtered, mask_roi, dyn_feather)
-            blended_roi[qr_roi > 0] = orig_roi[qr_roi > 0]
-            erased_img[ry1:ry2, rx1:rx2] = blended_roi
-            del telea_roi, telea_gray, inpainted_roi, inpainted_filtered, blended_roi
+                inpainted_filtered = cv2.bilateralFilter(inpainted_roi, 5, 50, 50)
+                blended_roi = blend_inpainted_image(erased_roi, inpainted_filtered, mask_roi, dyn_feather)
+                blended_roi[qr_roi > 0] = orig_roi[qr_roi > 0]
+                erased_img[ry1:ry2, rx1:rx2] = blended_roi
+                del inpainted_roi, inpainted_filtered, blended_roi
 
         if progress_callback:
             progress_callback(100, "图像背景修复完成")

@@ -14,7 +14,10 @@ from app.core.inpaint.color_analyzer import (
     is_background_uniform,
     get_text_mask,
     analyze_text_color,
-    dilate_mask
+    dilate_mask,
+    _classify_color_family,
+    collapse_color_turns,
+    extract_line_text_colors,
 )
 from app.core.inpaint.base import blend_inpainted_image
 from app.core.inpaint.opencv_engine import OpenCVInpainter
@@ -501,6 +504,29 @@ def test_color_analyzer_perimeter_and_uniformity():
     # Dilate mask expands text region
     dilated = dilate_mask(mask, dilation_pixels=2)
     assert np.sum(dilated == 255) > np.sum(mask == 255)
+
+
+def test_color_family_cyan_distinct_and_speck_filtering():
+    # Green, cyan, and blue speaker colors must remain distinct turns
+    assert _classify_color_family("#1BBD60") == "green"
+    assert _classify_color_family("#0DB7B0") == "cyan"
+    assert _classify_color_family("#2B96DE") == "blue"
+    turns = collapse_color_turns(["#1BBD60", "#1CBD61", "#0DB7B0", "#2B96DE", "#2C96DD"])
+    assert len(turns) == 3
+
+    # extract_line_text_colors should ignore small isolated colored prop specks between stroked text lines
+    crop = np.full((320, 480, 3), 25, dtype=np.uint8)
+    # 3 stroked dialogue rows: green, blue, cyan (with bright outer glow halo)
+    for y, bgr in [(55, (96, 189, 27)), (165, (222, 150, 43)), (265, (176, 183, 13))]:
+        cv2.putText(crop, "Sample Line Text", (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 5)
+        cv2.putText(crop, "Sample Line Text", (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.9, bgr, 2)
+    # Inject a tiny red LED speck in the vertical gap between line 1 and line 2
+    cv2.rectangle(crop, (300, 100), (312, 112), (0, 0, 220), -1)
+
+    extracted = extract_line_text_colors(crop, (25, 25, 25))
+    fams = [_classify_color_family(c) for c in extracted]
+    assert "red" not in fams
+    assert collapse_color_turns(extracted) and fams == ["green", "blue", "cyan"]
 
 
 def test_color_analyzer_dark_inverted_bubble():
