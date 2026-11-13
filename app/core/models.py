@@ -239,7 +239,11 @@ class TranslationBlock:
         return (self.ymax - self.ymin) > (self.xmax - self.xmin) * 1.15
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        for meta_k in ("_orig_box", "_orig_polygon", "_merged_boxes"):
+            if d.get(meta_k) is None:
+                d.pop(meta_k, None)
+        return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> TranslationBlock:

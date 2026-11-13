@@ -29,8 +29,14 @@ class ModelTestWorker(QThread):
         self.custom_endpoint = custom_endpoint
         self.system_prompt = system_prompt
         self.test_text = test_text
+        self._is_cancelled = False
+
+    def cancel(self):
+        self._is_cancelled = True
 
     def run(self):
+        if self._is_cancelled:
+            return
         try:
             engine = TranslationEngine(
                 provider=self.provider,
@@ -40,16 +46,21 @@ class ModelTestWorker(QThread):
                 system_prompt=self.system_prompt,
                 target_lang="简体中文"
             )
+            if self._is_cancelled:
+                return
             result = engine.test_connection(self.test_text)
-            self.finished_signal.emit(True, result)
+            if not self._is_cancelled:
+                self.finished_signal.emit(True, result)
         except Exception as e:
-            self.finished_signal.emit(False, str(e))
+            if not self._is_cancelled:
+                self.finished_signal.emit(False, str(e))
 
 
 class SettingsDialog(QDialog):
     def __init__(self, config_manager: ConfigManager, parent=None):
         super().__init__(parent)
         self.config_manager = config_manager
+        self._test_worker = None
         self.setWindowTitle("系统偏好设置")
         self.resize(760, 660)
         self.setMinimumSize(700, 580)
@@ -462,6 +473,8 @@ class SettingsDialog(QDialog):
         system_prompt = self.sys_prompt_edit.toPlainText().strip() or DEFAULT_SYSTEM_PROMPT
         test_text = self.test_text_input.text().strip() or "Hello! This is a translation connectivity test."
 
+        self._retire_test_worker(wait_ms=100)
+
         self.test_conn_btn.setEnabled(False)
         self.test_conn_btn.setText("⏳ 正在测试...")
         self.test_result_label.setText("正在连接大模型并发送测试文本，请稍候...")
@@ -479,7 +492,19 @@ class SettingsDialog(QDialog):
         self._test_worker.finished_signal.connect(self._on_test_finished)
         self._test_worker.start()
 
+    def _retire_test_worker(self, wait_ms: int = 100):
+        worker = getattr(self, "_test_worker", None)
+        if worker is None:
+            return
+        self._test_worker = None
+        from app.core.hardware import retire_qthread
+        signals = (worker.finished_signal,) if hasattr(worker, "finished_signal") else ()
+        retire_qthread(worker, wait_ms=wait_ms, signals=signals)
+
     def _on_test_finished(self, success: bool, message: str):
+        sender = self.sender()
+        if sender is not None and sender is not self._test_worker:
+            return
         self.test_conn_btn.setEnabled(True)
         self.test_conn_btn.setText("🚀 测试连通性")
         if success:
@@ -523,3 +548,11 @@ class SettingsDialog(QDialog):
         }
         self.config_manager.update(updates)
         self.accept()
+
+    def done(self, result: int):
+        self._retire_test_worker(wait_ms=150)
+        super().done(result)
+
+    def closeEvent(self, event):
+        self._retire_test_worker(wait_ms=150)
+        super().closeEvent(event)

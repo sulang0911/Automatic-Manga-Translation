@@ -380,4 +380,45 @@ class TestOCREngineEnsemblePipeline:
         assert results[0]["original_text"] == "右側のセリフ"
         assert results[1]["original_text"] == "CHAPTER 1"
 
+    def test_detect_page_language_ignores_low_conf_cjk_noise_and_picks_en(self):
+        """Low-conf EasyJA CJK hallucinations (conf < 0.25) must not hide genuine English dialogue."""
+        from unittest.mock import MagicMock
+        eng = OCREngine(engine_type="ctd", use_gpu=False, lang="auto")
+
+        mock_ja = MagicMock()
+        # EasyJA produces conf=0.00 CJK noise on colored English CG outlines
+        mock_ja.readtext.return_value = [
+            ([[0, 0], [80, 0], [80, 20], [0, 20]], "内加内#町町", 0.001),
+            ([[0, 20], [80, 20], [80, 40], [0, 40]], "Cロm原りけnゆ", 0.000),
+            ([[0, 40], [80, 40], [80, 60], [0, 60]], "Just", 0.85),
+        ]
+        mock_en = MagicMock()
+        mock_en.readtext.return_value = [
+            ([[0, 0], [120, 0], [120, 20], [0, 20]], "Can you explain it in more detail?", 0.45),
+        ]
+        eng._easyocr_readers["ja"] = mock_ja
+        eng._easyocr_reader = mock_ja
+        eng._easyocr_en_reader = mock_en
+        eng._easyocr_readers["en"] = mock_en
+
+        img = np.full((600, 600, 3), 255, dtype=np.uint8)
+        pre_boxes = [
+            {"xmin": 20, "ymin": 20, "xmax": 220, "ymax": 120, "text": ""},
+        ]
+        is_en, detected = eng.detect_page_language(img, candidate_boxes=pre_boxes)
+        assert is_en is True
+        assert detected == "en"
+
+    def test_ensemble_recognize_multiword_low_conf_english_beats_manga_hallucination(self):
+        """Multi-word English sentences on busy CG backgrounds (conf 0.13) should beat Manga-OCR CJK noise."""
+        text_pri = "そして、このようなものが、"
+        conf_pri = 0.95
+        text_sec = "(Suk) Can you be more specific Ms Yuna? The subjective feeling is important for us."
+        conf_sec = 0.14
+        res_t, res_c = ensemble_recognize_text(
+            text_pri, conf_pri, text_sec, conf_sec, target_lang="auto"
+        )
+        assert res_t == text_sec
+        assert res_c == pytest.approx(0.14)
+
 

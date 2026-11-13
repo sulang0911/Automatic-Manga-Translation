@@ -195,11 +195,19 @@ def ensemble_recognize_text(
         t1_latin_ratio = latin_letters_cnt1 / max(1, len(t1))
 
         # If EasyOCR found a genuine multi-word English sentence/phrase with zero CJK, never let MangaOCR hallucinate over it
-        if len(words_sec) >= 2 and cjk_cnt2 == 0 and t2_latin_ratio >= 0.60 and conf_sec >= 0.25:
+        has_clear_multiword_latin = (
+            len(words_sec) >= 4
+            and cjk_cnt2 == 0
+            and latin_letters_cnt2 >= 16
+            and latin_letters_cnt2 > cjk_cnt1
+            and t2_latin_ratio >= 0.55
+            and conf_sec >= 0.05
+        )
+        if len(words_sec) >= 2 and cjk_cnt2 == 0 and t2_latin_ratio >= 0.60 and (conf_sec >= 0.25 or has_clear_multiword_latin):
             return t2, float(conf_sec)
 
         # If EasyOCR strongly believes it's English (high latin ratio) and it's longer than hallucinated kana
-        if t2_latin_ratio >= 0.6 and latin_letters_cnt2 > cjk_cnt1 and conf_sec >= 0.25:
+        if t2_latin_ratio >= 0.6 and latin_letters_cnt2 > cjk_cnt1 and (conf_sec >= 0.25 or has_clear_multiword_latin):
             if cjk_cnt1 < latin_letters_cnt2:
                 return t2, float(conf_sec)
 
@@ -210,7 +218,10 @@ def ensemble_recognize_text(
     # Case 1: Alphanumeric & English protection against Manga-OCR Japanese kana hallucination
     # e.g., t1="アリス(19)" or "フレンドA" or "ハハ" when original comic text is pure English "Chris (19)" or "Friend A" or "Haha"
     # Or English chapter banners / game stats where Manga-OCR outputs kana hallucination or repetitive loops
-    if latin_letters_cnt2 >= 2 and cjk_cnt2 == 0 and conf_sec >= 0.20:
+    if (latin_letters_cnt2 >= 2 and cjk_cnt2 == 0 and conf_sec >= 0.20) or (
+        len(words_sec) >= 4 and cjk_cnt2 == 0 and latin_letters_cnt2 >= 16
+        and latin_letters_cnt2 > cjk_cnt1 * 1.5 and (latin_letters_cnt2 / max(1, len(t2))) >= 0.55 and conf_sec >= 0.05
+    ):
         # 1a. Primary has NO CJK at all (or is repetitive looping hallucination)
         if cjk_cnt1 == 0 or is_pri_repetitive:
             return t2, float(conf_sec)
@@ -697,9 +708,34 @@ class OCREngine:
                     if crop.size > 0:
                         rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
                         res = reader.readtext(rgb)
+                        crop_has_conf_cjk = False
+                        crop_lat_chars = 0
                         for r in res:
                             if len(r) > 1 and str(r[1]).strip():
-                                sampled_texts.append(str(r[1]).strip())
+                                txt_r = str(r[1]).strip()
+                                conf_r = float(r[2]) if len(r) > 2 else 1.0
+                                cjk_r = sum(1 for c in txt_r if ('\u4e00' <= c <= '\u9fff') or ('\u3040' <= c <= '\u309f') or ('\u30a0' <= c <= '\u30ff'))
+                                lat_r = sum(1 for c in txt_r if ('a' <= c <= 'z' or 'A' <= c <= 'Z'))
+                                if cjk_r > 0 and cjk_r >= lat_r and conf_r < 0.25:
+                                    continue
+                                if cjk_r >= 2 and conf_r >= 0.25 and lat_r <= cjk_r:
+                                    crop_has_conf_cjk = True
+                                crop_lat_chars += lat_r
+                                sampled_texts.append(txt_r)
+
+                        if not crop_has_conf_cjk and crop_lat_chars < 20:
+                            en_reader = self._get_easyocr_reader(is_english=True)
+                            if en_reader is not None and en_reader is not reader:
+                                rgb_en = rgb
+                                ch_r, cw_r = rgb.shape[:2]
+                                if ch_r < 320 and cw_r < 600:
+                                    rgb_en = cv2.resize(rgb, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_LANCZOS4)
+                                for r_en in en_reader.readtext(rgb_en):
+                                    if len(r_en) > 1 and str(r_en[1]).strip():
+                                        txt_en = str(r_en[1]).strip()
+                                        lat_en = sum(1 for c in txt_en if ('a' <= c <= 'z' or 'A' <= c <= 'Z'))
+                                        if lat_en >= 2:
+                                            sampled_texts.append(txt_en)
 
         if not sampled_texts and image is not None and image.size > 0:
             h, w = image.shape[:2]

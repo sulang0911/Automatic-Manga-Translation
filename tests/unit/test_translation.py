@@ -16,8 +16,12 @@ from app.core.translation.prompt_templates import PromptTemplates
 from app.core.translation.json_parser import (
     parse_llm_json_response,
     extract_translation_map,
-    _repair_unclosed_json
+    _repair_unclosed_json,
+    is_llm_refusal,
+    contains_llm_filter_banner,
+    strip_llm_filter_banner,
 )
+from app.core.translation.antigravity_provider import AntigravityGeminiProvider
 from app.core.translation.manager import TranslationManager
 from app.core.translation.retry_handler import execute_http_request_with_retry
 
@@ -192,3 +196,189 @@ def test_retry_handler_fatal_errors(monkeypatch):
 
     with pytest.raises(ModelNotFoundError):
         execute_http_request_with_retry("POST", "https://mock.api/v1", headers={})
+
+
+def test_gemini_filter_banner_detection_and_stripping():
+    banner = (
+        "This request was blocked by Gemini's filters. They can occasionally trigger "
+        "by mistake on safe coding, security, or biology-related queries. Please try "
+        "rephrasing your prompt. You can [send feedback](https://aistudio.google.com/docs/troubleshooting#file-bug) "
+        "or read more about [our policies here](https://policies.google.com/terms/generative-ai/use-policy)."
+    )
+    assert is_llm_refusal(banner) is True
+    assert contains_llm_filter_banner(f'你好世界{banner}') is True
+    assert strip_llm_filter_banner(f'你好世界{banner}') == "你好世界"
+
+
+def test_antigravity_recovers_partial_filter_banner_and_multiline_refusal(monkeypatch):
+    provider = AntigravityGeminiProvider(ProviderConfig(
+        provider_name="antigravity",
+        api_key="test-key",
+        model="gemini-3.8-flash",
+        endpoint="https://example.invalid",
+    ))
+    banner = (
+        "This request was blocked by Gemini's filters. Please try rephrasing your prompt. "
+        "You can [send feedback](https://aistudio.google.com)."
+    )
+
+    def fake_exec(sys_prompt, user_msg, **kwargs):
+        # Single-line Stage 4b calls succeed individually; multi-line Stage 1/2/4 hits Gemini filter
+        if "逐行直译" in user_msg or "i18n JSON" in sys_prompt or "Line 1" in user_msg and "Line 2" in user_msg:
+            return banner
+        if "Line 1" in user_msg:
+            return "(Suk) 第一句"
+        if "Line 2" in user_msg:
+            return "(Yuna) 第二句"
+        return banner
+
+    monkeypatch.setattr(provider, "_execute_with_fallback", fake_exec)
+
+    blk = TranslationBlock(
+        id="b_multi",
+        original_text="(Suk) Line 1.\n(Yuna) Line 2.",
+    )
+    out = provider.translate_text_blocks([blk], "en", "简体中文")
+    assert len(out) == 1
+    assert out[0].translated_text == "(Suk) 第一句\n(Yuna) 第二句"
+    assert not contains_llm_filter_banner(out[0].translated_text)
+
+
+def test_antigravity_strips_midstream_filter_banner_on_single_contaminated_block(monkeypatch):
+    provider = AntigravityGeminiProvider(ProviderConfig(
+        provider_name="antigravity",
+        api_key="test-key",
+        model="gemini-3.8-flash",
+        endpoint="https://example.invalid",
+    ))
+    banner = (
+        "This request was blocked by Gemini's filters. "
+        "You can [send feedback](https://aistudio.google.com)."
+    )
+    calls = {"n": 0}
+
+    def fake_exec(sys_prompt, user_msg, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return json.dumps([
+                {"id": "b0", "original_text": "Clean A", "translated_text": "正常译文A", "type": "bubble"},
+                {"id": "b1", "original_text": "Sensitive B", "translated_text": f"部分译文B{banner}", "type": "bubble"},
+            ], ensure_ascii=False)
+        if "Sensitive B" in user_msg:
+            return "完整修复译文B"
+        return banner
+
+    monkeypatch.setattr(provider, "_execute_with_fallback", fake_exec)
+
+    blocks = [
+        TranslationBlock(id="b0", original_text="Clean A"),
+        TranslationBlock(id="b1", original_text="Sensitive B"),
+    ]
+    out = provider.translate_text_blocks(blocks, "en", "简体中文")
+    assert out[0].translated_text == "正常译文A"
+    assert out[1].translated_text == "完整修复译文B"
+    assert all(not contains_llm_filter_banner(b.translated_text) for b in out)
+
+
+@pytest.mark.parametrize("provider_cls,mod_path", [
+    ("OpenAIProvider", "app.core.translation.openai_provider"),
+    ("CustomOpenAIProvider", "app.core.translation.custom_provider"),
+])
+def test_openai_compatible_text_translation_omits_json_object_response_format(monkeypatch, provider_cls, mod_path):
+    """
+    Text translation prompts require a JSON array [...]; sending
+    response_format={"type": "json_object"} causes strict OpenAI-compatible
+    endpoints to emit only one object and drop subsequent blocks.
+    """
+    import importlib
+    mod = importlib.import_module(mod_path)
+    cls = getattr(mod, provider_cls)
+
+    captured_payloads = []
+
+    class FakeResp:
+        def json(self):
+            return {
+                "choices": [{
+                    "message": {
+                        "content": json.dumps([
+                            {"id": "b1", "original_text": "First", "translated_text": "第一句", "type": "bubble"},
+                            {"id": "b2", "original_text": "Second", "translated_text": "第二句", "type": "bubble"},
+                        ], ensure_ascii=False)
+                    }
+                }]
+            }
+
+    def fake_request(**kwargs):
+        captured_payloads.append(kwargs["json_payload"])
+        return FakeResp()
+
+    monkeypatch.setattr(mod, "execute_http_request_with_retry", fake_request)
+
+    provider = cls(ProviderConfig(
+        provider_name="openai",
+        api_key="sk-test",
+        model="gpt-6-luna",
+        endpoint="https://example.invalid/v1",
+    ))
+    blocks = [
+        TranslationBlock(id="b1", original_text="First"),
+        TranslationBlock(id="b2", original_text="Second"),
+    ]
+    out = provider.translate_text_blocks(blocks, "en", "简体中文")
+
+    assert len(captured_payloads) == 1
+    assert "response_format" not in captured_payloads[0]
+    from app.core.config import DEFAULT_SYSTEM_PROMPT
+    assert DEFAULT_SYSTEM_PROMPT in captured_payloads[0]["messages"][0]["content"]
+    assert out[0].translated_text == "第一句"
+    assert out[1].translated_text == "第二句"
+
+
+def test_provider_forwards_custom_system_prompt(monkeypatch):
+    from app.core.translation import openai_provider as mod
+
+    captured_payloads = []
+
+    class FakeResp:
+        def json(self):
+            return {
+                "choices": [{
+                    "message": {
+                        "content": '[{"id": "b1", "original_text": "Hi", "translated_text": "嗨", "type": "bubble"}]'
+                    }
+                }]
+            }
+
+    monkeypatch.setattr(mod, "execute_http_request_with_retry",
+                        lambda **kw: (captured_payloads.append(kw["json_payload"]), FakeResp())[1])
+
+    provider = mod.OpenAIProvider(ProviderConfig(
+        provider_name="openai",
+        api_key="sk-test",
+        model="gpt-6-luna",
+        endpoint="https://example.invalid/v1",
+        system_prompt="CUSTOM_LOCALIZER_PERSONA",
+    ))
+    out = provider.translate_text_blocks([TranslationBlock(id="b1", original_text="Hi")], "en", "简体中文")
+    assert "CUSTOM_LOCALIZER_PERSONA" in captured_payloads[0]["messages"][0]["content"]
+    assert out[0].translated_text == "嗨"
+
+
+def test_provider_system_prompt_includes_context_and_reading_order():
+    from app.core.translation.openai_provider import OpenAIProvider
+    provider = OpenAIProvider(ProviderConfig(provider_name="openai", api_key="sk-test", model="gpt-6-luna"))
+    ctx = TranslationContext(
+        glossary={"ナルト": "鸣人"},
+        character_notes={"Yuna": "直率口吻"},
+        previous_summary="上一页剧情摘要",
+        reading_direction="western_ltr",
+    )
+    sys_msg = provider.build_text_system_prompt("日语", "简体中文", context=ctx)
+    assert "欧美漫画阅读顺序" in sys_msg
+    assert "ナルト => 鸣人" in sys_msg
+    assert "Yuna: 直率口吻" in sys_msg
+    assert "上一页剧情摘要" in sys_msg
+
+
+

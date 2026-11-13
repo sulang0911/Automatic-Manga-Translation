@@ -365,6 +365,8 @@ class MainWindow(QMainWindow):
             self.toast.show_message("已有任务正在运行中...", "info")
             return
 
+        self._retire_worker_slot("active_worker", wait_ms=200)
+
         img_id = self.current_image_data["id"]
         path = self.current_image_data["path"]
 
@@ -405,6 +407,9 @@ class MainWindow(QMainWindow):
             self.canvas_view.refresh_display()
 
     def _on_worker_finished(self, results: dict):
+        sender = self.sender()
+        if sender is not None and sender is not self.active_worker:
+            return
         self.progress_bar.hide()
         self.run_btn.setEnabled(True)
         img_id = self.current_image_data["id"]
@@ -427,6 +432,9 @@ class MainWindow(QMainWindow):
         self.toast.show_message("漫画页面翻译完成！", "success")
 
     def _on_worker_error(self, err_msg: str):
+        sender = self.sender()
+        if sender is not None and sender is not self.active_worker:
+            return
         self.progress_bar.hide()
         self.run_btn.setEnabled(True)
         if self.current_image_data:
@@ -519,6 +527,8 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.toast.show_message(f"开始批量翻译 {len(items)} 个页面...", "info")
 
+        self._retire_worker_slot("active_batch_worker", wait_ms=200)
+
         self.active_batch_worker = BatchWorker(
             queue_items=items,
             config=self.config_manager.data,
@@ -554,3 +564,25 @@ class MainWindow(QMainWindow):
         if dialog.exec():
             self.toast.show_message("设置已更新并保存", "success")
             self._re_render_current_page()
+
+    def _retire_worker_slot(self, worker_attr: str, wait_ms: int = 200) -> None:
+        """Cancels, disconnects UI signals, and safely retires/detaches a QThread slot."""
+        worker = getattr(self, worker_attr, None)
+        if worker is None:
+            return
+        setattr(self, worker_attr, None)
+        signal_names = (
+            "sig_progress", "sig_step_done", "sig_finished", "sig_error",
+            "sig_batch_progress", "sig_item_completed", "sig_item_failed", "sig_batch_finished",
+        )
+        signals = tuple(getattr(worker, s) for s in signal_names if hasattr(worker, s))
+        from app.core.hardware import retire_qthread
+        retire_qthread(worker, wait_ms=wait_ms, signals=signals)
+
+    def closeEvent(self, event):
+        for worker_attr in ("active_worker", "active_batch_worker"):
+            try:
+                self._retire_worker_slot(worker_attr, wait_ms=1500)
+            except Exception:
+                pass
+        super().closeEvent(event)

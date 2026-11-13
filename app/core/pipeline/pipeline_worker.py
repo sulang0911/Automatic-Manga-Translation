@@ -16,7 +16,7 @@ from app.core.inpaint.color_analyzer import refresh_blocks_text_colors
 from app.core.translation import TranslationManager, ProviderConfig
 from app.core.models import TranslationBlock
 from app.core.cache.cache_manager import get_cache_manager
-from app.core.hardware import cleanup_gpu_memory, lower_worker_priority
+from app.core.hardware import cleanup_gpu_memory, configure_low_resource_runtime, lower_worker_priority
 
 
 class PipelineWorker(QThread):
@@ -49,6 +49,7 @@ class PipelineWorker(QThread):
 
     def run(self):
         lower_worker_priority()
+        configure_low_resource_runtime()
         try:
             if not os.path.exists(self.image_path):
                 self.sig_error.emit(f"文件不存在: {self.image_path}")
@@ -212,6 +213,7 @@ class PipelineWorker(QThread):
                 timeout = float(llm_cfg.get("timeout_seconds", self.config.get("timeout_seconds", 60.0)))
                 max_retries = int(llm_cfg.get("max_retries", self.config.get("max_retries", 3)))
                 proxy_url = llm_cfg.get("proxy_url", self.config.get("proxy_url", ""))
+                system_prompt = llm_cfg.get("system_prompt", self.config.get("system_prompt", ""))
 
                 mgr = TranslationManager.get_instance()
                 mgr.set_active_provider(
@@ -224,7 +226,8 @@ class PipelineWorker(QThread):
                         temperature=temperature,
                         timeout_seconds=timeout,
                         max_retries=max_retries,
-                        proxy_url=proxy_url
+                        proxy_url=proxy_url,
+                        system_prompt=system_prompt
                     )
                 )
 

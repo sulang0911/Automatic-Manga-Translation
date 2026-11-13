@@ -24,13 +24,14 @@ class ProviderConfig:
     model: str = ""
     endpoint: str = ""
     temperature: float = 0.2
-    timeout_seconds: float = 60.0
+    timeout_seconds: float = 120.0
     max_retries: int = 3
     initial_retry_delay: float = 1.0
     backoff_factor: float = 2.0
     custom_headers: Dict[str, str] = field(default_factory=dict)
     extra_params: Dict[str, Any] = field(default_factory=dict)
     proxy_url: str = ""  # "" = use system env, "none"/"direct" = bypass proxy, or explicit URL e.g. "http://127.0.0.1:10808"
+    system_prompt: str = ""  # Empty/legacy prompt auto-normalizes to DEFAULT_SYSTEM_PROMPT
 
 
 @dataclass
@@ -127,6 +128,44 @@ class BaseTranslationProvider(ABC):
         if url.lower() in ("none", "direct", "no_proxy", "noproxy"):
             return {}    # bypass proxy entirely
         return {"http": url, "https": url}
+
+    def build_text_system_prompt(
+        self,
+        source_lang: str,
+        target_lang: str,
+        context: Optional[TranslationContext] = None,
+    ) -> str:
+        """Composes the normalized persona prompt with concise structural and context rules."""
+        from app.core.config import normalize_system_prompt
+        from app.core.translation.prompt_templates import normalize_source_lang
+
+        parts = [normalize_system_prompt(self.config.system_prompt).strip()]
+        norm = normalize_source_lang(source_lang)
+        rd = (context.reading_direction or "").lower() if context and context.reading_direction else ""
+        if rd in ("ltr", "western_ltr") or (not rd and norm == "en"):
+            order_desc = "自左向右、自上而下（欧美漫画阅读顺序）"
+        elif rd in ("ttb", "webtoon_ttb", "vertical") or (not rd and norm == "ko"):
+            order_desc = "自上而下（条漫阅读顺序）"
+        else:
+            order_desc = "自右向左、自上而下（日漫阅读顺序）"
+
+        src_desc = "自动识别源语言（如日/韩/英/繁中等）" if norm == "auto" else f"源语言：{source_lang}"
+        parts.append(
+            f"【翻译任务参数】{src_desc}；目标语言：{target_lang}；气泡按{order_desc}排列。\n"
+            '请严格仅输出纯 JSON 数组，不要包含额外说明文字，每个元素对应一个输入气泡且包含：'
+            '"id"（保持原 ID 不变）、"original_text"（原文）、"translated_text"（译文）、'
+            '"type"（普通对白/旁白为 "bubble"，气泡外拟声词为 "onomatopoeia"）。'
+        )
+        if context:
+            if context.glossary:
+                terms = "\n".join(f"- {k} => {v}" for k, v in context.glossary.items())
+                parts.append(f"【术语表】\n{terms}")
+            if context.character_notes:
+                notes = "\n".join(f"- {k}: {v}" for k, v in context.character_notes.items())
+                parts.append(f"【角色设定】\n{notes}")
+            if context.previous_summary:
+                parts.append(f"【上文衔接】\n{context.previous_summary}")
+        return "\n\n".join(p for p in parts if p)
 
     @abstractmethod
     def translate_text_blocks(

@@ -5,7 +5,7 @@ Abstract base class and utility functions for OCR detection and recognition engi
 import math
 import cv2
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional, Callable, Tuple
 import numpy as np
 from app.core.models import TranslationBlock
 from app.core.inpaint.color_analyzer import get_background_color_hex
@@ -966,6 +966,60 @@ def can_merge_pair(
     return False
 
 
+def _box_bounds_and_area(b: Dict[str, Any]) -> Tuple[int, int, int, int, float]:
+    bx1 = int(round(min(b["xmin"], b["xmax"])))
+    by1 = int(round(min(b["ymin"], b["ymax"])))
+    bx2 = int(round(max(b["xmin"], b["xmax"])))
+    by2 = int(round(max(b["ymin"], b["ymax"])))
+    return bx1, by1, bx2, by2, float(max(1, bx2 - bx1) * max(1, by2 - by1))
+
+
+def _prefer_box_text(cand: Dict[str, Any], prev: Dict[str, Any]) -> bool:
+    """Prefer fuller/enclosing OCR text over a smaller or partial fragment even if fragment conf is higher."""
+    t_curr = str(cand.get("text", "")).strip()
+    t_prev = str(prev.get("text", "")).strip()
+    if not t_curr:
+        return False
+    if not t_prev:
+        return True
+    _, _, _, _, a_curr = _box_bounds_and_area(cand)
+    _, _, _, _, a_prev = _box_bounds_and_area(prev)
+    c_curr = float(cand.get("conf", 0.0) or 0.0)
+    c_prev = float(prev.get("conf", 0.0) or 0.0)
+    if a_prev >= a_curr * 1.5 and (len(t_prev) >= len(t_curr) * 0.75 or len(t_prev.splitlines()) > len(t_curr.splitlines())):
+        return False
+    if a_curr >= a_prev * 1.5 and (len(t_curr) >= len(t_prev) * 0.75 or len(t_curr.splitlines()) > len(t_prev.splitlines())):
+        return True
+    if len(t_curr) > len(t_prev) * 1.35 + 3 and c_curr >= 0.25:
+        return True
+    if len(t_prev) > len(t_curr) * 1.35 + 3 and c_prev >= 0.25:
+        return False
+    return c_curr > c_prev
+
+
+def _prune_subsumed_boxes(boxes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Drop smaller nested duplicate detections already enclosed and covered by a larger parent box."""
+    if len(boxes) <= 1:
+        return [dict(b) for b in boxes]
+    ranked = sorted(range(len(boxes)), key=lambda i: _box_bounds_and_area(boxes[i])[4], reverse=True)
+    kept: List[Dict[str, Any]] = []
+    for idx in ranked:
+        cand = dict(boxes[idx])
+        cx1, cy1, cx2, cy2, c_area = _box_bounds_and_area(cand)
+        subsumed = False
+        for parent in kept:
+            px1, py1, px2, py2, p_area = _box_bounds_and_area(parent)
+            if p_area < c_area * 1.5:
+                continue
+            inter = max(0, min(px2, cx2) - max(px1, cx1)) * max(0, min(py2, cy2) - max(py1, cy1))
+            if inter >= 0.70 * c_area and not _prefer_box_text(cand, parent):
+                subsumed = True
+                break
+        if not subsumed:
+            kept.append(cand)
+    return kept
+
+
 def merge_adjacent_boxes(
     raw_boxes: List[Dict[str, Any]],
     img_w: int,
@@ -1073,11 +1127,12 @@ def merge_adjacent_boxes(
 
     merged = []
     for comp in clusters:
-        comp_boxes = [raw_boxes[idx] for idx in comp]
-        c_xmin = min(min(b["xmin"], b["xmax"]) for b in comp_boxes)
-        c_ymin = min(min(b["ymin"], b["ymax"]) for b in comp_boxes)
-        c_xmax = max(max(b["xmin"], b["xmax"]) for b in comp_boxes)
-        c_ymax = max(max(b["ymin"], b["ymax"]) for b in comp_boxes)
+        raw_comp_boxes = [raw_boxes[idx] for idx in comp]
+        c_xmin = min(min(b["xmin"], b["xmax"]) for b in raw_comp_boxes)
+        c_ymin = min(min(b["ymin"], b["ymax"]) for b in raw_comp_boxes)
+        c_xmax = max(max(b["xmin"], b["xmax"]) for b in raw_comp_boxes)
+        c_ymax = max(max(b["ymin"], b["ymax"]) for b in raw_comp_boxes)
+        comp_boxes = _prune_subsumed_boxes(raw_comp_boxes)
 
         has_cjk = any(any(_is_cjk_char(c) for c in str(b.get("text", ""))) for b in comp_boxes)
         if not has_cjk:
@@ -1169,7 +1224,7 @@ def merge_adjacent_boxes(
             row_texts = []
             for row in rows:
                 row_sorted = sorted(row, key=lambda b: min(b["xmin"], b["xmax"]))
-                # Deduplicate identical or heavily overlapping boxes within the same row
+                # Deduplicate identical or heavily overlapping 2D boxes within the same row
                 deduped_row = []
                 for b in row_sorted:
                     t_curr = str(b.get("text", "")).strip()
@@ -1177,16 +1232,17 @@ def merge_adjacent_boxes(
                     for prev_b in deduped_row:
                         t_prev = str(prev_b.get("text", "")).strip()
                         ov_x = max(0, min(b["xmax"], prev_b["xmax"]) - max(b["xmin"], prev_b["xmin"]))
+                        ov_y = max(0, min(b["ymax"], prev_b["ymax"]) - max(b["ymin"], prev_b["ymin"]))
                         min_w_b = min(b["xmax"] - b["xmin"], prev_b["xmax"] - prev_b["xmin"])
-                        if min_w_b > 0 and (ov_x / float(min_w_b)) >= 0.60:
+                        min_h_b = min(b["ymax"] - b["ymin"], prev_b["ymax"] - prev_b["ymin"])
+                        if (
+                            min_w_b > 0 and (ov_x / float(min_w_b)) >= 0.60
+                            and min_h_b > 0 and (ov_y / float(min_h_b)) >= 0.40
+                        ):
                             if t_curr == t_prev or not t_curr:
                                 is_dup = True
                                 break
-                            elif not t_prev:
-                                prev_b["text"] = t_curr
-                                is_dup = True
-                                break
-                            elif float(b.get("conf", 0.0) or 0.0) > float(prev_b.get("conf", 0.0) or 0.0):
+                            elif _prefer_box_text(b, prev_b):
                                 prev_b["text"] = t_curr
                                 prev_b["conf"] = b.get("conf")
                                 is_dup = True
@@ -1206,11 +1262,11 @@ def merge_adjacent_boxes(
                 [1] + [int(b.get("line_count", 1) or 1) for b in comp_boxes]
             )
 
-        angles = [float(b.get("angle", 0.0)) for b in comp_boxes if "angle" in b and b.get("angle") is not None]
+        angles = [float(b.get("angle", 0.0)) for b in raw_comp_boxes if "angle" in b and b.get("angle") is not None]
         avg_angle = float(np.median(angles)) if angles else 0.0
 
         all_pts = []
-        for b in comp_boxes:
+        for b in raw_comp_boxes:
             if b.get("polygon"):
                 all_pts.extend(b["polygon"])
             else:

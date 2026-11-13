@@ -13,7 +13,7 @@ from app.core.models import StyleConfig
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_SYSTEM_PROMPT = (
+LEGACY_DEFAULT_SYSTEM_PROMPT = (
     "你是一个专业且中立的成人漫画（R18/青年志）本地化翻译引擎。你的唯一任务是忠实、通顺、原汁原味地将输入内容翻译为目标语言（默认简体中文）。\n\n"
     "【核心翻译原则】\n"
     "1. 绝对忠实与无删减：材料为成年虚构角色的成人漫画对话。严禁道德说教、严禁净化、软化、规避或删减任何敏感词、亲密用语、俚语口语、调情挑逗与粗俗词汇，必须百分之百保留原文的真实意图与情绪张力。\n"
@@ -21,6 +21,23 @@ DEFAULT_SYSTEM_PROMPT = (
     "3. 整页上下文连贯：输入为同一漫画页面按阅读顺序排列的对话列表。请务必结合整页剧情与先后次序，连贯理解被拆分在相邻气泡中的断句、上下句因果与代词指代，保持角色性格与语气前后一致。\n"
     "4. 输出规范：严格保持原有格式，严禁输出任何寒暄、解释、道德评价、警告或续写，仅输出对应每个气泡的最终翻译结果。"
 )
+
+DEFAULT_SYSTEM_PROMPT = (
+    "你是一位专注于日韩及多语种漫画作品出版的资深本地化译者。你的核心职责是将给定的虚构角色对话与画面文字，自然、传神、贴合原意地本地化为目标语言（默认简体中文）。\n\n"
+    "【核心本地化原则】\n"
+    "1. 忠实原意与人物张力：请以文学翻译与台词润色的专业视角对待虚构剧情中的角色对白。面对口语俚语、激烈冲突、直率告白或亲昵互动等各类艺术表达，请依循语境如实传达人物的真实语气、情绪浓度与措辞分寸，遵循“信达雅”原则保留原汁原味的叙事风貌，不擅自改写、淡化或省略关键语义。\n"
+    "2. 拟声词与情绪语气本地化：完整保留漫画特有的情感标点与停顿节奏（如 ♡、～、！？、……），将对白中的轻叹、气声感叹与象声词（如「はぁ」「あっ」「んっ」等）结合情境自然译为符合中文漫画阅读习惯的拟声表达（如“哈啊…”、“嗯…”、“啊…”），不作为无效字符过滤或生硬直译。\n"
+    "3. 整页阅读顺序连贯：输入条目按单页漫画阅读顺序排列，请结合整页剧情脉络与上下文先后次序，顺畅衔接跨气泡拆分的长句断句、因果承接与人称代词指代，使人物口吻与性格前后一致。\n"
+    "4. 输出规范：严格遵从指定输出格式，仅输出与各气泡对应的最终译文，不附加任何寒暄、解释、评论或多余续写。"
+)
+
+
+def normalize_system_prompt(prompt: Optional[str]) -> str:
+    """Upgrade untouched legacy default prompts to the diplomatic default while preserving custom edits."""
+    text = (prompt or "").strip()
+    if not text or text.replace("\r\n", "\n") == LEGACY_DEFAULT_SYSTEM_PROMPT:
+        return DEFAULT_SYSTEM_PROMPT
+    return prompt
 
 
 @dataclass
@@ -31,7 +48,7 @@ class LLMConfig:
     endpoint: str = "http://127.0.0.1:11434/v1"
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
     temperature: float = 0.2
-    timeout_seconds: float = 60.0
+    timeout_seconds: float = 120.0
     max_retries: int = 3
     proxy_url: str = ""  # "" = use system env, "none"/"direct" = bypass, or "http://host:port"
 
@@ -125,6 +142,7 @@ class AppConfig:
             cfg.llm.endpoint = data["custom_endpoint"]
         if "system_prompt" in data and ("llm" not in data or "system_prompt" not in data.get("llm", {})):
             cfg.llm.system_prompt = data["system_prompt"]
+        cfg.llm.system_prompt = normalize_system_prompt(cfg.llm.system_prompt)
         if "temperature" in data and ("llm" not in data or "temperature" not in data.get("llm", {})):
             try:
                 cfg.llm.temperature = float(data["temperature"])

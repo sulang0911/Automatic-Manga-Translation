@@ -50,7 +50,7 @@ class CustomOpenAIProvider(BaseTranslationProvider):
         if progress_callback:
             progress_callback(20, f"正在向自定义 API ({self.model}) 发送翻译请求...")
 
-        sys_prompt = PromptTemplates.build_text_system_prompt(source_lang, target_lang, context)
+        sys_prompt = self.build_text_system_prompt(source_lang, target_lang, context)
         user_msg = PromptTemplates.build_text_user_message(blocks, source_lang, target_lang)
 
         headers = {"Content-Type": "application/json"}
@@ -66,36 +66,19 @@ class CustomOpenAIProvider(BaseTranslationProvider):
             "temperature": self.config.temperature
         }
 
-        # Attempt with response_format, auto-degrade if unsupported
-        try:
-            body_with_fmt = {**body, "response_format": {"type": "json_object"}}
-            resp = execute_http_request_with_retry(
-                method="POST",
-                url=self.endpoint,
-                headers=headers,
-                json_payload=body_with_fmt,
-                timeout=self.config.timeout_seconds,
-                max_retries=self.config.max_retries,
-                provider_name="Custom API",
-                progress_callback=progress_callback,
-                proxies=self.resolve_proxies()
-            )
-        except Exception as e:
-            # If 400 Bad Request indicates response_format is unsupported, retry without it
-            if "response_format" in str(e).lower() or "400" in str(e):
-                resp = execute_http_request_with_retry(
-                    method="POST",
-                    url=self.endpoint,
-                    headers=headers,
-                    json_payload=body,
-                    timeout=self.config.timeout_seconds,
-                    max_retries=self.config.max_retries,
-                    provider_name="Custom API",
-                    progress_callback=progress_callback,
-                    proxies=self.resolve_proxies()
-                )
-            else:
-                raise e
+        # Prompt asks for a top-level JSON array [...]; avoid response_format=json_object
+        # which forces strict OpenAI-compatible servers to emit a single JSON object.
+        resp = execute_http_request_with_retry(
+            method="POST",
+            url=self.endpoint,
+            headers=headers,
+            json_payload=body,
+            timeout=self.config.timeout_seconds,
+            max_retries=self.config.max_retries,
+            provider_name="Custom API",
+            progress_callback=progress_callback,
+            proxies=self.resolve_proxies()
+        )
 
         data = resp.json()
         raw_text = data["choices"][0]["message"]["content"]

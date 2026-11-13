@@ -41,7 +41,7 @@ class DeepSeekProvider(BaseTranslationProvider):
         if progress_callback:
             progress_callback(20, f"正在向 DeepSeek ({self.model}) 发送翻译请求...")
 
-        sys_prompt = PromptTemplates.build_text_system_prompt(source_lang, target_lang, context)
+        sys_prompt = self.build_text_system_prompt(source_lang, target_lang, context)
         user_msg = PromptTemplates.build_text_user_message(blocks, source_lang, target_lang)
 
         url = f"{self.endpoint}/chat/completions"

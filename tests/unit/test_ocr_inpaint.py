@@ -635,3 +635,50 @@ def test_merge_split_multiline_paragraph_bubble_user_sample():
     assert merged[0]["xmin"] <= 20
     assert merged[0]["ymin"] == 40
     assert merged[0]["ymax"] == 195
+
+
+def test_merge_adjacent_boxes_nested_child_does_not_overwrite_multiline_parent():
+    """
+    Regression test for 4K CTD nested duplicate detection:
+    When a full multi-line parent box overlaps with a tiny enclosed bottom sub-box that
+    happens to have higher single-line OCR confidence, the sub-box must NOT overwrite
+    the parent box's full text or collapse its line_count.
+    """
+    parent_text = (
+        "(Suk) Can you be more specific, Ms Yuna?\n"
+        "(Yuna) \"I'm cumming even now!\"\n"
+        "(Jun) \"So you're cumming now or what?\"\n"
+        "(Yuna) \"I don't know! I want to cum!\"\n"
+        "(Suk) \"We're blocking orgasm with electrical pulses.\"\n"
+        "(Yuna) \"I don't care how you're doing this! Just Stop!!\""
+    )
+    boxes = [
+        {
+            "xmin": 1742, "ymin": 700, "xmax": 2621, "ymax": 2056,
+            "text": parent_text,
+            "conf": 0.5969,
+            "line_count": 18,
+            "polygon": [[1742, 700], [2621, 700], [2621, 2056], [1742, 2056]],
+        },
+        {
+            "xmin": 1807, "ymin": 1855, "xmax": 2540, "ymax": 1977,
+            "text": 'una) [ don t care how youre doing this Just Stopll"',
+            "conf": 0.6918,
+            "line_count": 1,
+            "polygon": [[1807, 1855], [2540, 1855], [2540, 1977], [1807, 1977]],
+        },
+    ]
+    merged = merge_adjacent_boxes(boxes, img_w=3840, img_h=2160)
+    assert len(merged) == 1
+    assert "(Suk) Can you be more specific" in merged[0]["text"]
+    assert "(Jun)" in merged[0]["text"]
+    assert merged[0]["line_count"] >= 6
+
+    # Also verify vertical Japanese column does not duplicate an enclosed sub-box
+    v_boxes = [
+        {"xmin": 500, "ymin": 100, "xmax": 560, "ymax": 420, "text": "本当に大丈夫ですか？\nはい、問題ありません。", "conf": 0.80, "line_count": 2},
+        {"xmin": 506, "ymin": 310, "xmax": 554, "ymax": 410, "text": "問題ありません", "conf": 0.96, "line_count": 1},
+    ]
+    v_merged = merge_adjacent_boxes(v_boxes, img_w=1000, img_h=1000)
+    assert len(v_merged) == 1
+    assert v_merged[0]["text"].count("問題ありません") == 1

@@ -8,6 +8,7 @@ import sys
 import re
 import math
 import logging
+import threading
 from typing import List, Dict, Any, Optional, Tuple, Callable
 from collections import Counter
 import numpy as np
@@ -251,70 +252,69 @@ class TypographyEngine:
         "stxihei": "STXIHEI.TTF",
     }
 
-    _GLOBAL_FONT_CACHE: Dict[Tuple[str, int], Any] = {}
+    _GLOBAL_FONT_CACHE: Dict[Tuple[Any, ...], Any] = {}
     _GLOBAL_FONT_PATH_CACHE: Dict[str, Optional[str]] = {}
+    _FONT_CACHE_LOCK = threading.Lock()
     _LAST_QR_SIG: Optional[Tuple[Any, ...]] = None
     _LAST_QR_REGIONS: List[Any] = []
+    _QR_CACHE_LOCK = threading.Lock()
 
     def __init__(self, default_font_family: str = "霞鹜文楷"):
         self.default_font_family = default_font_family
         self.auto_fit_engine = AutoFitEngine()
         self.line_breaker = LineBreaker()
         self.vertical_layout = VerticalLayoutEngine()
-        self._font_cache: Dict[Tuple[str, int], Any] = TypographyEngine._GLOBAL_FONT_CACHE
+        self._font_cache: Dict[Tuple[Any, ...], Any] = TypographyEngine._GLOBAL_FONT_CACHE
 
     def resolve_font_path(self, font_family: str) -> Optional[str]:
-        cache_key = font_family.strip().lower()
-        if cache_key in TypographyEngine._GLOBAL_FONT_PATH_CACHE:
-            cached_p = TypographyEngine._GLOBAL_FONT_PATH_CACHE[cache_key]
-            if cached_p is None or os.path.exists(cached_p):
-                return cached_p
         """Finds true font file path on system or local assets/fonts directory."""
+        cache_key = font_family.strip().lower()
+        with TypographyEngine._FONT_CACHE_LOCK:
+            if cache_key in TypographyEngine._GLOBAL_FONT_PATH_CACHE:
+                cached_p = TypographyEngine._GLOBAL_FONT_PATH_CACHE[cache_key]
+                if cached_p is None or os.path.exists(cached_p):
+                    return cached_p
+
         clean_name = font_family.split("(")[0].split("（")[0].strip()
         key = clean_name.lower()
         filename = self.SYSTEM_FONT_MAP.get(key, f"{clean_name}.ttf")
 
         repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-        local_candidate = os.path.join(repo_root, "assets", "fonts", filename)
-        if os.path.exists(local_candidate):
-            return local_candidate
-
-        cwd_local = os.path.join(os.getcwd(), "assets", "fonts", filename)
-        if os.path.exists(cwd_local):
-            return cwd_local
-
         win_fonts = os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts")
-        candidate = os.path.join(win_fonts, filename)
-        if os.path.exists(candidate):
-            return candidate
 
-        if os.path.exists(local_candidate):
-            return local_candidate
+        resolved: Optional[str] = None
+        candidates = [
+            os.path.join(repo_root, "assets", "fonts", filename),
+            os.path.join(os.getcwd(), "assets", "fonts", filename),
+            os.path.join(win_fonts, filename),
+        ]
         for fallback in ["LXGWWenKaiLite-Regular.ttf", "msyh.ttc", "simhei.ttf", "arial.ttf"]:
-            p_local = os.path.join(repo_root, "assets", "fonts", fallback)
-            if os.path.exists(p_local):
-                return p_local
-            p_win = os.path.join(win_fonts, fallback)
-            if os.path.exists(p_win):
-                return p_win
-
-        for p_sys in [
+            candidates.append(os.path.join(repo_root, "assets", "fonts", fallback))
+            candidates.append(os.path.join(win_fonts, fallback))
+        candidates.extend([
             "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
             "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
             "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
-            "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc"
-        ]:
-            if os.path.exists(p_sys):
-                TypographyEngine._GLOBAL_FONT_PATH_CACHE[cache_key] = p_sys
-                return p_sys
-        TypographyEngine._GLOBAL_FONT_PATH_CACHE[cache_key] = None
-        return None
+            "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
+        ])
+
+        for cand in candidates:
+            if os.path.exists(cand):
+                resolved = cand
+                break
+
+        with TypographyEngine._FONT_CACHE_LOCK:
+            TypographyEngine._GLOBAL_FONT_PATH_CACHE[cache_key] = resolved
+        return resolved
 
     def get_font(self, font_family: str, size: float) -> ImageFont.FreeTypeFont:
         int_size = max(6, int(round(size)))
-        cache_key = (font_family.lower(), int_size)
-        if cache_key in self._font_cache:
-            return self._font_cache[cache_key]
+        tid = threading.get_ident()
+        cache_key = (tid, font_family.lower(), int_size)
+        with TypographyEngine._FONT_CACHE_LOCK:
+            cached = self._font_cache.get(cache_key)
+        if cached is not None:
+            return cached
 
         font_path = self.resolve_font_path(font_family)
         font = None
@@ -330,10 +330,14 @@ class TypographyEngine:
             except Exception:
                 pass
 
-        if len(self._font_cache) >= 160:
-            for k in list(self._font_cache.keys())[:32]:
-                self._font_cache.pop(k, None)
-        self._font_cache[cache_key] = font
+        with TypographyEngine._FONT_CACHE_LOCK:
+            existing = self._font_cache.get(cache_key)
+            if existing is not None:
+                return existing
+            if len(self._font_cache) >= 256:
+                for k in list(self._font_cache.keys())[:48]:
+                    self._font_cache.pop(k, None)
+            self._font_cache[cache_key] = font
         return font
 
     @staticmethod
@@ -476,8 +480,10 @@ class TypographyEngine:
                     int(erased_image[mid_y, mid_x, 0]),
                     int(erased_image[-1, -1, -1]),
                 )
-                if TypographyEngine._LAST_QR_SIG == img_sig:
-                    qr_regions = TypographyEngine._LAST_QR_REGIONS
+                with TypographyEngine._QR_CACHE_LOCK:
+                    cached_qr = list(TypographyEngine._LAST_QR_REGIONS) if TypographyEngine._LAST_QR_SIG == img_sig else None
+                if cached_qr is not None:
+                    qr_regions = cached_qr
                 else:
                     det = cv2.QRCodeDetector()
                     ok, decoded_info, points, _ = det.detectAndDecodeMulti(erased_image)
@@ -489,8 +495,9 @@ class TypographyEngine:
                             reg = filt._build_region("qrcode", pts, w_img, h_img, dec)
                             if reg:
                                 qr_regions.append(reg)
-                    TypographyEngine._LAST_QR_SIG = img_sig
-                    TypographyEngine._LAST_QR_REGIONS = qr_regions
+                    with TypographyEngine._QR_CACHE_LOCK:
+                        TypographyEngine._LAST_QR_SIG = img_sig
+                        TypographyEngine._LAST_QR_REGIONS = list(qr_regions)
         except Exception:
             qr_regions = []
 
@@ -576,10 +583,16 @@ class TypographyEngine:
                 L, H = float(w), float(h)
 
             text_is_cjk = LineBreaker.is_cjk(text)
+            orig_txt = getattr(block, "original_text", "") or ""
+            orig_hanzi_kana = sum(1 for c in orig_txt if ('\u4e00' <= c <= '\u9fff') or ('\u3040' <= c <= '\u30ff'))
+            orig_horiz_script = sum(1 for c in orig_txt if ('a' <= c <= 'z' or 'A' <= c <= 'Z' or '\uac00' <= c <= '\ud7af'))
+            orig_is_horizontal_script = (orig_horiz_script >= 2 and orig_hanzi_kana <= max(1, int(orig_horiz_script * 0.1)))
             box_is_tall = (H > L * 1.5) if is_rotated else (h > w * 1.5)
             if block.direction == TextDirection.VERTICAL.value:
                 is_vertical = box_is_tall and text_is_cjk
             elif block.direction == TextDirection.HORIZONTAL.value:
+                is_vertical = False
+            elif orig_is_horizontal_script:
                 is_vertical = False
             else:
                 is_vertical = box_is_tall and text_is_cjk
@@ -881,8 +894,7 @@ class TypographyEngine:
                 paste_y = int(round(cy - rotated_layer.height / 2.0))
                 pil_img.paste(rotated_layer, (paste_x, paste_y), rotated_layer)
 
-        res_rgb = np.array(pil_img.convert("RGB"))
-        res_bgr = cv2.cvtColor(res_rgb, cv2.COLOR_RGB2BGR)
+        res_bgr = cv2.cvtColor(np.asarray(pil_img), cv2.COLOR_RGBA2BGR)
 
         if progress_callback:
             progress_callback(100, "文字渲染完成")

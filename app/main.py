@@ -25,6 +25,8 @@ os.environ.setdefault("FLAGS_fraction_of_gpu_memory_to_use", "0.5")
 os.environ.setdefault("FLAGS_eager_delete_tensor_gb", "0.0")
 os.environ.setdefault("MALLOC_TRIM_THRESHOLD_", "65536")
 
+# CRITICAL WINDOWS DLL PROTECTION: Initialize torch/OpenMP on the main thread
+# BEFORE cv2, PyQt6, or background QThread workers load native DLLs.
 try:
     import torch
     torch.set_num_threads(1)
@@ -53,7 +55,7 @@ except Exception:
     pass
 
 from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import Qt, QThreadPool
+from PyQt6.QtCore import Qt, QThreadPool, QTimer
 from app.ui.main_window import MainWindow
 
 
@@ -72,7 +74,8 @@ def main():
 
     window = MainWindow()
     window.show()
-    window.restore_last_session()
+    # Defer session restoration until the window paints its first frame
+    QTimer.singleShot(0, window.restore_last_session)
 
     sys.exit(app.exec())
 

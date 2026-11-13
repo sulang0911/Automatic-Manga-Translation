@@ -172,9 +172,33 @@ class MangaExporter:
         return True
 
     @staticmethod
+    def export_single_image_pdf(image_bgr: np.ndarray, output_pdf_path: str) -> bool:
+        """
+        Exports a single OpenCV BGR image directly to a PDF document in memory
+        without writing temporary intermediate PNG files to disk.
+        """
+        if image_bgr is None or image_bgr.size == 0:
+            return False
+
+        os.makedirs(os.path.dirname(os.path.abspath(output_pdf_path)), exist_ok=True)
+        rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(rgb)
+        try:
+            pil_img.save(output_pdf_path, "PDF", resolution=100.0)
+            return os.path.exists(output_pdf_path)
+        finally:
+            try:
+                pil_img.close()
+            except Exception:
+                pass
+            del pil_img, rgb
+
+    @staticmethod
     def compile_chapter_pdf(image_paths: List[str], output_pdf_path: str) -> bool:
         """
         Compiles multiple manga pages into a single multi-page PDF in natural numeric order.
+        Uses PyMuPDF streaming insertion (O(1) RAM per page + raw PNG/JPEG passthrough)
+        when available, falling back to Pillow multi-page PDF encoding otherwise.
         """
         if not image_paths:
             return False
@@ -185,6 +209,56 @@ class MangaExporter:
         sorted_paths = sorted([p for p in image_paths if os.path.exists(p)], key=natural_sort_key)
         if not sorted_paths:
             return False
+
+        try:
+            import io
+            import pymupdf
+
+            doc = pymupdf.open()
+            try:
+                for path in sorted_paths:
+                    try:
+                        img_bytes: Optional[bytes] = None
+                        w_px = h_px = 0
+                        ext = os.path.splitext(path)[1].lower()
+                        with Image.open(path) as im:
+                            w_px, h_px = im.size
+                            if ext in (".png", ".jpg", ".jpeg") and im.mode in ("RGB", "L"):
+                                with open(path, "rb") as f_raw:
+                                    img_bytes = f_raw.read()
+                            else:
+                                buf = io.BytesIO()
+                                rgb_im = im.convert("RGB") if im.mode != "RGB" else im
+                                try:
+                                    rgb_im.save(buf, format="JPEG", quality=95)
+                                finally:
+                                    if rgb_im is not im:
+                                        rgb_im.close()
+                                img_bytes = buf.getvalue()
+
+                        if img_bytes and w_px > 0 and h_px > 0:
+                            page = doc.new_page(
+                                width=w_px * 72.0 / 100.0,
+                                height=h_px * 72.0 / 100.0,
+                            )
+                            page.insert_image(page.rect, stream=img_bytes)
+                    except Exception as e:
+                        print(f"[-] Warning: Failed to load {path} for PDF: {e}")
+
+                if doc.page_count == 0:
+                    return False
+
+                doc.save(output_pdf_path, garbage=1, deflate=True)
+                return True
+            finally:
+                doc.close()
+                try:
+                    from app.core.hardware import cleanup_gpu_memory
+                    cleanup_gpu_memory(trim_ram=True)
+                except Exception:
+                    pass
+        except ImportError:
+            pass
 
         pil_images = []
         raw_handles = []
@@ -246,8 +320,12 @@ class MangaExporter:
         os.makedirs(os.path.dirname(os.path.abspath(output_zip_path)), exist_ok=True)
         sorted_paths = sorted([p for p in image_paths if os.path.exists(p)], key=natural_sort_key)
 
+        compressed_exts = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif"}
         with zipfile.ZipFile(output_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
             for p in sorted_paths:
                 arcname = os.path.basename(p)
-                zf.write(p, arcname=arcname)
+                ext = os.path.splitext(p)[1].lower()
+                # Skip futile DEFLATE CPU work on already-compressed image formats
+                comp = zipfile.ZIP_STORED if ext in compressed_exts else zipfile.ZIP_DEFLATED
+                zf.write(p, arcname=arcname, compress_type=comp)
         return True

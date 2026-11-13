@@ -252,4 +252,30 @@ def test_rotated_slanted_typography_rendering():
     assert np.min(crop) < 50, "Rotated text should be drawn"
 
 
+def test_tall_english_column_auto_direction_stays_horizontal():
+    """Tall multi-turn horizontal English dialogue column must NOT be flipped to vertical Chinese columns."""
+    engine = TypographyEngine()
+    cfg = StyleConfig()
+    bg = np.full((600, 400, 3), 255, dtype=np.uint8)
+
+    tall_en_col = TranslationBlock(
+        id="b_mid_col",
+        original_text='(Suk) "Can you be more specific?"\n(Yuna) "I cannot stop it!!"',
+        translated_text='(Suk) “你能说得更具体一点吗？”\n(Yuna) “快给我停下来！！”',
+        xmin=20.0, ymin=10.0, xmax=50.0, ymax=90.0,  # w=120, h=480 (h > w * 1.5!)
+        direction=TextDirection.AUTO.value,
+    )
+
+    called_vertical = []
+    orig_compute = engine.vertical_layout.compute_layout
+    def spy_vertical(*args, **kwargs):
+        called_vertical.append(True)
+        return orig_compute(*args, **kwargs)
+    engine.vertical_layout.compute_layout = spy_vertical
+
+    rendered = engine.render_page(bg, [tall_en_col], cfg)
+    assert rendered is not None
+    assert called_vertical == [], "Horizontal English column must render horizontally even when h > w * 1.5"
+
+
 

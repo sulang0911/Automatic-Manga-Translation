@@ -367,3 +367,286 @@ def test_restore_moved_and_merged_blocks():
     restored = restore_block_pixels(orig, erased, moved_block, remaining_blocks=[], padding=0)
     assert np.array_equal(restored[20, 20], [10, 50, 90])
     assert np.array_equal(restored[140, 140], [10, 50, 90])
+
+
+def test_translation_block_to_dict_omits_none_internal_metadata():
+    """Ensures TranslationBlock.to_dict omits internal tracking keys when None and keeps them when populated."""
+    tb = TranslationBlock.from_pixel_box(10, 20, 60, 80, 200, 400, id="m1")
+    d = tb.to_dict()
+    assert "_orig_box" not in d
+    assert "_orig_polygon" not in d
+    assert "_merged_boxes" not in d
+
+    tb._orig_box = [5.0, 5.0, 30.0, 20.0]
+    d2 = tb.to_dict()
+    assert d2["_orig_box"] == [5.0, 5.0, 30.0, 20.0]
+
+
+def test_restore_adjacent_rotated_polygon_no_aabb_overblock():
+    """
+    Verifies a remaining rotated/diagonal block only protects its actual rotated polygon
+    and never blocks restoration across empty corners of its axis-aligned bounding box.
+    """
+    w, h = 800, 800
+    orig = np.full((h, w, 3), 200, dtype=np.uint8)
+    for y in range(0, h, 6):
+        orig[y:y + 2, :] = (50, 80, 150)
+
+    b_del = TranslationBlock.from_pixel_box(250, 200, 420, 260, w, h, id="del")
+    poly_rot = [[260, 380], [460, 180], [500, 220], [300, 420]]
+    b_rem = TranslationBlock.from_pixel_box(
+        260, 180, 500, 420, w, h, id="rem", polygon=poly_rot, angle=-45.0
+    )
+
+    # Empty corner inside b_rem's AABB [260..500, 180..420] must not be masked by rem_core
+    rem_mask = get_block_pixel_mask(b_rem, w, h, padding=0)
+    assert rem_mask[220, 280] == 0
+    assert rem_mask[250, 400] == 255
+
+    erased = orig.copy()
+    erased[195:265, 245:425] = 255
+    cv2.fillPoly(erased, [np.array(poly_rot, dtype=np.int32)], (255, 255, 255))
+
+    restored = restore_block_pixels(orig, erased, b_del, remaining_blocks=[b_rem], padding=4)
+    # Inside b_del but outside poly_rot (and inside b_rem's AABB) must restore to original art
+    assert np.array_equal(restored[220, 280], orig[220, 280])
+    # Inside poly_rot itself must remain protected/erased
+    assert np.array_equal(restored[250, 400], [255, 255, 255])
+
+
+def test_restore_adjacent_inactive_border_no_voronoi_suppression():
+    """
+    Verifies a large nearby remaining block whose adjacent edge was untouched by inpainting
+    does not suppress restoration of the deleted block's own erased halo in the gap.
+    """
+    w, h = 800, 600
+    orig = np.full((h, w, 3), 180, dtype=np.uint8)
+    for y in range(0, h, 8):
+        orig[y:y + 3, :] = (60, 90, 140)
+
+    b_del = TranslationBlock.from_pixel_box(100, 200, 300, 400, w, h, id="del")
+    b_rem = TranslationBlock.from_pixel_box(312, 200, 700, 500, w, h, id="rem")
+
+    erased = orig.copy()
+    # b_del erased with +10px halo reaching x=310 (closer to b_rem x=312 than b_del x=300)
+    erased[195:405, 95:310] = 245
+    # b_rem only erased its interior (x=400..550), leaving its left border x=312..325 untouched
+    erased[300:400, 400:550] = 250
+
+    restored = restore_block_pixels(orig, erased, b_del, remaining_blocks=[b_rem], padding=4)
+    assert np.array_equal(restored[280, 307], orig[280, 307])
+    assert np.array_equal(restored[350, 450], [250, 250, 250])
+
+
+def test_dragged_translation_block_restores_original_location_on_delete(qapp, tmp_path):
+    """
+    Verifies moving/dragging a TranslationBlock on canvas records _orig_box/_orig_polygon
+    and restores the pre-drag original erased position when the block is deleted.
+    """
+    from app.core.models import StyleConfig
+    from app.core.cache.cache_manager import safe_cv2_imwrite
+    from app.ui.main_window import MainWindow
+
+    img_path = str(tmp_path / "drag_test.png")
+    w, h = 600, 800
+    orig = np.full((h, w, 3), 220, dtype=np.uint8)
+    for y in range(0, h, 8):
+        orig[y:y + 3, :] = (65, 105, 185)
+    safe_cv2_imwrite(img_path, orig)
+
+    b1 = TranslationBlock.from_pixel_box(
+        50, 100, 200, 160, w, h, id="b1",
+        original_text="AAA", translated_text="甲",
+        polygon=[[50, 100], [200, 100], [200, 160], [50, 160]],
+    )
+    b2 = TranslationBlock.from_pixel_box(50, 300, 200, 360, w, h, id="b2", original_text="BBB", translated_text="乙")
+    erased = orig.copy()
+    erased[95:165, 45:205] = 255
+    erased[295:365, 45:205] = 255
+
+    win = MainWindow()
+    win.page_list.add_paths([img_path])
+    win._on_page_selected(win.page_list.items_data[0])
+    win._on_pipeline_finished({
+        "mode": "full", "path": img_path, "original_img": orig.copy(),
+        "erased_img": erased.copy(), "translated_img": erased.copy(),
+        "blocks": [b1, b2], "page_style": StyleConfig(),
+    })
+
+    item_b1 = next(it for it in win.canvas_view.bubble_items if it.block_data.get("id") == "b1")
+    assert item_b1.block_data.get("_orig_box") is not None
+    assert item_b1.block_data.get("_orig_polygon") is not None
+
+    # Simulate dragging b1 to a distant box
+    item_b1.signals.geometry_start.emit(item_b1.block_data)
+    item_b1.block_data["xmin"] = 50.0
+    item_b1.block_data["ymin"] = 62.5
+    item_b1.block_data["xmax"] = 75.0
+    item_b1.block_data["ymax"] = 70.0
+    item_b1.block_data["polygon"] = None
+    item_b1.signals.changed.emit(item_b1.block_data)
+    item_b1.signals.geometry_commit.emit(item_b1.block_data)
+
+    win._on_block_deleted("b1")
+    assert np.array_equal(win.current_image_data["erased_img"][100:160, 50:200], orig[100:160, 50:200])
+    win.close()
+
+
+def test_merge_blocks_with_none_metadata_and_delete(qapp, tmp_path):
+    """
+    Verifies merging blocks when _merged_boxes/_orig_box keys are None does not raise TypeError
+    and deleting the merged block restores all original constituent erased regions.
+    """
+    from app.core.models import StyleConfig
+    from app.core.cache.cache_manager import safe_cv2_imwrite
+    from app.ui.main_window import MainWindow
+
+    img_path = str(tmp_path / "merge_test.png")
+    w, h = 600, 800
+    orig = np.full((h, w, 3), 220, dtype=np.uint8)
+    for y in range(0, h, 8):
+        orig[y:y + 3, :] = (65, 105, 185)
+    safe_cv2_imwrite(img_path, orig)
+
+    b1 = TranslationBlock.from_pixel_box(50, 100, 200, 160, w, h, id="b1", original_text="A", translated_text="甲")
+    b2 = TranslationBlock.from_pixel_box(50, 300, 200, 360, w, h, id="b2", original_text="B", translated_text="乙")
+    # Also simulate legacy dict with explicit None tracking keys
+    b1_dict = b1.to_dict()
+    b1_dict["_merged_boxes"] = None
+    b1_dict["_orig_box"] = None
+    b2_dict = b2.to_dict()
+    b2_dict["_merged_boxes"] = None
+    b2_dict["_orig_box"] = None
+
+    erased = orig.copy()
+    erased[95:165, 45:205] = 255
+    erased[295:365, 45:205] = 255
+
+    win = MainWindow()
+    win.page_list.add_paths([img_path])
+    win._on_page_selected(win.page_list.items_data[0])
+    win._on_pipeline_finished({
+        "mode": "full", "path": img_path, "original_img": orig.copy(),
+        "erased_img": erased.copy(), "translated_img": erased.copy(),
+        "blocks": [b1_dict, b2_dict], "page_style": StyleConfig(),
+    })
+
+    win._on_canvas_bubble_merge_prev("b2")
+    blocks_after_merge = win.current_image_data["blocks"]
+    assert len(blocks_after_merge) == 1
+    merged_id = blocks_after_merge[0]["id"] if isinstance(blocks_after_merge[0], dict) else blocks_after_merge[0].id
+
+    win._on_block_deleted(merged_id)
+    assert np.array_equal(win.current_image_data["erased_img"][100:160, 50:200], orig[100:160, 50:200])
+    assert np.array_equal(win.current_image_data["erased_img"][300:360, 50:200], orig[300:360, 50:200])
+    win.close()
+
+
+def test_restore_overlapping_polygons_restores_non_overlapping_core():
+    """Neighbor dilation/halo must not block pixels inside deleted_block's own non-overlapping core."""
+    import cv2
+
+    w, h = 600, 600
+    orig = np.full((h, w, 3), 200, dtype=np.uint8)
+    for y in range(0, h, 6):
+        orig[y:y + 2, :] = 60
+
+    p_del = [[100, 140], [260, 100], [300, 260], [140, 300]]
+    p_rem = [[240, 100], [440, 100], [440, 300], [240, 300]]
+    b_del = TranslationBlock.from_pixel_box(100, 100, 300, 300, w, h, id="b_del", polygon=p_del)
+    b_rem = TranslationBlock.from_pixel_box(240, 100, 440, 300, w, h, id="b_rem", polygon=p_rem)
+
+    m_del = np.zeros((h, w), dtype=np.uint8)
+    cv2.fillPoly(m_del, [np.array(p_del, dtype=np.int32)], 255)
+    m_rem = np.zeros((h, w), dtype=np.uint8)
+    cv2.fillPoly(m_rem, [np.array(p_rem, dtype=np.int32)], 255)
+    m_erased = cv2.dilate(cv2.bitwise_or(m_del, m_rem), np.ones((17, 17), np.uint8))
+
+    erased = orig.copy()
+    erased[m_erased > 0] = 255
+
+    restored = restore_block_pixels(orig, erased, b_del, remaining_blocks=[b_rem], padding=4)
+    pure_del = (m_del > 0) & (m_rem == 0)
+    assert np.array_equal(restored[pure_del], orig[pure_del])
+    assert np.array_equal(restored[m_rem > 0], erased[m_rem > 0])
+
+
+def test_restore_block_pixels_channel_mismatch_safe():
+    """Channel differences between original_img and erased_img must not crash restoration."""
+    import cv2
+
+    w, h = 200, 200
+    orig_bgr = np.full((h, w, 3), 180, dtype=np.uint8)
+    orig_bgr[60:120, 40:140] = (30, 60, 90)
+    erased_bgra = cv2.cvtColor(np.full((h, w, 3), 255, dtype=np.uint8), cv2.COLOR_BGR2BGRA)
+    b = TranslationBlock.from_pixel_box(40, 60, 140, 120, w, h, id="b1")
+
+    restored = restore_block_pixels(orig_bgr, erased_bgra, b, remaining_blocks=[], padding=4)
+    assert restored is not None
+    assert restored.shape == (h, w, 4)
+    assert np.array_equal(restored[60:120, 40:140, :3], orig_bgr[60:120, 40:140])
+
+
+def test_canvas_delete_key_not_hijacked_by_inspector_shortcut(tmp_path):
+    """Pressing Delete on CanvasView must delete the canvas-selected bubble rather than Inspector's stale selection."""
+    from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+    from app.core.models import StyleConfig
+    from app.core.cache.cache_manager import safe_cv2_imwrite
+    from app.ui.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    img_path = str(tmp_path / "shortcut_del.png")
+    w, h = 600, 800
+    orig = np.full((h, w, 3), 210, dtype=np.uint8)
+    orig[100:220, 80:240] = (40, 80, 140)
+    orig[320:440, 80:240] = (80, 140, 40)
+    safe_cv2_imwrite(img_path, orig)
+
+    b0 = TranslationBlock.from_pixel_box(80, 100, 240, 220, w, h, id="b0", original_text="A", translated_text="甲")
+    b1 = TranslationBlock.from_pixel_box(80, 320, 240, 440, w, h, id="b1", original_text="B", translated_text="乙")
+    erased = orig.copy()
+    erased[96:224, 76:244] = 255
+    erased[316:444, 76:244] = 255
+
+    win = MainWindow()
+    win.show()
+    app.processEvents()
+    win.page_list.add_paths([img_path])
+    win._on_page_selected(win.page_list.items_data[0])
+    win._on_pipeline_finished({
+        "mode": "full", "path": img_path, "original_img": orig.copy(),
+        "erased_img": erased.copy(), "translated_img": erased.copy(),
+        "blocks": [b0, b1], "page_style": StyleConfig(),
+    })
+    app.processEvents()
+
+    # Desynchronize inspector state vs canvas selection, then press Delete on CanvasView
+    win.inspector_panel.selected_block = None
+    win.inspector_panel.bubble_list.clearSelection()
+    win.canvas_view.select_bubble_by_id("b1")
+    win.canvas_view.setFocus()
+    app.processEvents()
+    QTest.keyClick(win.canvas_view.viewport(), Qt.Key.Key_Delete)
+    app.processEvents()
+
+    rem_ids = [b["id"] if isinstance(b, dict) else b.id for b in win.current_image_data["blocks"]]
+    assert rem_ids == ["b0"]
+    assert np.array_equal(win.current_image_data["erased_img"][320:440, 80:240], orig[320:440, 80:240])
+    win.close()
+    app.processEvents()
+
+
+def test_undo_manager_shared_edits_preserve_pre_delete_bitmap():
+    """Pushing >max_bitmap_snapshots shared text edits must not evict an earlier pre-delete erased_img."""
+    mgr = UndoManager(max_depth=10, max_bitmap_snapshots=4)
+    erased_before = np.full((64, 64, 3), 255, dtype=np.uint8)
+    erased_after = np.full((64, 64, 3), 120, dtype=np.uint8)
+
+    mgr.push(PageSnapshot.create("p.png", [{"id": "b0"}], erased_img=erased_before, copy_erased=True, description="删除气泡"))
+    for i in range(6):
+        mgr.push(PageSnapshot.create("p.png", [{"id": "b1", "translated_text": f"t{i}"}], erased_img=erased_after, copy_erased=False, description=f"edit_{i}"))
+
+    assert mgr._undo_stack[0].erased_img is not None
+    assert np.array_equal(mgr._undo_stack[0].erased_img, erased_before)

@@ -130,3 +130,21 @@ def test_western_ltr_reading_order():
     assert sorted_ltr[1].id == "right"
     assert sorted_ltr[0].reading_order == 1
     assert sorted_ltr[1].reading_order == 2
+
+
+def test_single_block_dict_aligns_without_falling_back_to_original():
+    """
+    When an LLM returns a single JSON block dict instead of a 1-element list,
+    align_translations_to_blocks should bind its translated_text rather than
+    treating keys like 'id' or 'translated_text' as block IDs.
+    """
+    b1 = TranslationBlock(id="ef0ab6f1", original_text="(Jun) \"What do you mean?\"")
+    single_obj = {
+        "id": "ef0ab6f1",
+        "original_text": "(Jun) \"What do you mean?\"",
+        "translated_text": "(俊) “你这是什么意思？”",
+        "type": "bubble",
+    }
+
+    align_translations_to_blocks(single_obj, [b1])
+    assert b1.translated_text == "(俊) “你这是什么意思？”"

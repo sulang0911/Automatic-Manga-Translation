@@ -5,8 +5,9 @@ and subtle status indicators.
 """
 import os
 import re
+import threading
 import uuid
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Callable, Tuple
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QListWidget,
@@ -93,10 +94,17 @@ class PageItemWidget(QWidget):
     sig_remove = pyqtSignal(str)
     sig_edit_style = pyqtSignal(dict)
 
-    def __init__(self, item_data: Dict[str, Any], parent: Optional[QWidget] = None, sync_thumb: bool = False):
+    def __init__(
+        self,
+        item_data: Dict[str, Any],
+        parent: Optional[QWidget] = None,
+        sync_thumb: bool = False,
+        thumb_priority: Optional[int] = None,
+    ):
         super().__init__(parent)
         self.item_data = item_data
         self.item_id = item_data["id"]
+        self._thumb_priority = thumb_priority
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
@@ -206,7 +214,9 @@ class PageItemWidget(QWidget):
             except RuntimeError:
                 pass
 
-        AsyncThumbnailManager.instance().request_thumbnail(path, (36, 48), _on_ready, sync=sync)
+        AsyncThumbnailManager.instance().request_thumbnail(
+            path, (36, 48), _on_ready, sync=sync, priority=getattr(self, "_thumb_priority", None)
+        )
 
     def reload_thumbnail(self):
         """Forces refreshing thumbnail from disk."""
@@ -261,6 +271,7 @@ class PageListWidget(QWidget):
     sig_edit_page_style = pyqtSignal(dict)
     sig_cache_cleared = pyqtSignal(dict)
     sig_count_changed = pyqtSignal(int)
+    sig_async_batch_ready = pyqtSignal(int, list, list, object)
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -269,6 +280,8 @@ class PageListWidget(QWidget):
         self._item_widgets: Dict[str, PageItemWidget] = {}
         self._temp_archive_dirs: List[str] = []
         self.last_removed_row: int = -1
+        self._import_gen: int = 0
+        self.sig_async_batch_ready.connect(self._on_async_batch_ready)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 2, 0, 0)
@@ -422,14 +435,19 @@ class PageListWidget(QWidget):
         footer_layout.addLayout(sub_btn_layout)
         layout.addLayout(footer_layout)
 
-    def add_paths(self, paths: List[str]):
+    @staticmethod
+    def _discover_and_prepare_items(
+        paths: List[str],
+        existing_paths: set,
+        cache_mgr,
+    ) -> Tuple[List[Dict[str, Any]], List[str]]:
         """
-        Adds image paths or scans directories recursively, sorting them naturally
-        across subdirectories and deduplicating against existing entries.
-        Preserves relative subfolder hierarchy and root directory metadata.
+        Pure I/O discovery, zip/cbz extraction, natural sorting, and batched cache-status lookup.
+        Safe to invoke from either the UI thread or a background import worker thread.
         """
         valid_extensions = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
         discovered_entries: List[Dict[str, str]] = []
+        extracted_temp_dirs: List[str] = []
 
         valid_input_paths = [p for p in paths if p and os.path.exists(p)]
 
@@ -440,7 +458,7 @@ class PageListWidget(QWidget):
                 try:
                     import zipfile, tempfile
                     ext_dir = tempfile.mkdtemp(prefix="amt_archive_")
-                    self._temp_archive_dirs.append(ext_dir)
+                    extracted_temp_dirs.append(ext_dir)
                     with zipfile.ZipFile(p, 'r') as zf:
                         zf.extractall(ext_dir)
                     extracted_paths.append(ext_dir)
@@ -503,57 +521,68 @@ class PageListWidget(QWidget):
         unique_entries = []
         for entry in discovered_entries:
             p = entry["path"]
-            if p not in seen_paths:
+            if p not in seen_paths and p not in existing_paths:
                 seen_paths.add(p)
                 unique_entries.append(entry)
 
         unique_entries.sort(key=lambda it: natural_sort_path_key(it["path"]))
 
-        existing_paths = {item["path"] for item in self.items_data}
-        new_items = []
-        cache_mgr = get_cache_manager()
+        status_map = cache_mgr.batch_cache_status([e["path"] for e in unique_entries])
+        prepared_items: List[Dict[str, Any]] = []
         for entry in unique_entries:
             path = entry["path"]
-            if path not in existing_paths:
-                existing_paths.add(path)
-                c_status = cache_mgr.has_cache(path)
-                if (c_status["blocks"] and (c_status["rendered"] or c_status["erased"])) and cache_mgr.is_fully_translated(path):
-                    status = "completed"
-                    status_text = "已完成(缓存)"
-                elif c_status["erased"]:
-                    status = "processing"
-                    status_text = "已擦除(缓存)"
-                else:
-                    status = "queued"
-                    status_text = "等待中"
+            c_status = status_map.get(path, {})
+            if c_status.get("fully_translated"):
+                status = "completed"
+                status_text = "已完成(缓存)"
+            elif c_status.get("erased"):
+                status = "processing"
+                status_text = "已擦除(缓存)"
+            else:
+                status = "queued"
+                status_text = "等待中"
 
-                saved_style = None
-                try:
-                    c_paths = cache_mgr.get_cache_paths(path, create_dir=False)
-                    if os.path.exists(c_paths.get("style_json", "")):
-                        saved_style = cache_mgr.load_page_cache(path, load_images=False).get("page_style")
-                except Exception:
-                    saved_style = None
+            prepared_items.append({
+                "id": str(uuid.uuid4()),
+                "path": path,
+                "rel_path": entry["rel_path"],
+                "root_dir": entry["root_dir"],
+                "status": status,
+                "status_text": status_text,
+                "style": c_status.get("page_style"),
+            })
 
-                item_data = {
-                    "id": str(uuid.uuid4()),
-                    "path": path,
-                    "rel_path": entry["rel_path"],
-                    "root_dir": entry["root_dir"],
-                    "status": status,
-                    "status_text": status_text,
-                    "style": saved_style,
-                }
-                new_items.append(item_data)
-                self.items_data.append(item_data)
+        return prepared_items, extracted_temp_dirs
 
-        sync_thumbs = len(new_items) <= 3
+    def _insert_prepared_items(
+        self,
+        prepared_items: List[Dict[str, Any]],
+        extracted_temp_dirs: List[str],
+    ) -> int:
+        """Inserts pre-scanned items into the QListWidget on the GUI thread."""
+        self._temp_archive_dirs.extend(extracted_temp_dirs)
+
+        existing_paths = {item["path"] for item in self.items_data}
+        new_items: List[Dict[str, Any]] = []
+        for data in prepared_items:
+            if data["path"] not in existing_paths:
+                existing_paths.add(data["path"])
+                new_items.append(data)
+                self.items_data.append(data)
+
+        if not new_items:
+            return 0
+
+        sync_thumbs = len(new_items) <= 3 and len(self.items_data) <= 3
         self.list_widget.setUpdatesEnabled(False)
         try:
-            for data in new_items:
+            for idx, data in enumerate(new_items):
                 list_item = QListWidgetItem(self.list_widget)
                 list_item.setSizeHint(QSize(188, 56))
-                widget = PageItemWidget(data, self.list_widget, sync_thumb=sync_thumbs)
+                # Higher QThreadPool priority runs first: top visible pages get highest priority
+                widget = PageItemWidget(
+                    data, self.list_widget, sync_thumb=sync_thumbs, thumb_priority=max(0, 50000 - idx)
+                )
                 widget.sig_remove.connect(self.remove_item)
                 widget.sig_edit_style.connect(self.sig_edit_page_style.emit)
                 self.list_widget.addItem(list_item)
@@ -566,6 +595,65 @@ class PageListWidget(QWidget):
 
         if self.list_widget.count() > 0 and self.list_widget.currentRow() < 0:
             self.list_widget.setCurrentRow(0)
+
+        return len(new_items)
+
+    def add_paths(self, paths: List[str]):
+        """
+        Adds image paths or scans directories recursively, sorting them naturally
+        across subdirectories and deduplicating against existing entries.
+        Preserves relative subfolder hierarchy and root directory metadata.
+        """
+        existing_paths = {item["path"] for item in self.items_data}
+        prepared_items, extracted_temp_dirs = self._discover_and_prepare_items(
+            paths, existing_paths, get_cache_manager()
+        )
+        self._insert_prepared_items(prepared_items, extracted_temp_dirs)
+
+    def add_paths_async(
+        self,
+        paths: List[str],
+        on_finished: Optional[Callable[[int], None]] = None,
+    ) -> None:
+        """
+        Runs directory scanning, zip/cbz extraction, and batched cache indexing
+        on a background daemon thread so large chapter/archive imports never freeze the UI.
+        """
+        gen = self._import_gen
+        existing_snapshot = {item["path"] for item in self.items_data}
+        paths_copy = list(paths)
+        cache_mgr = get_cache_manager()
+
+        def _worker():
+            try:
+                prepared, temp_dirs = PageListWidget._discover_and_prepare_items(
+                    paths_copy, existing_snapshot, cache_mgr
+                )
+            except Exception:
+                prepared, temp_dirs = [], []
+            try:
+                self.sig_async_batch_ready.emit(gen, prepared, temp_dirs, on_finished)
+            except RuntimeError:
+                pass
+
+        threading.Thread(target=_worker, name="AMT-PageImport", daemon=True).start()
+
+    def _on_async_batch_ready(
+        self,
+        gen: int,
+        prepared_items: List[Dict[str, Any]],
+        extracted_temp_dirs: List[str],
+        on_finished: Any,
+    ) -> None:
+        if gen != self._import_gen:
+            import shutil
+            for d in extracted_temp_dirs:
+                if d and os.path.exists(d):
+                    shutil.rmtree(d, ignore_errors=True)
+            return
+        added_count = self._insert_prepared_items(prepared_items, extracted_temp_dirs)
+        if callable(on_finished):
+            on_finished(added_count)
 
     def eventFilter(self, watched, event):
         if watched == self.list_widget and event.type() == event.Type.KeyPress:
@@ -583,7 +671,9 @@ class PageListWidget(QWidget):
         for row in range(len(self.items_data)):
             if self.items_data[row]["id"] == item_id:
                 self.last_removed_row = row
-                self.items_data.pop(row)
+                removed = self.items_data.pop(row)
+                if removed.get("path"):
+                    AsyncThumbnailManager.instance().invalidate(removed["path"])
                 self.list_widget.takeItem(row)
                 self._item_widgets.pop(item_id, None)
                 self._update_count()
@@ -603,6 +693,7 @@ class PageListWidget(QWidget):
 
     def clear_all(self):
         """Clears all pages from queue and reclaims temporary archive directories."""
+        self._import_gen += 1
         self.last_removed_row = -1
         self.items_data.clear()
         self._item_widgets.clear()
@@ -785,11 +876,14 @@ class PageListWidget(QWidget):
                 self, "选择漫画图片", "", "漫画图片 (*.png *.jpg *.jpeg *.webp *.bmp);;所有文件 (*.*)"
             )
             if files:
-                self.add_paths(files)
+                if len(files) > 15 or any(f.lower().endswith(('.zip', '.cbz')) for f in files):
+                    self.add_paths_async(files)
+                else:
+                    self.add_paths(files)
         elif chosen == act_folder:
             folder = QFileDialog.getExistingDirectory(self, "选择漫画文件夹", "")
             if folder:
-                self.add_paths([folder])
+                self.add_paths_async([folder])
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
@@ -801,5 +895,5 @@ class PageListWidget(QWidget):
         urls = event.mimeData().urls()
         paths = [url.toLocalFile() for url in urls if url.isLocalFile()]
         if paths:
-            self.add_paths(paths)
+            self.add_paths_async(paths)
             event.acceptProposedAction()

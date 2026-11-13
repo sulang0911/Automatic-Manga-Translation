@@ -122,10 +122,11 @@ def test_page_style_dialog_onomatopoeia_combo(qapp):
     dialog.close()
 
 
-def test_settings_dialog_onomatopoeia_combo(qapp, tmp_path):
+def test_settings_dialog_onomatopoeia_combo(qapp, tmp_path, monkeypatch):
     """
     Verifies SettingsDialog loads and saves onomatopoeia_mode to config.
     """
+    monkeypatch.chdir(tmp_path)
     cfg = AppConfig()
     cfg.style.onomatopoeia_mode = OnomatopoeiaMode.NORMAL.value
     dialog = SettingsDialog(config=cfg)

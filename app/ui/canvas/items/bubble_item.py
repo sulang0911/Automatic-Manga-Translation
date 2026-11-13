@@ -68,14 +68,14 @@ class BubbleItem(QGraphicsRectItem):
         self._drag_start_scene_pos: Optional[QPointF] = None
 
         if isinstance(self.block_data, dict):
-            if "_orig_box" not in self.block_data:
+            if not self.block_data.get("_orig_box"):
                 self.block_data["_orig_box"] = [
                     float(self.block_data.get("xmin", 0.0)),
                     float(self.block_data.get("ymin", 0.0)),
                     float(self.block_data.get("xmax", 0.0)),
                     float(self.block_data.get("ymax", 0.0)),
                 ]
-            if self.block_data.get("polygon") and "_orig_polygon" not in self.block_data:
+            if self.block_data.get("polygon") and not self.block_data.get("_orig_polygon"):
                 self.block_data["_orig_polygon"] = list(self.block_data["polygon"])
 
         self._update_geometry_from_data()
@@ -300,7 +300,7 @@ class BubbleItem(QGraphicsRectItem):
         self.block_data["xmax"] = round(max(0.0, min(100.0, ((p.x() + r.width()) / self.img_w) * 100.0)), 2)
         self.block_data["ymax"] = round(max(0.0, min(100.0, ((p.y() + r.height()) / self.img_h) * 100.0)), 2)
         if getattr(self, "_is_moving_body", False) or getattr(self, "_active_handle", HANDLE_NONE) != HANDLE_NONE:
-            if self.block_data.get("polygon") and "_orig_polygon" not in self.block_data:
+            if self.block_data.get("polygon") and not self.block_data.get("_orig_polygon"):
                 self.block_data["_orig_polygon"] = list(self.block_data["polygon"])
             self.block_data["polygon"] = None
 

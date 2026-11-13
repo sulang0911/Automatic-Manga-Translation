@@ -52,11 +52,18 @@ def configure_low_resource_runtime(max_vram_fraction: float = 0.72) -> None:
     _VRAM_FRACTION_CONFIGURED = True
 
     try:
-        if HAS_TORCH and torch.cuda.is_available():
-            if hasattr(torch.backends, "cudnn"):
-                torch.backends.cudnn.benchmark = False
-            if hasattr(torch.cuda, "set_per_process_memory_fraction"):
-                torch.cuda.set_per_process_memory_fraction(max_vram_fraction, 0)
+        if HAS_TORCH:
+            try:
+                torch.set_num_threads(1)
+                if hasattr(torch, "set_num_interop_threads"):
+                    torch.set_num_interop_threads(1)
+            except Exception:
+                pass
+            if torch.cuda.is_available():
+                if hasattr(torch.backends, "cudnn"):
+                    torch.backends.cudnn.benchmark = False
+                if hasattr(torch.cuda, "set_per_process_memory_fraction"):
+                    torch.cuda.set_per_process_memory_fraction(max_vram_fraction, 0)
     except Exception:
         pass
 
@@ -197,3 +204,102 @@ def cleanup_gpu_memory(trim_ram: bool = True) -> None:
         pass
     if trim_ram:
         trim_process_working_set()
+
+
+_DETACHED_QTHREADS: list = []
+
+
+def _disconnect_signal_safely(sig) -> None:
+    """Disconnect all receivers from a pyqtSignal without raising if empty/deleted."""
+    try:
+        sig.disconnect()
+    except (TypeError, RuntimeError):
+        pass
+
+
+def _release_detached_qthread(worker) -> None:
+    """Release a finished detached QThread reference on the GUI thread."""
+    try:
+        if worker.isRunning():
+            return
+    except RuntimeError:
+        pass
+    try:
+        _DETACHED_QTHREADS.remove(worker)
+    except ValueError:
+        pass
+    try:
+        worker.deleteLater()
+    except RuntimeError:
+        pass
+
+
+def retire_qthread(worker, wait_ms: int = 250, signals: tuple = ()) -> None:
+    """
+    Safely stop or detach a QThread before its parent/reference is dropped.
+
+    Prevents Qt's fatal `QThread: Destroyed while thread '' is still running`
+    abort (-1073740791) when a dialog/window closes or a worker slot is
+    replaced while the worker thread is still blocked in HTTP or C++ code.
+    """
+    if worker is None:
+        return
+
+    for sig in signals:
+        _disconnect_signal_safely(sig)
+
+    try:
+        if hasattr(worker, "cancel"):
+            worker.cancel()
+    except Exception:
+        pass
+
+    try:
+        running = worker.isRunning()
+    except RuntimeError:
+        return
+
+    if not running:
+        try:
+            if worker.parent() is not None:
+                worker.setParent(None)
+            worker.deleteLater()
+        except RuntimeError:
+            pass
+        return
+
+    try:
+        worker.quit()
+    except RuntimeError:
+        return
+
+    try:
+        finished = worker.wait(max(0, int(wait_ms)))
+    except RuntimeError:
+        return
+
+    if finished:
+        try:
+            if worker.parent() is not None:
+                worker.setParent(None)
+            worker.deleteLater()
+        except RuntimeError:
+            pass
+        return
+
+    # Still running after wait_ms: un-parent and pin until `finished` emits so
+    # QThread::~QThread() is never called while the OS thread is still alive.
+    try:
+        from PyQt6.QtCore import Qt
+
+        worker.setParent(None)
+        if worker not in _DETACHED_QTHREADS:
+            _DETACHED_QTHREADS.append(worker)
+        worker.finished.connect(
+            lambda w=worker: _release_detached_qthread(w),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        if not worker.isRunning():
+            _release_detached_qthread(worker)
+    except RuntimeError:
+        pass

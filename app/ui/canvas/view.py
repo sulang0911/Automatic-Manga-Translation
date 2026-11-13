@@ -661,16 +661,14 @@ class MangaCanvasView(QGraphicsView):
         if erased_cv is not None:
             self.erased_cv = erased_cv
         bg_item = getattr(self._scene, "background_item", None)
-        existing_orig = getattr(bg_item, "_original_pixmap", None) if bg_item else None
-        existing_eras = getattr(bg_item, "_erased_pixmap", None) if bg_item else None
+        existing_orig = getattr(bg_item, "_original_pixmap", QPixmap()) if bg_item else QPixmap()
+        existing_eras = QPixmap() if erased_cv is not None else (getattr(bg_item, "_erased_pixmap", QPixmap()) if bg_item else QPixmap())
 
-        orig_pix = existing_orig if (existing_orig is not None and not existing_orig.isNull()) else cvimg_to_qpixmap(self.original_cv)
-        trans_pix = cvimg_to_qpixmap(self.translated_cv)
-        if erased_cv is None and existing_eras is not None and not existing_eras.isNull():
-            eras_pix = existing_eras
-        else:
-            eras_pix = cvimg_to_qpixmap(self.erased_cv)
-        self._scene.set_images(orig_pix, trans_pix, eras_pix)
+        need_trans = self.view_mode in ("translated", "split_slider", "side_by_side")
+        trans_pix = cvimg_to_qpixmap(self.translated_cv) if (need_trans and self.translated_cv is not None and self.translated_cv.size > 0) else QPixmap()
+
+        self._scene.set_images(existing_orig, trans_pix, existing_eras)
+        self._ensure_pixmaps_for_mode(self.view_mode)
 
     def select_bubble_by_id(self, block_id: str):
         """Selects and focuses the BubbleItem corresponding to block_id on canvas."""

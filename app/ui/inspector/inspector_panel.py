@@ -132,6 +132,7 @@ class InspectorPanel(QFrame):
         self.bubble_list.customContextMenuRequested.connect(self._on_bubble_list_context_menu)
 
         del_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Delete), self.bubble_list)
+        del_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
         del_shortcut.activated.connect(self._on_delete_block)
 
         top_layout.addWidget(self.bubble_list)
@@ -1068,7 +1069,7 @@ class InspectorPanel(QFrame):
         else:
             merged_trans = tt1 or tt2
 
-        prev_merged = list(first.get("_merged_boxes", []))
+        prev_merged = list(first.get("_merged_boxes") or [])
         for src_b in (b1, b2):
             prev_merged.append({
                 "xmin": float(src_b.get("xmin", 0.0)),
@@ -1079,7 +1080,10 @@ class InspectorPanel(QFrame):
             })
             if src_b.get("_orig_box"):
                 ob = src_b["_orig_box"]
-                prev_merged.append({"xmin": ob[0], "ymin": ob[1], "xmax": ob[2], "ymax": ob[3]})
+                prev_merged.append({
+                    "xmin": ob[0], "ymin": ob[1], "xmax": ob[2], "ymax": ob[3],
+                    "polygon": src_b.get("_orig_polygon"),
+                })
             if src_b.get("_merged_boxes"):
                 prev_merged.extend(src_b["_merged_boxes"])
         first["_merged_boxes"] = prev_merged

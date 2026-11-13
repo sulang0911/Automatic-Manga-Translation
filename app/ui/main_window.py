@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QButtonGroup, QFrame, QSlider, QCheckBox, QToolButton, QFileDialog, QComboBox,
     QApplication, QTextEdit, QPlainTextEdit, QLineEdit, QMenu
 )
-from PyQt6.QtCore import Qt, QSize, QTimer
+from PyQt6.QtCore import Qt, QSize, QTimer, QThread, pyqtSignal
 from PyQt6.QtGui import QIcon, QKeySequence, QShortcut, QColor, QDragEnterEvent, QDropEvent
 
 from app.core.config import AppConfig
@@ -23,8 +23,6 @@ from app.core.models import TranslationBlock, StyleConfig
 from app.core.typography.engine import TypographyEngine
 from app.core.inpaint.color_analyzer import refresh_blocks_text_colors
 from app.core.undo_manager import UndoManager, PageSnapshot, are_blocks_equal
-from app.core.pipeline.pipeline_worker import PipelineWorker
-from app.core.pipeline.batch_worker import BatchWorker
 from app.core.pipeline.exporter import MangaExporter
 from app.core.cache.cache_manager import get_cache_manager, safe_cv2_imread, safe_cv2_imwrite
 from app.ui.theme.tokens import get_tokens, build_stylesheet
@@ -43,6 +41,102 @@ from app.ui.sidebar.drop_zone import DropZoneWidget
 from app.ui.inspector.inspector_panel import InspectorPanel
 from app.ui.settings.settings_dialog import SettingsDialog
 from app.ui.settings.page_style_dialog import PageStyleDialog
+
+
+class _ChapterArchiveExportWorker(QThread):
+    """Exports all translated chapter pages to a single PDF or ZIP off the UI thread."""
+
+    sig_progress = pyqtSignal(int, str)
+    sig_finished = pyqtSignal(bool, str)
+
+    def __init__(self, items: List[Dict[str, Any]], config: Dict[str, Any], output_path: str, fmt: str, parent=None):
+        super().__init__(parent)
+        self.items = items
+        self.config = config
+        self.output_path = output_path
+        self.fmt = fmt
+        self._is_cancelled = False
+
+    def cancel(self):
+        self._is_cancelled = True
+
+    def run(self):
+        import shutil
+        import tempfile
+
+        stage_dir = tempfile.mkdtemp(prefix="amt_archive_exp_")
+        cache_mgr = get_cache_manager()
+        typo_eng = TypographyEngine()
+        staged_paths: List[str] = []
+        total = max(1, len(self.items))
+        try:
+            for idx, item in enumerate(self.items):
+                if self._is_cancelled:
+                    self.sig_finished.emit(False, "整话导出已取消。")
+                    return
+                img_path = item.get("path", "")
+                if not img_path or not os.path.exists(img_path):
+                    continue
+                is_done = str(item.get("status", "")).lower() in ("completed", "done") or cache_mgr.is_fully_translated(img_path)
+                if not is_done:
+                    continue
+
+                stem = os.path.splitext(os.path.basename(img_path))[0]
+                c_paths = cache_mgr.get_cache_paths(img_path, create_dir=False)
+                cached_rendered = None
+                for key in ("rendered_webp", "rendered_png"):
+                    cand = c_paths.get(key, "")
+                    if cand and os.path.exists(cand):
+                        cached_rendered = cand
+                        break
+
+                if cached_rendered:
+                    ext = os.path.splitext(cached_rendered)[1].lower()
+                    dst = os.path.join(stage_dir, f"{idx + 1:04d}_{stem}{ext}")
+                    try:
+                        os.link(cached_rendered, dst)
+                    except OSError:
+                        shutil.copy2(cached_rendered, dst)
+                    staged_paths.append(dst)
+                else:
+                    full_c = cache_mgr.load_page_cache(img_path, load_images=True)
+                    base_bg = full_c.get("erased_img")
+                    if base_bg is None:
+                        base_bg = safe_cv2_imread(img_path)
+                    rendered = None
+                    if base_bg is not None:
+                        c_blocks = full_c.get("blocks", [])
+                        eff_cfg = item.get("style") or full_c.get("page_style") or self.config
+                        rendered = typo_eng.render_translations(base_bg, c_blocks, eff_cfg)
+                    if rendered is not None:
+                        cache_mgr.save_page_cache(img_path, rendered_img=rendered)
+                        dst = os.path.join(stage_dir, f"{idx + 1:04d}_{stem}.png")
+                        safe_cv2_imwrite(dst, rendered, ext=".png")
+                        staged_paths.append(dst)
+                    del full_c, base_bg, rendered
+
+                pct = min(85, int(((idx + 1) / total) * 85))
+                self.sig_progress.emit(pct, f"正在收集页面 ({idx + 1}/{total})...")
+
+            if not staged_paths:
+                self.sig_finished.emit(False, "当前列表中暂无已翻译或已缓存的页面可导出！")
+                return
+
+            self.sig_progress.emit(90, f"正在打包 {os.path.basename(self.output_path)}...")
+            if self.fmt == "pdf":
+                ok = MangaExporter.compile_chapter_pdf(staged_paths, self.output_path)
+            else:
+                ok = MangaExporter.package_chapter_zip(staged_paths, self.output_path)
+
+            if ok:
+                self.sig_progress.emit(100, "导出完成")
+                self.sig_finished.emit(True, f"成功导出 {len(staged_paths)} 页至: {os.path.basename(self.output_path)}")
+            else:
+                self.sig_finished.emit(False, "整话导出失败，请检查目标路径权限。")
+        except Exception as e:
+            self.sig_finished.emit(False, f"整话导出出错: {e}")
+        finally:
+            shutil.rmtree(stage_dir, ignore_errors=True)
 
 
 class MainWindow(QMainWindow):
@@ -79,14 +173,16 @@ class MainWindow(QMainWindow):
         if hasattr(self.config, "glossary"):
             TranslationManager.get_instance().set_glossary(self.config.glossary)
 
-        self.active_worker: Optional[PipelineWorker] = None
-        self.active_batch_worker: Optional[BatchWorker] = None
+        self.active_worker: Optional["PipelineWorker"] = None
+        self.active_batch_worker: Optional["BatchWorker"] = None
+        self.block_worker: Optional["BlockOcrTranslateWorker"] = None
+        self.active_archive_worker: Optional[_ChapterArchiveExportWorker] = None
 
         # 300ms Debounce Timer for live editing re-renders
         self._rerender_timer = QTimer(self)
         self._rerender_timer.setSingleShot(True)
         self._rerender_timer.setInterval(300)
-        self._rerender_timer.timeout.connect(self._re_render_current_page)
+        self._rerender_timer.timeout.connect(lambda: self._re_render_current_page(async_cache_save=True))
 
         self._init_ui()
         self._init_shortcuts()
@@ -181,7 +277,7 @@ class MainWindow(QMainWindow):
 
         # 3C. Right: Inspector Panel Card
         self.inspector_panel = InspectorPanel(config=self.config, parent=self)
-        self.inspector_panel.sig_re_render_requested.connect(self._re_render_current_page)
+        self.inspector_panel.sig_re_render_requested.connect(lambda: self._re_render_current_page(async_cache_save=True))
         self.inspector_panel.sig_block_updated.connect(self._on_block_updated_from_inspector)
         self.inspector_panel.sig_block_deleted.connect(self._on_block_deleted)
         self.inspector_panel.sig_translate_page_requested.connect(lambda: self._start_pipeline_for_page(mode="translate_only"))
@@ -225,7 +321,7 @@ class MainWindow(QMainWindow):
 
         # Drop Zone
         self.drop_zone = DropZoneWidget(self.sidebar_drawer)
-        self.drop_zone.sig_paths_dropped.connect(self._on_paths_dropped)
+        self.drop_zone.sig_paths_dropped.connect(lambda p: self._on_paths_dropped(p, async_mode=True))
         drawer_layout.addWidget(self.drop_zone)
 
         # Page List
@@ -401,6 +497,11 @@ class MainWindow(QMainWindow):
         act_export_curr.triggered.connect(self._export_current_page)
         act_export_all = export_menu.addAction(get_icon("folder_open", color="#30D158", size=14), "批量导出全本已翻译页面...")
         act_export_all.triggered.connect(self._export_all_pages)
+        export_menu.addSeparator()
+        act_export_pdf = export_menu.addAction(get_icon("download", color="#FF9F0A", size=14), "导出整话为 PDF...")
+        act_export_pdf.triggered.connect(self._export_chapter_pdf)
+        act_export_zip = export_menu.addAction(get_icon("download", color="#BF5AF2", size=14), "导出整话为 ZIP 压缩包...")
+        act_export_zip.triggered.connect(self._export_chapter_zip)
         self.export_btn.setMenu(export_menu)
         layout.addWidget(self.export_btn)
 
@@ -676,22 +777,41 @@ class MainWindow(QMainWindow):
             if url.isLocalFile():
                 paths.append(url.toLocalFile())
         if paths:
-            self._on_paths_dropped(paths)
+            self._on_paths_dropped(paths, async_mode=True)
             event.acceptProposedAction()
 
-    def _on_paths_dropped(self, paths: List[str]):
-        initial_count = len(self.page_list.items_data)
-        self.page_list.add_paths(paths)
-        new_count = len(self.page_list.items_data) - initial_count
+    def _finalize_paths_added(self, new_count: int, raw_paths: List[str]):
         if len(self.page_list.items_data) > 0:
             self.drop_zone.set_compact(True)
         if new_count > 0:
+            if hasattr(self, "status_label"):
+                self.status_label.setText(f"就绪 | 已载入 {new_count} 页")
             self.toast.show_message(f"已成功载入 {new_count} 个漫画页面！", "success")
             if self.current_image_data is None and self.page_list.items_data:
                 self.page_list.list_widget.setCurrentRow(0)
                 self._on_page_selected(self.page_list.items_data[0])
-        elif paths:
+        elif raw_paths:
+            if hasattr(self, "status_label"):
+                self.status_label.setText("就绪")
             self.toast.show_message("所选路径已全部在列表中或未检测到支持的漫画图片。", "info")
+
+    def _on_paths_dropped(self, paths: List[str], async_mode: bool = False):
+        use_async = async_mode or len(paths) > 15 or any(
+            os.path.isfile(p) and p.lower().endswith((".zip", ".cbz"))
+            for p in paths if p
+        )
+        if use_async:
+            if hasattr(self, "status_label"):
+                self.status_label.setText("正在后台扫描与加载漫画页面...")
+            self.page_list.add_paths_async(
+                paths, on_finished=lambda n, raw=paths: self._finalize_paths_added(n, raw)
+            )
+            return
+
+        initial_count = len(self.page_list.items_data)
+        self.page_list.add_paths(paths)
+        new_count = len(self.page_list.items_data) - initial_count
+        self._finalize_paths_added(new_count, paths)
 
     def _on_page_removed(self, page_id: str):
         total = len(self.page_list.items_data)
@@ -912,10 +1032,10 @@ class MainWindow(QMainWindow):
     def _on_page_selected(self, item_data: Dict[str, Any]):
         path = item_data.get("path")
         if path and os.path.exists(path):
-            if hasattr(self, "_rerender_timer") and self._rerender_timer.isActive():
+            if self.current_image_data and self.current_image_data.get("path") != path:
+                self._flush_pending_edits()
+            elif hasattr(self, "_rerender_timer") and self._rerender_timer.isActive():
                 self._rerender_timer.stop()
-                if self.current_image_data and self.current_image_data.get("path") != path:
-                    self._re_render_current_page()
             self.current_image_data = item_data
             self._evict_inactive_page_memory(path)
 
@@ -1172,7 +1292,7 @@ class MainWindow(QMainWindow):
                 self.undo_manager.push(self._pending_drag_snapshot)
                 self._update_undo_redo_ui()
         self._pending_drag_snapshot = None
-        self._re_render_current_page()
+        self._re_render_current_page(async_cache_save=True)
 
     def _on_bubble_created(self, new_block: Dict[str, Any]):
         """Handles manual bubble creation from canvas drag selection."""
@@ -1254,6 +1374,8 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(10)
         self.status_label.setText("正在对框选区域执行 OCR 识别与翻译...")
 
+        self._retire_worker_slot("block_worker", wait_ms=200)
+
         from app.core.pipeline.block_worker import BlockOcrTranslateWorker
         self.block_worker = BlockOcrTranslateWorker(
             image_path=image_path,
@@ -1270,6 +1392,9 @@ class MainWindow(QMainWindow):
         self.block_worker.start()
 
     def _on_block_ocr_completed(self, result: Dict[str, Any]):
+        sender = self.sender()
+        if sender is not None and sender is not self.block_worker:
+            return
         target_block = result["target_block"]
         all_blocks = result["blocks"]
         erased_img = result["erased_img"]
@@ -1307,6 +1432,9 @@ class MainWindow(QMainWindow):
             self.status_label.setText("框选区域未检测到文字")
 
     def _on_block_ocr_error(self, err_msg: str):
+        sender = self.sender()
+        if sender is not None and sender is not self.block_worker:
+            return
         self.progress_bar.hide()
         self.toast.show_message(err_msg, "error")
         self.status_label.setText(f"框选识别失败: {err_msg}")
@@ -1402,12 +1530,7 @@ class MainWindow(QMainWindow):
                             setattr(b, k, v)
                 break
         self.canvas_view.update_bubble_item(block_data)
-        path = self.current_image_data.get("path")
-        if path and blocks is not None:
-            try:
-                get_cache_manager().save_page_cache(path, blocks=blocks)
-            except Exception:
-                pass
+        self.current_image_data["_dirty_blocks"] = True
         self._schedule_rerender()
 
     def _on_block_deleted(self, block_id: str):
@@ -1421,27 +1544,20 @@ class MainWindow(QMainWindow):
                 return
 
             # Merge any pre-drag or merged box metadata from canvas BubbleItem / InspectorPanel
-            for it in getattr(self.canvas_view, "bubble_items", []):
-                if str(it.block_data.get("id", "")) == str(block_id):
+            meta_sources = [it.block_data for it in getattr(self.canvas_view, "bubble_items", [])] + [
+                ib for ib in getattr(self.inspector_panel, "current_blocks", []) if isinstance(ib, dict)
+            ]
+            for src in meta_sources:
+                if str(src.get("id", "")) == str(block_id):
                     for meta_k in ("_orig_box", "_orig_polygon", "_merged_boxes"):
-                        if meta_k in it.block_data:
-                            if isinstance(target_block, dict):
-                                target_block.setdefault(meta_k, it.block_data[meta_k])
-                            else:
-                                if getattr(target_block, meta_k, None) is None:
-                                    setattr(target_block, meta_k, it.block_data[meta_k])
-                    break
-
-            for ib in getattr(self.inspector_panel, "current_blocks", []):
-                if isinstance(ib, dict) and str(ib.get("id", "")) == str(block_id):
-                    for meta_k in ("_orig_box", "_orig_polygon", "_merged_boxes"):
-                        if meta_k in ib:
-                            if isinstance(target_block, dict):
-                                target_block.setdefault(meta_k, ib[meta_k])
-                            else:
-                                if getattr(target_block, meta_k, None) is None:
-                                    setattr(target_block, meta_k, ib[meta_k])
-                    break
+                        val = src.get(meta_k)
+                        if val is None:
+                            continue
+                        if isinstance(target_block, dict):
+                            if target_block.get(meta_k) is None:
+                                target_block[meta_k] = val
+                        elif getattr(target_block, meta_k, None) is None:
+                            setattr(target_block, meta_k, val)
 
             path = self.current_image_data.get("path")
             original_cv = getattr(self.canvas_view, "original_cv", None)
@@ -1533,8 +1649,11 @@ class MainWindow(QMainWindow):
             
         self._start_pipeline_for_page(mode="inpaint_only")
 
-    def _re_render_current_page(self):
+    def _re_render_current_page(self, async_cache_save: bool = False, save_erased: bool = False):
         """Performs live typography re-render onto canvas using current style configuration."""
+        if hasattr(self, "_rerender_timer") and self._rerender_timer.isActive():
+            self._rerender_timer.stop()
+
         if not self.current_image_data:
             return
 
@@ -1560,6 +1679,16 @@ class MainWindow(QMainWindow):
         if base_img is None:
             base_img = getattr(self.canvas_view, "original_cv", None)
         if base_img is None:
+            path_fallback = self.current_image_data.get("path")
+            if path_fallback and self.current_image_data.pop("_dirty_blocks", False):
+                try:
+                    get_cache_manager().save_page_cache(
+                        path_fallback,
+                        blocks=blocks,
+                        page_style=self.current_image_data.get("style"),
+                    )
+                except Exception:
+                    pass
             return
 
         path = self.current_image_data.get("path")
@@ -1572,12 +1701,14 @@ class MainWindow(QMainWindow):
             self.canvas_view.update_translated_image(rendered, erased_cv=base_img)
             if path:
                 cache_mgr = get_cache_manager()
-                cache_mgr.save_page_cache(
+                save_fn = cache_mgr.save_page_cache_async if async_cache_save else cache_mgr.save_page_cache
+                save_fn(
                     path,
                     blocks=[],
                     erased_img=base_img,
                     rendered_img=rendered
                 )
+                self.current_image_data["_dirty_blocks"] = False
             self.status_label.setText("气泡已删除，已还原原图底图")
             return
 
@@ -1632,14 +1763,17 @@ class MainWindow(QMainWindow):
                     for b in blocks
                 ]
                 cache_mgr = get_cache_manager()
-                has_eras = cache_mgr.has_cache(path).get("erased", False)
-                cache_mgr.save_page_cache(
+                c_paths = cache_mgr.get_cache_paths(path, create_dir=False)
+                has_eras = (not save_erased) and (os.path.exists(c_paths["erased_webp"]) or os.path.exists(c_paths["erased_png"]))
+                save_fn = cache_mgr.save_page_cache_async if async_cache_save else cache_mgr.save_page_cache
+                save_fn(
                     path,
                     blocks=full_blocks_to_save,
                     erased_img=None if has_eras else base_img,
                     rendered_img=rendered,
                     page_style=self.current_image_data.get("style")
                 )
+                self.current_image_data["_dirty_blocks"] = False
                 has_any_trans = any(
                     bool(getattr(b, "translated_text", "") if hasattr(b, "translated_text") else b.get("translated_text", ""))
                     for b in full_blocks_to_save
@@ -2216,6 +2350,8 @@ class MainWindow(QMainWindow):
             self.toast.show_message("请先选择或拖入一张漫画图片！", "warning")
             return
 
+        self._flush_pending_edits()
+        get_cache_manager().flush_pending_writes(timeout=5.0)
         path = self.current_image_data.get("path")
         if not path or not os.path.exists(path):
             self.toast.show_message(f"图片路径不存在: {path}", "error")
@@ -2234,6 +2370,9 @@ class MainWindow(QMainWindow):
         blocks = None if mode == "full" else self.current_image_data.get("blocks")
         erased = None if mode in ("full", "inpaint_only") else self.current_image_data.get("erased_img")
 
+        self._retire_worker_slot("active_worker", wait_ms=200)
+
+        from app.core.pipeline.pipeline_worker import PipelineWorker
         self.active_worker = PipelineWorker(
             image_path=path,
             config=self.config.to_dict(),
@@ -2251,10 +2390,16 @@ class MainWindow(QMainWindow):
         self.active_worker.start()
 
     def _on_pipeline_progress(self, pct: int, msg: str):
+        sender = self.sender()
+        if sender is not None and sender not in (self.active_worker, self.block_worker):
+            return
         self.progress_bar.setValue(pct)
         self.status_label.setText(f"{msg} ({pct}%)")
 
     def _on_pipeline_step_done(self, step_name: str, result_data: Any):
+        sender = self.sender()
+        if sender is not None and sender is not self.active_worker:
+            return
         if step_name == "ocr":
             if self.current_image_data is not None:
                 self.current_image_data["blocks"] = result_data
@@ -2273,6 +2418,9 @@ class MainWindow(QMainWindow):
             self.canvas_view.translated_cv = result_data
 
     def _on_pipeline_finished(self, result: Dict[str, Any]):
+        sender = self.sender()
+        if sender is not None and sender is not self.active_worker:
+            return
         self.run_btn.setText("翻译单页")
         self.run_btn.setIcon(get_icon("play", color="#FFFFFF", size=13))
         self.progress_bar.hide()
@@ -2310,6 +2458,9 @@ class MainWindow(QMainWindow):
         self.toast.show_message("漫画翻译已成功完成！", "success")
 
     def _on_pipeline_error(self, err_msg: str):
+        sender = self.sender()
+        if sender is not None and sender is not self.active_worker:
+            return
         self.run_btn.setText("翻译单页")
         self.run_btn.setIcon(get_icon("play", color="#FFFFFF", size=13))
         self.progress_bar.hide()
@@ -2328,6 +2479,8 @@ class MainWindow(QMainWindow):
         retranslate_from_cache: bool = False
     ):
         """Launches BatchWorker QThread for chapter queue."""
+        self._flush_pending_edits()
+        get_cache_manager().flush_pending_writes(timeout=5.0)
         if self.active_batch_worker and self.active_batch_worker.isRunning():
             self.active_batch_worker.cancel()
             if hasattr(self, "batch_pill"):
@@ -2410,6 +2563,9 @@ class MainWindow(QMainWindow):
             export_dir = os.path.abspath(export_dir)
             os.makedirs(export_dir, exist_ok=True)
 
+        self._retire_worker_slot("active_batch_worker", wait_ms=200)
+
+        from app.core.pipeline.batch_worker import BatchWorker
         self.active_batch_worker = BatchWorker(
             queue_items=items,
             config=self.config.to_dict(),
@@ -2425,6 +2581,9 @@ class MainWindow(QMainWindow):
         self.active_batch_worker.start()
 
     def _on_batch_progress(self, cur: int, total: int, filename: str, pct: int, msg: str):
+        sender = self.sender()
+        if sender is not None and sender is not self.active_batch_worker:
+            return
         overall = int(((cur - 1) / total) * 100 + (pct / total))
         self.progress_bar.setValue(overall)
         self.status_label.setText(f"批处理 ({cur}/{total}): {filename} - {msg}")
@@ -2432,6 +2591,9 @@ class MainWindow(QMainWindow):
             self.batch_pill.update_progress(cur, total, f"{filename} - {msg}")
 
     def _on_batch_item_completed(self, image_id: str, result: Dict[str, Any]):
+        sender = self.sender()
+        if sender is not None and sender is not self.active_batch_worker:
+            return
         self.page_list.update_item_status(image_id, "completed", "已完成")
         if not result.get("skipped", False):
             for it in getattr(self.page_list, "items_data", []):
@@ -2452,10 +2614,16 @@ class MainWindow(QMainWindow):
                 self._on_page_selected(self.current_image_data)
 
     def _on_batch_item_failed(self, image_id: str, error_msg: str):
+        sender = self.sender()
+        if sender is not None and sender is not self.active_batch_worker:
+            return
         short_err = error_msg.strip().split("\n")[-1][:20]
         self.page_list.update_item_status(image_id, "failed", f"失败: {short_err}")
 
     def _on_batch_finished(self, success_count: int, fail_count: int):
+        sender = self.sender()
+        if sender is not None and sender is not self.active_batch_worker:
+            return
         self.progress_bar.hide()
         if hasattr(self, "batch_pill"):
             self.batch_pill.show_finished(success_count, fail_count)
@@ -2475,8 +2643,28 @@ class MainWindow(QMainWindow):
         if self.current_image_data:
             self._on_page_selected(self.current_image_data)
 
+    def _flush_pending_edits(self):
+        """Flushes any debounced re-render or unsaved block metadata before export/switch/exit."""
+        if hasattr(self, "_rerender_timer") and self._rerender_timer.isActive():
+            self._rerender_timer.stop()
+            self._re_render_current_page()
+        elif self.current_image_data and self.current_image_data.pop("_dirty_blocks", False):
+            path = self.current_image_data.get("path")
+            blocks = self.current_image_data.get("blocks")
+            if path and blocks is not None:
+                try:
+                    get_cache_manager().save_page_cache(
+                        path,
+                        blocks=blocks,
+                        page_style=self.current_image_data.get("style"),
+                    )
+                except Exception:
+                    pass
+
     def _export_current_page(self):
         """Exports currently active translated manga page to high-res PNG/JPG/WebP/PDF."""
+        self._flush_pending_edits()
+
         if not self.current_image_data:
             self.toast.show_message("当前页面尚未翻译，无法导出！", "warning")
             return
@@ -2501,19 +2689,7 @@ class MainWindow(QMainWindow):
 
         ext = os.path.splitext(file_path)[1].lower()
         if ext == ".pdf":
-            # Save temporary image and compile PDF
-            import tempfile
-            import uuid
-            tmp_img = os.path.join(tempfile.gettempdir(), f"temp_export_{uuid.uuid4().hex[:8]}.png")
-            try:
-                safe_cv2_imwrite(tmp_img, self.canvas_view.translated_cv)
-                success = MangaExporter.compile_chapter_pdf([tmp_img], file_path)
-            finally:
-                if os.path.exists(tmp_img):
-                    try:
-                        os.remove(tmp_img)
-                    except Exception:
-                        pass
+            success = MangaExporter.export_single_image_pdf(self.canvas_view.translated_cv, file_path)
         else:
             fmt = "JPEG" if ext in [".jpg", ".jpeg"] else ("WEBP" if ext == ".webp" else "PNG")
             success = MangaExporter.export_single_image(
@@ -2530,6 +2706,9 @@ class MainWindow(QMainWindow):
 
     def _export_all_pages(self):
         """Batch exports all pages to an output folder with on-the-fly rendering."""
+        self._flush_pending_edits()
+        get_cache_manager().flush_pending_writes(timeout=5.0)
+
         items = self.page_list.items_data
         if not items:
             self.toast.show_message("当前列表无页面，无法执行批量导出！", "warning")
@@ -2546,6 +2725,61 @@ class MainWindow(QMainWindow):
 
         self.toast.show_message(f"开始批量导出至: {os.path.basename(chosen_dir)}", "info")
         self._start_batch(force_retranslate=False, export_dir=chosen_dir)
+
+    def _export_chapter_pdf(self):
+        """Exports all translated pages in the chapter into a single multi-page PDF."""
+        self._export_chapter_archive("pdf")
+
+    def _export_chapter_zip(self):
+        """Exports all translated pages in the chapter into a ZIP archive."""
+        self._export_chapter_archive("zip")
+
+    def _export_chapter_archive(self, fmt: str):
+        self._flush_pending_edits()
+        get_cache_manager().flush_pending_writes(timeout=5.0)
+
+        items = [dict(it) for it in self.page_list.items_data]
+        if not items:
+            self.toast.show_message("当前列表无页面，无法执行整话导出！", "warning")
+            return
+
+        active_arch = getattr(self, "active_archive_worker", None)
+        if active_arch is not None and active_arch.isRunning():
+            self.toast.show_message("正在执行整话导出任务，请稍候...", "info")
+            return
+
+        if fmt == "pdf":
+            title, default_name, filt = "导出整话为 PDF", "translated_chapter.pdf", "PDF Document (*.pdf)"
+        else:
+            title, default_name, filt = "导出整话为 ZIP 压缩包", "translated_chapter.zip", "ZIP Archive (*.zip)"
+
+        output_path, _ = QFileDialog.getSaveFileName(self, title, default_name, filt)
+        if not output_path:
+            return
+
+        cfg_dict = self.config.to_dict()
+        self.progress_bar.show()
+        self.progress_bar.setValue(0)
+        self.status_label.setText(f"正在准备导出整话 ({fmt.upper()})...")
+
+        self._retire_worker_slot("active_archive_worker", wait_ms=200)
+
+        worker = _ChapterArchiveExportWorker(items, cfg_dict, output_path, fmt, parent=self)
+        worker.sig_progress.connect(lambda pct, msg: (
+            self.progress_bar.setValue(pct),
+            self.status_label.setText(msg),
+        ))
+        worker.sig_finished.connect(self._on_chapter_archive_finished)
+        self.active_archive_worker = worker
+        worker.start()
+
+    def _on_chapter_archive_finished(self, ok: bool, msg: str):
+        sender = self.sender()
+        if sender is not None and sender is not self.active_archive_worker:
+            return
+        self.progress_bar.hide()
+        self.status_label.setText("就绪" if ok else f"导出失败: {msg}")
+        self.toast.show_message(msg, "success" if ok else "warning")
 
     # -------------------------------------------------------------------------
     # Undo / Redo Architecture (Ctrl+Z / Ctrl+Y)
@@ -2573,7 +2807,8 @@ class MainWindow(QMainWindow):
             blocks=blocks,
             erased_img=erased_img,
             style=style,
-            description=description
+            description=description,
+            copy_erased=False,
         )
 
     def _push_undo_snapshot(self, description: str = "操作"):
@@ -2680,16 +2915,11 @@ class MainWindow(QMainWindow):
         self.inspector_panel.set_blocks(restored_blocks)
         self._update_status_bubble_count(len(restored_blocks))
 
-        # 5. Persist to disk cache
-        if snapshot.page_path:
-            get_cache_manager().save_page_cache(
-                snapshot.page_path,
-                blocks=restored_blocks,
-                erased_img=self.current_image_data.get("erased_img")
-            )
-
-        # 6. Re-render typography onto canvas
-        self._re_render_current_page()
+        # 5-6. Coalesced async persistence + re-render typography onto canvas
+        self._re_render_current_page(
+            async_cache_save=True,
+            save_erased=(snapshot.erased_img is not None),
+        )
 
     def _update_undo_redo_ui(self):
         """Synchronizes toolbar buttons state and tooltips with undo/redo stack availability."""
@@ -2734,49 +2964,63 @@ class MainWindow(QMainWindow):
             valid_paths = [p for p in raw_paths if p and os.path.exists(p)]
             if not valid_paths:
                 return
-            self.page_list.add_paths(valid_paths)
-            if self.page_list.items_data:
-                self.drop_zone.set_compact(True)
-                active_path = data.get("active_path")
-                target_idx = 0
-                if active_path:
-                    for idx, it in enumerate(self.page_list.items_data):
-                        if it.get("path") == active_path:
-                            target_idx = idx
-                            break
-                self.page_list.list_widget.setCurrentRow(target_idx)
-                self._on_page_selected(self.page_list.items_data[target_idx])
+            active_path = data.get("active_path")
+
+            def _on_session_restored(_added: int):
+                if self.page_list.items_data:
+                    self.drop_zone.set_compact(True)
+                    if self.current_image_data is not None:
+                        return
+                    target_idx = 0
+                    if active_path:
+                        for idx, it in enumerate(self.page_list.items_data):
+                            if it.get("path") == active_path:
+                                target_idx = idx
+                                break
+                    self.page_list.list_widget.setCurrentRow(target_idx)
+                    self._on_page_selected(self.page_list.items_data[target_idx])
+
+            self.page_list.add_paths_async(valid_paths, on_finished=_on_session_restored)
         except Exception:
             pass
+
+    def _retire_worker_slot(self, worker_attr: str, wait_ms: int = 200) -> None:
+        """Cancels, disconnects UI signals, and safely retires/detaches a QThread slot."""
+        worker = getattr(self, worker_attr, None)
+        if worker is None:
+            return
+        setattr(self, worker_attr, None)
+        signal_names = (
+            "sig_progress", "sig_step_done", "sig_finished", "sig_error",
+            "sig_completed", "sig_batch_progress", "sig_item_completed",
+            "sig_item_failed", "sig_batch_finished",
+        )
+        signals = tuple(getattr(worker, s) for s in signal_names if hasattr(worker, s))
+        from app.core.hardware import retire_qthread
+        retire_qthread(worker, wait_ms=wait_ms, signals=signals)
 
     def closeEvent(self, event):
         """Flushes any pending modifications to disk cache, saves session state, stops workers, and reclaims memory on exit."""
         try:
-            if hasattr(self, "_rerender_timer") and self._rerender_timer.isActive():
-                self._rerender_timer.stop()
-                self._re_render_current_page()
-            elif self.current_image_data and self.current_image_data.get("path") and self.current_image_data.get("blocks") is not None:
-                get_cache_manager().save_page_cache(
-                    self.current_image_data["path"],
-                    blocks=self.current_image_data["blocks"],
-                    page_style=self.current_image_data.get("style")
-                )
+            self._flush_pending_edits()
+            get_cache_manager().flush_pending_writes(timeout=5.0)
         except Exception:
             pass
 
         self._save_workspace_session()
 
-        for worker_attr in ("active_worker", "active_batch_worker", "block_worker"):
-            worker = getattr(self, worker_attr, None)
-            if worker is not None:
-                try:
-                    if hasattr(worker, "cancel"):
-                        worker.cancel()
-                    if hasattr(worker, "isRunning") and worker.isRunning():
-                        worker.quit()
-                        worker.wait(300)
-                except Exception:
-                    pass
+        for worker_attr in ("active_worker", "active_batch_worker", "active_archive_worker", "block_worker"):
+            try:
+                self._retire_worker_slot(worker_attr, wait_ms=1500)
+            except Exception:
+                pass
+
+        try:
+            from app.ui.widgets.thumbnail_loader import AsyncThumbnailManager
+            if AsyncThumbnailManager._instance is not None:
+                AsyncThumbnailManager._instance.shutdown(wait_ms=1000)
+        except Exception:
+            pass
 
         try:
             if hasattr(self, "page_list") and hasattr(self.page_list, "cleanup_temp_dirs"):

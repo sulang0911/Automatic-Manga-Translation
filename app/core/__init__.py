@@ -5,11 +5,6 @@ import os
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
-try:
-    import torch
-except ImportError:
-    pass
-
 from .models import (
     BlockType,
     TextDirection,
@@ -24,7 +19,8 @@ from .models import (
     MangaPage,
 )
 from .config import AppConfig
-from .hardware import get_gpu_info, is_legacy_pascal_or_maxwell_gpu, is_vram_constrained
+
+_LAZY_HARDWARE = ("get_gpu_info", "is_legacy_pascal_or_maxwell_gpu", "is_vram_constrained")
 
 __all__ = [
     "BlockType",
@@ -39,7 +35,18 @@ __all__ = [
     "StyleConfig",
     "MangaPage",
     "AppConfig",
-    "get_gpu_info",
-    "is_legacy_pascal_or_maxwell_gpu",
-    "is_vram_constrained",
+    *_LAZY_HARDWARE,
 ]
+
+
+def __getattr__(name: str):
+    if name in _LAZY_HARDWARE:
+        from . import hardware
+        val = getattr(hardware, name)
+        globals()[name] = val
+        return val
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))

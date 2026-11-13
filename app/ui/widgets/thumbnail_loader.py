@@ -56,18 +56,30 @@ class ThumbnailSignals(QObject):
 class ThumbnailWorker(QRunnable):
     """Background worker for reading and downscaling images without blocking the main GUI thread."""
 
-    def __init__(self, path: str, target_width: int, target_height: int, signals: ThumbnailSignals):
+    def __init__(
+        self,
+        path: str,
+        target_width: int,
+        target_height: int,
+        signals: ThumbnailSignals,
+        is_stale_fn: Optional[Callable[[], bool]] = None,
+    ):
         super().__init__()
         self.path = path
         self.target_width = target_width
         self.target_height = target_height
         self.signals = signals
+        self.is_stale_fn = is_stale_fn
 
     def run(self):
         try:
+            if self.is_stale_fn is not None and self.is_stale_fn():
+                return
             if not os.path.exists(self.path):
                 return
             scaled = _decode_scaled_qimage(self.path, self.target_width, self.target_height)
+            if self.is_stale_fn is not None and self.is_stale_fn():
+                return
             if not scaled.isNull():
                 try:
                     self.signals.loaded.emit(self.path, scaled)
@@ -80,22 +92,22 @@ class ThumbnailWorker(QRunnable):
 class AsyncThumbnailManager:
     """
     Thread-safe asynchronous thumbnail loading manager.
-    Decodes and downsamples full-resolution manga images in background threads,
-    using LIFO priority scheduling and true OrderedDict LRU eviction.
+    Decodes and downsamples full-resolution manga images in a dedicated lightweight
+    thread pool, supporting explicit priority ordering and true OrderedDict LRU eviction.
     """
     _instance: Optional['AsyncThumbnailManager'] = None
 
     def __init__(self):
-        try:
-            QThreadPool.globalInstance().setMaxThreadCount(1)
-        except Exception:
-            pass
+        self._pool = QThreadPool()
+        # Thumbnail decoding uses QImageReader.setScaledSize (~7KB/thumb), so 2-4 workers stay RAM-safe
+        self._pool.setMaxThreadCount(min(4, max(2, os.cpu_count() or 2)))
         self.signals = ThumbnailSignals()
         self.signals.loaded.connect(self._on_thumbnail_loaded)
         self._cache: "OrderedDict[str, QPixmap]" = OrderedDict()
-        self._max_cache = 80
+        self._max_cache = 400
         self._pending_callbacks: Dict[str, List[Callable[[QPixmap], None]]] = {}
         self._priority_seq: int = 0
+        self._generation: int = 0
 
     @classmethod
     def instance(cls) -> 'AsyncThumbnailManager':
@@ -148,12 +160,13 @@ class AsyncThumbnailManager:
         path: str,
         target_size: Tuple[int, int],
         callback: Callable[[QPixmap], None],
-        sync: bool = False
+        sync: bool = False,
+        priority: Optional[int] = None,
     ):
         """
         Fetches a downscaled thumbnail.
         If sync is True (e.g. for single-image drops), decodes immediately on caller thread.
-        Otherwise offloads image decoding to QThreadPool with LIFO priority so newly visible items decode first.
+        Otherwise offloads image decoding to the dedicated thumbnail thread pool.
         """
         if not path:
             return
@@ -177,15 +190,31 @@ class AsyncThumbnailManager:
             self._pending_callbacks[path].append(callback)
         else:
             self._pending_callbacks[path] = [callback]
-            worker = ThumbnailWorker(path, target_size[0], target_size[1], self.signals)
-            self._priority_seq = (self._priority_seq + 1) % 1000000
+            expected_gen = self._generation
+            is_stale = lambda: (expected_gen != self._generation) or (path not in self._pending_callbacks)
+            worker = ThumbnailWorker(path, target_size[0], target_size[1], self.signals, is_stale_fn=is_stale)
+            if priority is None:
+                self._priority_seq = (self._priority_seq + 1) % 1000000
+                eff_priority = self._priority_seq
+            else:
+                eff_priority = int(priority)
             try:
-                QThreadPool.globalInstance().start(worker, self._priority_seq)
+                self._pool.start(worker, eff_priority)
             except RuntimeError:
                 pass
 
     def clear_cache(self):
-        """Clears in-memory thumbnail cache."""
+        """Clears in-memory thumbnail cache and cancels pending queued decodes."""
+        self._generation += 1
         self._cache.clear()
         self._pending_callbacks.clear()
         self._priority_seq = 0
+
+    def shutdown(self, wait_ms: int = 1000) -> None:
+        """Cancels pending thumbnail decodes and waits briefly for active pool tasks."""
+        self.clear_cache()
+        try:
+            self._pool.clear()
+            self._pool.waitForDone(max(0, int(wait_ms)))
+        except RuntimeError:
+            pass

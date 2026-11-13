@@ -33,12 +33,35 @@ REFUSAL_PREFIXES = (
     "sorry, i cannot",
     "sorry, but i",
     "as an ai",
+    "this request was blocked",
+    "blocked by gemini's filters",
+    "please try rephrasing your prompt",
+    "violates our usage policies",
+    "content policy",
+    "safety filters",
     "抱歉，我无法",
     "对不起，我无法",
     "很抱歉，我无法",
     "我不能满足",
     "无法满足您的请求",
 )
+
+_GEMINI_FILTER_BANNER_RE = re.compile(
+    r"(?:This request was blocked by Gemini's filters|blocked by Gemini's filters)[\s\S]*$",
+    flags=re.IGNORECASE,
+)
+
+
+def contains_llm_filter_banner(text: str) -> bool:
+    """Returns True if provider safety/filter boilerplate appears anywhere in text."""
+    return bool(text and _GEMINI_FILTER_BANNER_RE.search(text))
+
+
+def strip_llm_filter_banner(text: str) -> str:
+    """Removes inline or trailing Gemini filter boilerplate leaked into partial streams."""
+    if not text:
+        return ""
+    return _GEMINI_FILTER_BANNER_RE.sub("", text).strip()
 
 
 def is_llm_refusal(raw_text: str) -> bool:
@@ -48,10 +71,15 @@ def is_llm_refusal(raw_text: str) -> bool:
     cleaned = re.sub(r'<(?:think|thought|reasoning)>[\s\S]*?</(?:think|thought|reasoning)>', '', raw_text, flags=re.IGNORECASE).strip()
     if not cleaned:
         return True
+    stripped_banner = strip_llm_filter_banner(cleaned)
+    if not stripped_banner:
+        return True
     low = cleaned.lower()
     if any(low.startswith(p) for p in REFUSAL_PREFIXES):
         return True
-    if ("[" not in cleaned and "{" not in cleaned) and any(p in low for p in REFUSAL_PREFIXES):
+    # Note: strip Gemini's markdown links ("[send feedback]...") before checking for JSON brackets
+    low_no_banner = stripped_banner.lower()
+    if ("[" not in stripped_banner and "{" not in stripped_banner) and any(p in low_no_banner for p in REFUSAL_PREFIXES):
         return True
     return False
 
@@ -374,6 +402,9 @@ def align_translations_to_blocks(parsed_data: Any, blocks: List[TranslationBlock
         for val in parsed_data.values():
             if isinstance(val, list) and val and isinstance(val[0], dict) and ("id" in val[0] or "translated_text" in val[0]):
                 return align_translations_to_blocks(val, blocks)
+        # Direct single-block dict: {"id": "...", "translated_text": "..."}
+        if isinstance(parsed_data.get("translated_text"), str) or isinstance(parsed_data.get("translation"), str):
+            return align_translations_to_blocks([parsed_data], blocks)
         # Direct dict mapping: {id: text} or {id: {translated_text: ...}}
         for idx, (k, v) in enumerate(parsed_data.items()):
             if isinstance(v, dict):

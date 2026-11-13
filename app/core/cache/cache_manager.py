@@ -8,7 +8,9 @@ instant re-rendering without re-running OCR or Inpainting.
 from __future__ import annotations
 import os
 import json
+import copy
 import logging
+import threading
 from typing import List, Dict, Any, Optional, Tuple
 import cv2
 import numpy as np
@@ -65,9 +67,19 @@ def safe_cv2_imwrite(path: str, img: np.ndarray, ext: Optional[str] = None, qual
             ok, buf = cv2.imencode(".png", img)
         if not ok or buf is None:
             return False
-        with open(path, "wb") as f:
-            f.write(buf.tobytes())
-        return True
+        tmp_path = f"{path}.tmp_{threading.get_ident()}"
+        try:
+            with open(tmp_path, "wb") as f:
+                f.write(buf.tobytes())
+            os.replace(tmp_path, path)
+            return True
+        except Exception as e:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+            raise e
     except Exception as e:
         logger.warning(f"Failed to write image to {path}: {e}")
         return False
@@ -86,6 +98,117 @@ class MangaCacheManager:
         self.custom_cache_root = custom_cache_root
         self._translated_memo: Dict[str, Tuple[float, int, bool]] = {}
         self._blocks_memo: Dict[str, Tuple[float, int, List[Dict[str, Any]]]] = {}
+        self._write_lock = threading.Lock()
+        self._write_cond = threading.Condition(self._write_lock)
+        self._pending_writes: Dict[str, Dict[str, Any]] = {}
+        self._in_flight_key: Optional[str] = None
+        self._writer_thread: Optional[threading.Thread] = None
+
+    @staticmethod
+    def _norm_key(image_path: str) -> str:
+        return os.path.normcase(os.path.normpath(os.path.abspath(image_path)))
+
+    @staticmethod
+    def _serialize_blocks(blocks: List[Any]) -> List[Dict[str, Any]]:
+        serialized: List[Dict[str, Any]] = []
+        for b in blocks:
+            if isinstance(b, TranslationBlock):
+                serialized.append(b.to_dict())
+            elif isinstance(b, dict):
+                serialized.append(copy.deepcopy(b))
+            elif hasattr(b, "to_dict"):
+                serialized.append(b.to_dict())
+            else:
+                serialized.append(copy.deepcopy(vars(b)))
+        return serialized
+
+    @staticmethod
+    def _serialize_style(page_style: Any) -> Optional[Dict[str, Any]]:
+        if page_style is None:
+            return None
+        if hasattr(page_style, "to_dict"):
+            return page_style.to_dict()
+        if isinstance(page_style, dict):
+            return copy.deepcopy(page_style)
+        return copy.deepcopy(vars(page_style))
+
+    @staticmethod
+    def _write_json_atomic(path: str, payload: Any) -> None:
+        tmp_path = f"{path}.tmp_{threading.get_ident()}"
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, path)
+        except Exception:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+            raise
+
+    def _ensure_writer_started(self) -> None:
+        if self._writer_thread is None or not self._writer_thread.is_alive():
+            self._writer_thread = threading.Thread(
+                target=self._writer_loop,
+                name="AMT-CacheWriter",
+                daemon=True,
+            )
+            self._writer_thread.start()
+
+    def _writer_loop(self) -> None:
+        while True:
+            with self._write_cond:
+                while not self._pending_writes:
+                    self._in_flight_key = None
+                    self._write_cond.notify_all()
+                    self._write_cond.wait()
+                next_key = next(iter(self._pending_writes))
+                job = self._pending_writes.pop(next_key)
+                self._in_flight_key = next_key
+
+            try:
+                self._persist_payload(
+                    job["image_path"],
+                    erased_img=job.get("erased_img"),
+                    serialized_blocks=job.get("blocks"),
+                    rendered_img=job.get("rendered_img"),
+                    style_dict=job.get("page_style"),
+                    clear_page_style=bool(job.get("clear_page_style", False)),
+                )
+            except Exception as e:
+                logger.warning(f"Async cache write failed for {job.get('image_path')}: {e}")
+            finally:
+                with self._write_cond:
+                    self._in_flight_key = None
+                    self._write_cond.notify_all()
+
+    def flush_path(self, image_path: str, timeout: float = 10.0) -> bool:
+        """Waits for any queued or active async cache write targeting `image_path`."""
+        if not image_path:
+            return True
+        key = self._norm_key(image_path)
+        import time
+        deadline = None if timeout is None else (time.monotonic() + timeout)
+        with self._write_cond:
+            while key in self._pending_writes or self._in_flight_key == key:
+                rem = None if deadline is None else (deadline - time.monotonic())
+                if rem is not None and rem <= 0:
+                    return False
+                self._write_cond.wait(timeout=rem)
+            return True
+
+    def flush_pending_writes(self, timeout: float = 10.0) -> bool:
+        """Blocks until all queued background cache writes finish."""
+        import time
+        deadline = None if timeout is None else (time.monotonic() + timeout)
+        with self._write_cond:
+            while self._pending_writes or self._in_flight_key is not None:
+                rem = None if deadline is None else (deadline - time.monotonic())
+                if rem is not None and rem <= 0:
+                    return False
+                self._write_cond.wait(timeout=rem)
+            return True
 
     def get_cache_dir(self, image_path: str, create: bool = False) -> str:
         """
@@ -123,6 +246,7 @@ class MangaCacheManager:
         Checks which cache files exist on disk for the given image without reading them into RAM.
         Fast-prunes checks if .amt_cache directory does not exist.
         """
+        self.flush_path(image_path)
         cache_dir = self.get_cache_dir(image_path, create=False)
         if not os.path.isdir(cache_dir):
             return {
@@ -140,18 +264,9 @@ class MangaCacheManager:
             "rendered": has_rendered,
         }
 
-    def is_fully_translated(self, image_path: str) -> bool:
-        """
-        Returns True if this page has been fully translated and rendered.
-        Validates that blocks.json exists, contains blocks, and at least one has translated_text.
-        Uses (mtime, size) memoization to avoid repeated disk JSON parsing during folder ingestion.
-        """
-        status = self.has_cache(image_path)
-        if not (status["blocks"] and (status["rendered"] or status["erased"])):
-            return False
+    def _check_translated_blocks_file(self, b_path: str) -> bool:
+        """Checks whether a blocks.json file contains non-empty translated text, memoized by (mtime, size)."""
         try:
-            paths = self.get_cache_paths(image_path)
-            b_path = paths["blocks_json"]
             st = os.stat(b_path)
             memo = self._translated_memo.get(b_path)
             if memo is not None and memo[0] == st.st_mtime and memo[1] == st.st_size:
@@ -174,21 +289,91 @@ class MangaCacheManager:
         except Exception:
             return False
 
-    def save_page_cache(
+    def is_fully_translated(self, image_path: str) -> bool:
+        """
+        Returns True if this page has been fully translated and rendered.
+        Validates that blocks.json exists, contains blocks, and at least one has translated_text.
+        Uses (mtime, size) memoization to avoid repeated disk JSON parsing during folder ingestion.
+        """
+        status = self.has_cache(image_path)
+        if not (status["blocks"] and (status["rendered"] or status["erased"])):
+            return False
+        paths = self.get_cache_paths(image_path)
+        return self._check_translated_blocks_file(paths["blocks_json"])
+
+    def batch_cache_status(self, image_paths: List[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        Batch-queries cache presence, translation completion, and saved page style for many pages
+        using one os.scandir() per unique .amt_cache directory instead of per-file syscalls.
+        """
+        results: Dict[str, Dict[str, Any]] = {}
+        if not image_paths:
+            return results
+
+        # Flush only paths that currently have pending async writes
+        with self._write_lock:
+            active_keys = set(self._pending_writes.keys())
+            if self._in_flight_key is not None:
+                active_keys.add(self._in_flight_key)
+        if active_keys:
+            for p in image_paths:
+                if self._norm_key(p) in active_keys:
+                    self.flush_path(p)
+
+        dir_entries_cache: Dict[str, set] = {}
+        for image_path in image_paths:
+            cache_dir = self.get_cache_dir(image_path, create=False)
+            dir_norm = os.path.normcase(os.path.normpath(cache_dir))
+            files_in_dir = dir_entries_cache.get(dir_norm)
+            if files_in_dir is None:
+                try:
+                    with os.scandir(cache_dir) as it:
+                        files_in_dir = {entry.name for entry in it if entry.is_file()}
+                except OSError:
+                    files_in_dir = set()
+                dir_entries_cache[dir_norm] = files_in_dir
+
+            base_name = os.path.splitext(os.path.basename(image_path))[0]
+            has_erased = f"{base_name}.erased.webp" in files_in_dir or f"{base_name}.erased.png" in files_in_dir
+            has_blocks = f"{base_name}.blocks.json" in files_in_dir
+            has_rendered = f"{base_name}.rendered.webp" in files_in_dir or f"{base_name}.rendered.png" in files_in_dir
+            has_style = f"{base_name}.style.json" in files_in_dir
+
+            fully_translated = False
+            if has_blocks and (has_rendered or has_erased):
+                fully_translated = self._check_translated_blocks_file(
+                    os.path.join(cache_dir, f"{base_name}.blocks.json")
+                )
+
+            page_style = None
+            if has_style:
+                try:
+                    with open(os.path.join(cache_dir, f"{base_name}.style.json"), "r", encoding="utf-8") as sf:
+                        page_style = json.load(sf)
+                except Exception:
+                    page_style = None
+
+            results[image_path] = {
+                "erased": has_erased,
+                "blocks": has_blocks,
+                "rendered": has_rendered,
+                "style": has_style,
+                "fully_translated": fully_translated,
+                "page_style": page_style,
+            }
+        return results
+
+    def _persist_payload(
         self,
         image_path: str,
         erased_img: Optional[np.ndarray] = None,
-        blocks: Optional[List[Any]] = None,
+        serialized_blocks: Optional[List[Dict[str, Any]]] = None,
         rendered_img: Optional[np.ndarray] = None,
-        page_style: Optional[Any] = None,
-        clear_page_style: bool = False
+        style_dict: Optional[Dict[str, Any]] = None,
+        clear_page_style: bool = False,
     ) -> Dict[str, str]:
-        """
-        Persists intermediate translation results to disk.
-        Returns a dictionary of saved file paths.
-        """
         paths = self.get_cache_paths(image_path, create_dir=True)
-        saved = {}
+        saved: Dict[str, str] = {}
 
         # 1. Save erased background
         if erased_img is not None and erased_img.size > 0:
@@ -196,26 +381,13 @@ class MangaCacheManager:
             if safe_cv2_imwrite(target_erased, erased_img, ext=".webp", quality=95):
                 saved["erased"] = target_erased
             else:
-                # Fallback to PNG
                 target_erased = paths["erased_png"]
                 if safe_cv2_imwrite(target_erased, erased_img, ext=".png"):
                     saved["erased"] = target_erased
 
         # 2. Save blocks metadata & translations
-        if blocks is not None:
-            serialized_blocks = []
-            for b in blocks:
-                if isinstance(b, TranslationBlock):
-                    serialized_blocks.append(b.to_dict())
-                elif isinstance(b, dict):
-                    serialized_blocks.append(b)
-                elif hasattr(b, "to_dict"):
-                    serialized_blocks.append(b.to_dict())
-                else:
-                    serialized_blocks.append(vars(b))
-
-            with open(paths["blocks_json"], "w", encoding="utf-8") as f:
-                json.dump(serialized_blocks, f, ensure_ascii=False, indent=2)
+        if serialized_blocks is not None:
+            self._write_json_atomic(paths["blocks_json"], serialized_blocks)
             saved["blocks"] = paths["blocks_json"]
             try:
                 st = os.stat(paths["blocks_json"])
@@ -243,18 +415,88 @@ class MangaCacheManager:
                     os.remove(paths["style_json"])
                 except Exception:
                     pass
-        elif page_style is not None:
+        elif style_dict is not None:
             try:
-                style_dict = page_style.to_dict() if hasattr(page_style, "to_dict") else (
-                    page_style if isinstance(page_style, dict) else vars(page_style)
-                )
-                with open(paths["style_json"], "w", encoding="utf-8") as f:
-                    json.dump(style_dict, f, ensure_ascii=False, indent=2)
+                self._write_json_atomic(paths["style_json"], style_dict)
                 saved["style"] = paths["style_json"]
             except Exception as e:
                 logger.warning(f"Failed to save page style for {image_path}: {e}")
 
         return saved
+
+    def save_page_cache(
+        self,
+        image_path: str,
+        erased_img: Optional[np.ndarray] = None,
+        blocks: Optional[List[Any]] = None,
+        rendered_img: Optional[np.ndarray] = None,
+        page_style: Optional[Any] = None,
+        clear_page_style: bool = False
+    ) -> Dict[str, str]:
+        """
+        Persists intermediate translation results to disk.
+        Returns a dictionary of saved file paths.
+        """
+        key = self._norm_key(image_path)
+        with self._write_cond:
+            self._pending_writes.pop(key, None)
+        self.flush_path(image_path)
+        serialized_blocks = self._serialize_blocks(blocks) if blocks is not None else None
+        style_dict = self._serialize_style(page_style) if page_style is not None else None
+        return self._persist_payload(
+            image_path,
+            erased_img=erased_img,
+            serialized_blocks=serialized_blocks,
+            rendered_img=rendered_img,
+            style_dict=style_dict,
+            clear_page_style=clear_page_style,
+        )
+
+    def save_page_cache_async(
+        self,
+        image_path: str,
+        erased_img: Optional[np.ndarray] = None,
+        blocks: Optional[List[Any]] = None,
+        rendered_img: Optional[np.ndarray] = None,
+        page_style: Optional[Any] = None,
+        clear_page_style: bool = False,
+    ) -> None:
+        """
+        Queues intermediate translation results for coalesced background disk encoding.
+        Repeated edits for the same page supersede queued pending WebP/JSON payloads.
+        """
+        if not image_path:
+            return
+        serialized_blocks = self._serialize_blocks(blocks) if blocks is not None else None
+        style_dict = self._serialize_style(page_style) if page_style is not None else None
+        key = self._norm_key(image_path)
+
+        with self._write_cond:
+            existing = self._pending_writes.get(key)
+            if existing is None:
+                self._pending_writes[key] = {
+                    "image_path": image_path,
+                    "erased_img": erased_img,
+                    "blocks": serialized_blocks,
+                    "rendered_img": rendered_img,
+                    "page_style": style_dict,
+                    "clear_page_style": clear_page_style,
+                }
+            else:
+                if erased_img is not None:
+                    existing["erased_img"] = erased_img
+                if serialized_blocks is not None:
+                    existing["blocks"] = serialized_blocks
+                if rendered_img is not None:
+                    existing["rendered_img"] = rendered_img
+                if clear_page_style:
+                    existing["clear_page_style"] = True
+                    existing["page_style"] = None
+                elif style_dict is not None:
+                    existing["clear_page_style"] = False
+                    existing["page_style"] = style_dict
+            self._ensure_writer_started()
+            self._write_cond.notify_all()
 
     def load_page_cache(
         self,
@@ -270,6 +512,7 @@ class MangaCacheManager:
         If `load_images=True`, decodes `erased_img` (when load_erased=True) and
         `rendered_img` (when load_rendered=True).
         """
+        self.flush_path(image_path)
         paths = self.get_cache_paths(image_path)
         res: Dict[str, Any] = {
             "blocks": [],
@@ -335,6 +578,10 @@ class MangaCacheManager:
 
     def clear_cache(self, image_path: str) -> None:
         """Removes all cache files for a specific image."""
+        key = self._norm_key(image_path)
+        with self._write_cond:
+            self._pending_writes.pop(key, None)
+        self.flush_path(image_path)
         paths = self.get_cache_paths(image_path)
         self._translated_memo.pop(paths["blocks_json"], None)
         self._blocks_memo.pop(paths["blocks_json"], None)
@@ -386,8 +633,13 @@ class MangaCacheManager:
                 p = str(it)
             if p:
                 paths.append(p)
+                key = self._norm_key(p)
+                with self._write_cond:
+                    self._pending_writes.pop(key, None)
                 cdir = self.get_cache_dir(p, create=False)
                 cache_dirs.add(cdir)
+        for p in paths:
+            self.flush_path(p)
 
         for cdir in cache_dirs:
             if os.path.exists(cdir):

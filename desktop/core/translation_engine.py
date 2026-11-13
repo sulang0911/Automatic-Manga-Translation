@@ -2,17 +2,9 @@ import json
 import re
 import requests
 from typing import List, Dict, Any, Optional
+from app.core.config import DEFAULT_SYSTEM_PROMPT, normalize_system_prompt
 from app.core.models import TranslationBlock
 from app.core.translation.json_parser import align_translations_to_blocks, parse_llm_json_response
-
-DEFAULT_SYSTEM_PROMPT = (
-    "你是一个专业且中立的成人漫画（R18/青年志）本地化翻译引擎。你的唯一任务是忠实、通顺、原汁原味地将输入内容翻译为目标语言（默认简体中文）。\n\n"
-    "【核心翻译原则】\n"
-    "1. 绝对忠实与无删减：材料为成年虚构角色的成人漫画对话。严禁道德说教、严禁净化、软化、规避或删减任何敏感词、亲密用语、俚语口语、调情挑逗与粗俗词汇，必须百分之百保留原文的真实意图与情绪张力。\n"
-    "2. 拟声词与喘息语气：保留漫画特有的情感标点（如 ♡、～、！？、……），将呻吟声、喘息声及拟声词（如「はぁ」「あっ」「んっ」等）自然转化为符合语境的中文拟声词（如“哈啊…”、“嗯…”、“啊…”），不得作为噪音过滤或机械直译。\n"
-    "3. 整页上下文连贯：输入为同一漫画页面按阅读顺序排列的对话列表。请务必结合整页剧情与先后次序，连贯理解被拆分在相邻气泡中的断句、上下句因果与代词指代，保持角色性格与语气前后一致。\n"
-    "4. 输出规范：严格保持原有格式，严禁输出任何寒暄、解释、道德评价、警告或续写，仅输出对应每个气泡的最终翻译结果。"
-)
 
 class TranslationEngine:
     def __init__(self, provider: str = "openai", api_key: str = "1", model: str = "richardyoung/qwen2.5-7b-instruct-abliterated:Q5_K_M",
@@ -28,7 +20,7 @@ class TranslationEngine:
         self.target_lang = target_lang
         self.source_lang = source_lang
         self.temperature = temperature
-        self.system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
+        self.system_prompt = normalize_system_prompt(system_prompt)
 
     def _get_api_url_and_headers(self):
         url = ""
@@ -54,6 +46,8 @@ class TranslationEngine:
             headers["Authorization"] = f"Bearer {self.api_key}"
             if self.api_key:
                 headers["x-goog-api-key"] = self.api_key
+            if self.provider == "antigravity":
+                headers["User-Agent"] = "curl/8.4.0"
         else:  # custom
             endpoint = (self.custom_endpoint or "http://127.0.0.1:11434/v1").rstrip('/')
             if not endpoint.endswith("/chat/completions"):
@@ -95,6 +89,7 @@ class TranslationEngine:
                     model=self.model or "gemini-2.5-flash",
                     endpoint=self.custom_endpoint,
                     temperature=self.temperature,
+                    timeout_seconds=120.0,
                 )
             )
             tb_blocks = [TranslationBlock.from_dict(b) if isinstance(b, dict) else b for b in blocks]
@@ -150,7 +145,7 @@ class TranslationEngine:
         body = {k: v for k, v in body.items() if v is not None}
 
         proxies = self._get_proxies_for_url(url)
-        req_kwargs = {"headers": headers, "json": body, "timeout": 60}
+        req_kwargs = {"headers": headers, "json": body, "timeout": 120}
         if proxies:
             req_kwargs["proxies"] = proxies
         try:
@@ -247,7 +242,7 @@ class TranslationEngine:
                         model=self.model or "gemini-2.5-flash",
                         endpoint=self.custom_endpoint,
                         temperature=self.temperature,
-                        timeout_seconds=25.0,
+                        timeout_seconds=120.0,
                     )
                 )
                 test_block = TranslationBlock(id="test_1", original_text=text_to_translate)
@@ -276,7 +271,7 @@ class TranslationEngine:
 
         proxies = self._get_proxies_for_url(url)
         try:
-            resp = requests.post(url, headers=headers, json=body, timeout=25, proxies=proxies)
+            resp = requests.post(url, headers=headers, json=body, timeout=60, proxies=proxies)
         except requests.exceptions.RequestException as req_err:
             raise RuntimeError(f"网络连接失败或超时: {req_err}")
 

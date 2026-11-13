@@ -35,6 +35,7 @@ class PageSnapshot:
     erased_img: Optional[np.ndarray] = None
     style: Optional[Any] = None
     description: str = "操作"
+    shared_erased: bool = False
 
     @classmethod
     def create(
@@ -43,7 +44,8 @@ class PageSnapshot:
         blocks: List[Any],
         erased_img: Optional[np.ndarray] = None,
         style: Optional[Any] = None,
-        description: str = "操作"
+        description: str = "操作",
+        copy_erased: bool = True,
     ) -> 'PageSnapshot':
         serialized_blocks: List[Dict[str, Any]] = []
         for b in (blocks or []):
@@ -55,13 +57,18 @@ class PageSnapshot:
                 serialized_blocks.append(copy.deepcopy(vars(b)))
 
         copied_style = copy.deepcopy(style) if style is not None else None
+        if erased_img is not None and copy_erased and hasattr(erased_img, "copy"):
+            snap_erased = erased_img.copy()
+        else:
+            snap_erased = erased_img
 
         return cls(
             page_path=page_path or "",
             blocks=serialized_blocks,
-            erased_img=erased_img.copy() if (erased_img is not None and hasattr(erased_img, "copy")) else None,
+            erased_img=snap_erased,
             style=copied_style,
-            description=description
+            description=description,
+            shared_erased=not copy_erased,
         )
 
 
@@ -77,13 +84,18 @@ class UndoManager:
         self._redo_stack: List[PageSnapshot] = []
 
     def _prune_old_bitmaps(self) -> None:
-        """Evicts heavy uncompressed erased_img arrays from older snapshots beyond max_bitmap_snapshots."""
-        if len(self._undo_stack) > self.max_bitmap_snapshots:
-            for snap in self._undo_stack[:-self.max_bitmap_snapshots]:
-                snap.erased_img = None
-        if len(self._redo_stack) > self.max_bitmap_snapshots:
-            for snap in self._redo_stack[:-self.max_bitmap_snapshots]:
-                snap.erased_img = None
+        """Evicts heavy uncompressed erased_img arrays beyond max_bitmap_snapshots distinct bitmaps."""
+        for stack in (self._undo_stack, self._redo_stack):
+            seen_ids = set()
+            for snap in reversed(stack):
+                if snap.erased_img is None:
+                    continue
+                arr_id = id(snap.erased_img)
+                if arr_id not in seen_ids:
+                    if len(seen_ids) >= self.max_bitmap_snapshots:
+                        snap.erased_img = None
+                        continue
+                    seen_ids.add(arr_id)
 
     def push(self, snapshot: PageSnapshot) -> None:
         """Pushes a pre-action state onto the undo stack and invalidates redo stack."""
@@ -123,7 +135,8 @@ class UndoManager:
             blocks=current_snapshot.blocks,
             erased_img=current_snapshot.erased_img,
             style=current_snapshot.style,
-            description=target.description
+            description=target.description,
+            copy_erased=not current_snapshot.shared_erased,
         )
         self._redo_stack.append(redo_snapshot)
         if len(self._redo_stack) > self.max_depth:
@@ -144,7 +157,8 @@ class UndoManager:
             blocks=current_snapshot.blocks,
             erased_img=current_snapshot.erased_img,
             style=current_snapshot.style,
-            description=target.description
+            description=target.description,
+            copy_erased=not current_snapshot.shared_erased,
         )
         self._undo_stack.append(undo_snapshot)
         if len(self._undo_stack) > self.max_depth:
