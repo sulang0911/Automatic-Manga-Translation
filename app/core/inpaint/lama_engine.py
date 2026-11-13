@@ -286,7 +286,7 @@ class LaMaInpainter(BaseInpainter):
                 epx_max = min(w_img, px_max + pad_s)
                 epy_max = min(h_img, py_max + pad_s)
                 exp_crop = erased_img[epy_min:epy_max, epx_min:epx_max]
-                stroked_mask = get_stroked_text_mask(exp_crop)
+                stroked_mask = get_stroked_text_mask(exp_crop, img_max_dim=base_dim)
                 if stroked_mask is not None:
                     qr_exp = qr_mask[epy_min:epy_max, epx_min:epx_max]
                     stroked_mask[qr_exp > 0] = 0

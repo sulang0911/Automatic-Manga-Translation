@@ -228,7 +228,7 @@ class OpenCVInpainter(BaseInpainter):
                 erased_img[py_min:py_max, px_min:px_max] = crop
             else:
                 from app.core.inpaint.color_analyzer import get_stroked_text_mask
-                stroked_mask = get_stroked_text_mask(crop)
+                stroked_mask = get_stroked_text_mask(crop, img_max_dim=base_dim)
                 if stroked_mask is not None:
                     text_mask = cv2.bitwise_and(stroked_mask, poly_mask)
                     adaptive_dil = 0

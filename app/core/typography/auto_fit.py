@@ -54,11 +54,12 @@ class AutoFitEngine:
         """
         Calculate safety padding to prevent text from touching speech bubble borders.
         For elliptical bubbles, padding is larger to stay within the inscribed ellipse.
-        For unboxed/caption dialogue blocks, padding is minimal since OCR bounds wrap the text directly.
+        For unboxed/caption dialogue blocks, padding stays compact on small boxes while
+        preserving modest breathing room on large multi-speaker blocks.
         """
         if bubble_shape == "caption" or (bubble_shape != "ellipse" and (box_w > box_h * 2.5 or box_h < 65)):
-            px = max(2.0, min(8.0, box_w * 0.03))
-            py = max(1.0, min(4.0, box_h * 0.04))
+            px = max(2.0, min(12.0, box_w * 0.03))
+            py = max(1.0, min(12.0, box_h * 0.035))
             return px, py
         ratio = self.padding_ratio if bubble_shape != "ellipse" else 0.15
         px = max(2.0, min(28.0, box_w * ratio))
@@ -73,29 +74,35 @@ class AutoFitEngine:
         is_vertical: bool,
         evaluator: LayoutEvaluator,
         font_scale: float = 1.0,
-        bubble_shape: str = "rect"
+        bubble_shape: str = "rect",
+        min_font_size: Optional[float] = None,
+        max_font_size: Optional[float] = None,
     ) -> AutoFitResult:
         """
-        Execute 10-step bisection search for optimal font size.
+        Execute 10-step bisection search for optimal font size, then apply
+        font_scale consistently to the fitted size rather than only the search ceiling.
         """
+        eff_min = float(self.min_font_size if min_font_size is None else min_font_size)
+        eff_max = max(eff_min, float(self.max_font_size if max_font_size is None else max_font_size))
+        safe_scale = max(0.1, float(font_scale))
+
         stripped_text = text.strip()
         if not stripped_text or box_w <= 4 or box_h <= 4:
             empty_layout = LayoutResult(
                 fits=True, total_width=0.0, total_height=0.0,
-                lines_or_columns=[], font_size=self.min_font_size
+                lines_or_columns=[], font_size=eff_min
             )
-            return AutoFitResult(self.min_font_size, empty_layout, is_clamped=True, iterations_run=0)
+            return AutoFitResult(eff_min, empty_layout, is_clamped=True, iterations_run=0)
 
         px, py = self.calculate_padding(box_w, box_h, bubble_shape)
         avail_w = max(4.0, box_w - 2 * px)
         avail_h = max(4.0, box_h - 2 * py)
 
-        # Upper bound calculation: cap by dimension and font_scale
         major_dim = avail_h if not is_vertical else avail_w
-        high_bound = min(self.max_font_size, max(self.min_font_size, major_dim * 0.90 * font_scale))
-        low_bound = self.min_font_size
+        high_bound = min(eff_max, max(eff_min, major_dim * 0.90))
+        low_bound = eff_min
 
-        # Check if min_font_size fits
+        # Check if minimum legible size fits
         min_layout = evaluator.evaluate(stripped_text, low_bound, avail_w, avail_h, is_vertical)
         if not min_layout.fits:
             # Text cannot fit even at minimum legible font size (severe overflow)
@@ -106,35 +113,45 @@ class AutoFitEngine:
                 iterations_run=1
             )
 
-        # Check if high_bound fits directly (e.g. single short word in large bubble)
+        # Find maximum size that physically fits within [low_bound, high_bound]
         max_layout = evaluator.evaluate(stripped_text, high_bound, avail_w, avail_h, is_vertical)
         if max_layout.fits:
-            return AutoFitResult(
-                optimal_font_size=high_bound,
-                layout=max_layout,
-                is_clamped=False,
-                iterations_run=1
-            )
+            best_size = high_bound
+            best_layout = max_layout
+            iters = 1
+        else:
+            best_size = low_bound
+            best_layout = min_layout
+            low = low_bound
+            high = high_bound
 
-        # 10-step Bisection Search
-        best_size = low_bound
-        best_layout = min_layout
-        low = low_bound
-        high = high_bound
+            for _ in range(self.bisection_iterations):
+                mid = (low + high) / 2.0
+                test_layout = evaluator.evaluate(stripped_text, mid, avail_w, avail_h, is_vertical)
+                if test_layout.fits:
+                    best_size = mid
+                    best_layout = test_layout
+                    low = mid  # Try larger size
+                else:
+                    high = mid  # Exceeds bounds, try smaller size
+            iters = self.bisection_iterations
 
-        for it in range(self.bisection_iterations):
-            mid = (low + high) / 2.0
-            test_layout = evaluator.evaluate(stripped_text, mid, avail_w, avail_h, is_vertical)
-            if test_layout.fits:
-                best_size = mid
-                best_layout = test_layout
-                low = mid  # Try larger size
-            else:
-                high = mid  # Exceeds bounds, try smaller size
+        # Apply font_scale < 1.0 post-fit so user scaling visibly shrinks fitted blocks too
+        if safe_scale < 1.0 - 1e-6:
+            scaled_size = max(eff_min, best_size * safe_scale)
+            if scaled_size < best_size - 1e-6:
+                scaled_layout = evaluator.evaluate(stripped_text, scaled_size, avail_w, avail_h, is_vertical)
+                if scaled_layout.fits:
+                    return AutoFitResult(
+                        optimal_font_size=scaled_size,
+                        layout=scaled_layout,
+                        is_clamped=(scaled_size <= eff_min + 1e-6),
+                        iterations_run=iters,
+                    )
 
         return AutoFitResult(
             optimal_font_size=best_size,
             layout=best_layout,
             is_clamped=False,
-            iterations_run=self.bisection_iterations
+            iterations_run=iters
         )

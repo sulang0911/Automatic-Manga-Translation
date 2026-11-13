@@ -35,8 +35,8 @@
     "max_dimension": 2048
   },
   "style": {
-    "font_family": "得意黑",
-    "font_size_scale": 0.9,
+    "font_family": "霞鹜文楷",
+    "font_size_scale": 0.8,
     "auto_fit_font_size": true,
     "min_font_size": 8,
     "max_font_size": 72,

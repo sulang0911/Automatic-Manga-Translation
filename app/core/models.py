@@ -280,7 +280,7 @@ class StyleConfig:
     Defaults to cute manga font ('霞鹜文楷'), non-bold, smart 1.30x line spacing, and 3.5px auto stroke width.
     """
     font_family: str = "霞鹜文楷"
-    font_size_scale: float = 1.0
+    font_size_scale: float = 0.8
     auto_fit_font_size: bool = True
     min_font_size: int = 8
     max_font_size: int = 72

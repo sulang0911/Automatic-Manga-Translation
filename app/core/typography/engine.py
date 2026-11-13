@@ -16,7 +16,7 @@ import cv2
 from PIL import Image, ImageFont, ImageDraw
 
 from app.core.models import (
-    TranslationBlock, StyleConfig, TextDirection,
+    TranslationBlock, StyleConfig, TextDirection, BlockType,
     TextColorMode, BgColorMode, StrokeMode, OnomatopoeiaMode
 )
 from app.core.typography.auto_fit import AutoFitEngine, LayoutResult, AutoFitResult
@@ -204,6 +204,45 @@ class TypographyLayoutEvaluator:
                 overflow_x=overflow_x,
                 overflow_y=overflow_y
             )
+
+
+def _compute_source_dialogue_cap(
+    block: TranslationBlock,
+    w_img: int,
+    h_img: int,
+    box_w: float,
+    box_h: float,
+    is_vertical: bool,
+    orig_is_horizontal_script: bool,
+    hard_max: float,
+) -> float:
+    """
+    Estimates a natural font-size upper cap (at font_size_scale=1.0) so concise
+    translations in oversized or sparse boxes stay proportional to page resolution
+    and original dialogue density instead of inflating to the global ceiling.
+    """
+    if getattr(block, "type", BlockType.BUBBLE.value) == BlockType.ONOMATOPOEIA.value:
+        return hard_max
+
+    min_dim = float(max(1, min(w_img, h_img)))
+    # Resolution-proportional ceiling: ~32px@720p, ~45px@1000p, ~54px@1200p, 72px@4K
+    cap = min(hard_max, max(24.0, min_dim * 0.045))
+
+    orig_txt = (getattr(block, "original_text", "") or "").strip()
+    orig_lines = [ln.strip() for ln in orig_txt.splitlines() if ln.strip()]
+    n_lines = max(1, int(getattr(block, "line_count", 1) or 1), len(orig_lines))
+
+    if not is_vertical and orig_is_horizontal_script and len(orig_txt) >= 24:
+        # Estimate Latin/Hangul line pitch from box area vs average glyph footprint
+        char_count = sum(len(ln) for ln in orig_lines) if orig_lines else len(orig_txt)
+        est_pitch = math.sqrt((max(1.0, box_w) * max(1.0, box_h)) / max(1.0, char_count * 0.625))
+        cap = min(cap, max(12.0, est_pitch * 1.15))
+    elif is_vertical and n_lines >= 2:
+        cap = min(cap, max(12.0, (max(1.0, box_w) / float(n_lines)) * 1.15))
+    elif not is_vertical and n_lines >= 2 and len(orig_txt) >= 8:
+        cap = min(cap, max(12.0, (max(1.0, box_h) / float(n_lines)) * 1.05))
+
+    return max(8.0, cap)
 
 
 class TypographyEngine:
@@ -597,8 +636,8 @@ class TypographyEngine:
             else:
                 is_vertical = box_is_tall and text_is_cjk
 
-            box_w_eff = L if not is_vertical else H
-            box_h_eff = H if not is_vertical else L
+            box_w_eff = L
+            box_h_eff = H
 
             # Detect multi-speaker dialogue turns (e.g. (Suk) "..." / (Jun) "..." or (锡)「...」 / (俊)「...」)
             # If the block contains >= 2 speaker turns, preserve '\n' between every speaker turn!
@@ -631,14 +670,29 @@ class TypographyEngine:
             if block.font_size_override is not None:
                 font_size = float(block.font_size_override)
             elif cfg.auto_fit_font_size:
+                hard_max = float(getattr(cfg, "max_font_size", 72) or 72)
+                base_cap = _compute_source_dialogue_cap(
+                    block=block,
+                    w_img=w_img,
+                    h_img=h_img,
+                    box_w=float(box_w_eff),
+                    box_h=float(box_h_eff),
+                    is_vertical=is_vertical,
+                    orig_is_horizontal_script=orig_is_horizontal_script,
+                    hard_max=hard_max,
+                )
+                scale_val = max(0.1, float(cfg.font_size_scale))
+                eff_max = min(hard_max, base_cap * max(1.0, scale_val))
                 fit_res = self.auto_fit_engine.fit_text(
                     text=render_text,
                     box_w=float(box_w_eff),
                     box_h=float(box_h_eff),
                     is_vertical=is_vertical,
                     evaluator=evaluator,
-                    font_scale=cfg.font_size_scale,
-                    bubble_shape=eff_bubble_shape
+                    font_scale=scale_val,
+                    bubble_shape=eff_bubble_shape,
+                    min_font_size=float(cfg.min_font_size),
+                    max_font_size=eff_max,
                 )
                 font_size = fit_res.optimal_font_size
             else:

@@ -113,11 +113,13 @@ def test_page_style_dialog_lifecycle(qapp):
     assert dlg2.applied_style is None  # Inherit global
 
 
-def test_settings_dialog_typography_page(qapp):
+def test_settings_dialog_typography_page(qapp, tmp_path, monkeypatch):
     """Verify SettingsDialog has typography tab, default non-bold, and apply-all trigger."""
     from app.ui.settings.settings_dialog import SettingsDialog
 
     app_cfg = AppConfig()
+    orig_save = app_cfg.save
+    monkeypatch.setattr(app_cfg, "save", lambda _path: orig_save(str(tmp_path / "desktop_config.json")))
     dlg = SettingsDialog(config=app_cfg)
 
     # Check navigation items

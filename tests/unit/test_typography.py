@@ -278,4 +278,100 @@ def test_tall_english_column_auto_direction_stays_horizontal():
     assert called_vertical == [], "Horizontal English column must render horizontally even when h > w * 1.5"
 
 
+def test_auto_fit_font_scale_shrinks_fitted_size():
+    """Verify font_scale < 1.0 scales down the bisection result even when high_bound clamps at max_font_size."""
+    auto_fit = AutoFitEngine(min_font_size=8.0, max_font_size=72.0, bisection_iterations=10)
+
+    class MockEvaluator:
+        def evaluate(self, text, font_size, max_w, max_h, is_vertical):
+            fits = font_size <= 50.0
+            return LayoutResult(
+                fits=fits,
+                total_width=font_size * 5.0,
+                total_height=font_size * 3.0,
+                lines_or_columns=["L1", "L2"],
+                font_size=font_size,
+            )
+
+    evaluator = MockEvaluator()
+    res_10 = auto_fit.fit_text("Sample", box_w=400.0, box_h=400.0, is_vertical=False, evaluator=evaluator, font_scale=1.0)
+    res_08 = auto_fit.fit_text("Sample", box_w=400.0, box_h=400.0, is_vertical=False, evaluator=evaluator, font_scale=0.8)
+
+    assert pytest.approx(res_10.optimal_font_size, abs=0.2) == 50.0
+    assert pytest.approx(res_08.optimal_font_size, abs=0.2) == 40.0
+    assert res_08.optimal_font_size < res_10.optimal_font_size
+
+
+def test_short_text_in_large_dialogue_box_respects_resolution_and_max_font_size():
+    """Short dialogue inside an oversized box must respect cfg.max_font_size and resolution cap, while SFX stays free."""
+    engine = TypographyEngine()
+    img = np.full((1000, 1000, 3), 255, dtype=np.uint8)
+    orig_fit = engine.auto_fit_engine.fit_text
+
+    recorded_bubble = []
+    def spy_fit(*args, **kwargs):
+        res = orig_fit(*args, **kwargs)
+        recorded_bubble.append(res.optimal_font_size)
+        return res
+
+    engine.auto_fit_engine.fit_text = spy_fit
+    bubble_block = TranslationBlock(
+        id="b_short",
+        xmin=20.0, ymin=20.0, xmax=80.0, ymax=80.0,  # 600x600 huge box on 1000x1000 page
+        original_text="Stop!!",
+        translated_text="住手！！",
+        type="bubble",
+    )
+    engine.render_page(img, [bubble_block], StyleConfig(font_size_scale=0.8, max_font_size=72))
+    assert len(recorded_bubble) == 1
+    assert recorded_bubble[0] <= 40.0, f"Short bubble on 1000px page should stay proportional, got {recorded_bubble[0]}"
+
+    recorded_sfx = []
+    def spy_fit_sfx(*args, **kwargs):
+        res = orig_fit(*args, **kwargs)
+        recorded_sfx.append(res.optimal_font_size)
+        return res
+
+    engine.auto_fit_engine.fit_text = spy_fit_sfx
+    sfx_block = TranslationBlock(
+        id="sfx_big",
+        xmin=20.0, ymin=20.0, xmax=80.0, ymax=80.0,
+        original_text="ドカーン！",
+        translated_text="轰隆！",
+        type="onomatopoeia",
+    )
+    engine.render_page(img, [sfx_block], StyleConfig(font_size_scale=1.0, max_font_size=72))
+    assert len(recorded_sfx) == 1
+    assert pytest.approx(recorded_sfx[0], abs=0.5) == 72.0
+
+
+def test_vertical_bubble_uses_tall_column_height_during_auto_fit():
+    """Upright vertical bubble (w=120, h=360) must wrap vertical columns along height=360 rather than swapped width=120."""
+    engine = TypographyEngine()
+    img = np.full((500, 500, 3), 255, dtype=np.uint8)
+    orig_fit = engine.auto_fit_engine.fit_text
+
+    seen_dims = []
+    def spy_fit(*args, **kwargs):
+        seen_dims.append((kwargs.get("box_w"), kwargs.get("box_h"), kwargs.get("is_vertical")))
+        return orig_fit(*args, **kwargs)
+
+    engine.auto_fit_engine.fit_text = spy_fit
+    vert_block = TranslationBlock(
+        id="v1",
+        xmin=10.0, ymin=10.0, xmax=34.0, ymax=82.0,  # w=120, h=360
+        original_text="そんな\nこと\nないよ",
+        translated_text="才没有那种事呢，别担心啦",
+        direction=TextDirection.VERTICAL.value,
+        line_count=3,
+    )
+    engine.render_page(img, [vert_block], StyleConfig(font_size_scale=0.8))
+    assert len(seen_dims) == 1
+    bw, bh, is_vert = seen_dims[0]
+    assert is_vert is True
+    assert bw == pytest.approx(120.0, abs=1.0)
+    assert bh == pytest.approx(360.0, abs=1.0)
+
+
+
 

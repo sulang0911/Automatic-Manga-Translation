@@ -245,7 +245,11 @@ def erase_unboxed_text_block(
         crop_gray = gray_full[exp_y_min:exp_y_max, exp_x_min:exp_x_max]
 
     from app.core.inpaint.color_analyzer import get_stroked_text_mask, get_text_mask
-    stroked_mask = get_stroked_text_mask(crop) if (not is_uniform and crop.ndim == 3) else None
+    stroked_mask = (
+        get_stroked_text_mask(crop, img_max_dim=max(h_img, w_img))
+        if (not is_uniform and crop.ndim == 3)
+        else None
+    )
 
     if stroked_mask is not None:
         dilated_mask = stroked_mask

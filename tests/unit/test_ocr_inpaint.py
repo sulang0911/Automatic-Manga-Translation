@@ -13,6 +13,7 @@ from app.core.inpaint.color_analyzer import (
     get_background_color_hex,
     is_background_uniform,
     get_text_mask,
+    get_stroked_text_mask,
     analyze_text_color,
     dilate_mask,
     _classify_color_family,
@@ -682,3 +683,138 @@ def test_merge_adjacent_boxes_nested_child_does_not_overwrite_multiline_parent()
     v_merged = merge_adjacent_boxes(v_boxes, img_w=1000, img_h=1000)
     assert len(v_merged) == 1
     assert v_merged[0]["text"].count("問題ありません") == 1
+
+
+def test_stroked_mask_and_erase_black_text_white_outline_over_mixed_and_colored_bg():
+    """
+    Regression test for incomplete erasure of black-fill + white-outline text:
+    Saturated yellow/warm background elements touching white outlines or floor stripes
+    must not trigger the chromatic-only branch or drop dark-core glyph strokes.
+    """
+    # 1. Mixed dark leather (left) + textured yellow floor with white stripe (right)
+    scene = np.full((150, 420, 3), (24, 24, 22), dtype=np.uint8)
+    scene[:, 240:] = (55, 175, 210)
+    cv2.line(scene, (240, 95), (419, 120), (235, 235, 235), 5)
+    # Mild texture on dark side so is_uniform=False
+    scene[::2, :240] = (32, 30, 26)
+
+    core_ref = np.zeros((150, 420), dtype=np.uint8)
+    cv2.putText(scene, "Dark+White", (25, 85), cv2.FONT_HERSHEY_SIMPLEX, 1.35, (248, 248, 248), 8, cv2.LINE_AA)
+    cv2.putText(scene, "Dark+White", (25, 85), cv2.FONT_HERSHEY_SIMPLEX, 1.35, (6, 6, 6), 3, cv2.LINE_AA)
+    cv2.putText(core_ref, "Dark+White", (25, 85), cv2.FONT_HERSHEY_SIMPLEX, 1.35, 255, 3, cv2.LINE_AA)
+
+    mask = get_stroked_text_mask(scene)
+    assert mask is not None
+    assert np.count_nonzero((core_ref > 0) & (mask == 0)) == 0
+    # Left dark-side glyph strokes must be covered, not skipped
+    assert np.count_nonzero((core_ref[:, :240] > 0) & (mask[:, :240] == 0)) == 0
+
+    # End-to-end unboxed + InpaintEngine erasure must leave no white halo pixels on either side
+    from desktop.core.inpaint_engine import InpaintEngine
+    block = {
+        "id": "b_stroked_split",
+        "type": "bubble",
+        "polygon": [[20, 42], [385, 42], [385, 96], [20, 96]],
+        "xmin": 20 / 420 * 100.0,
+        "ymin": 42 / 150 * 100.0,
+        "xmax": 385 / 420 * 100.0,
+        "ymax": 96 / 150 * 100.0,
+        "bg_color": "#1A1816",
+        "text_color": "#FFFFFF",
+        "translated_text": "test",
+    }
+    erased = InpaintEngine(mode="opencv_telea").inpaint(scene, [block])
+    left_band = cv2.cvtColor(erased[45:95, 25:230], cv2.COLOR_BGR2GRAY)
+    assert np.count_nonzero(left_band > 165) == 0
+
+    # 2. Pure saturated yellow canvas & interior yellow block behind black-fill + white-outline text
+    for interior_only in (False, True):
+        canvas = np.full((140, 340, 3), (35, 35, 35) if interior_only else (40, 200, 240), dtype=np.uint8)
+        if interior_only:
+            canvas[20:120, 130:270] = (40, 200, 240)
+        ref = np.zeros((140, 340), dtype=np.uint8)
+        cv2.putText(canvas, "Wait!", (75, 90), cv2.FONT_HERSHEY_SIMPLEX, 1.35, (255, 255, 255), 8, cv2.LINE_AA)
+        cv2.putText(canvas, "Wait!", (75, 90), cv2.FONT_HERSHEY_SIMPLEX, 1.35, (8, 8, 8), 3, cv2.LINE_AA)
+        cv2.putText(ref, "Wait!", (75, 90), cv2.FONT_HERSHEY_SIMPLEX, 1.35, 255, 3, cv2.LINE_AA)
+        m = get_stroked_text_mask(canvas)
+        assert m is not None
+        assert np.count_nonzero((ref > 0) & (m == 0)) == 0
+        assert np.count_nonzero(m) < m.size * 0.45
+
+    # 3. Mixed chromatic + black text with white outlines, and pure red text on dark bg
+    mixed = np.full((150, 320, 3), (35, 35, 35), dtype=np.uint8)
+    m_ref = np.zeros((150, 320), dtype=np.uint8)
+    for y_pos, txt, col in [(55, "Pink", (130, 35, 210)), (115, "Black", (8, 8, 8))]:
+        cv2.putText(mixed, txt, (45, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 7, cv2.LINE_AA)
+        cv2.putText(mixed, txt, (45, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 1.0, col, 3, cv2.LINE_AA)
+        cv2.putText(m_ref, txt, (45, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 1.0, 255, 3, cv2.LINE_AA)
+    m_mix = get_stroked_text_mask(mixed)
+    assert m_mix is not None
+    assert np.count_nonzero((m_ref > 0) & (m_mix == 0)) == 0
+
+    red_dark = np.full((120, 280, 3), (20, 25, 30), dtype=np.uint8)
+    r_ref = np.zeros((120, 280), dtype=np.uint8)
+    cv2.putText(red_dark, "SFX!", (45, 78), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 7, cv2.LINE_AA)
+    cv2.putText(red_dark, "SFX!", (45, 78), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (50, 35, 230), 3, cv2.LINE_AA)
+    cv2.putText(r_ref, "SFX!", (45, 78), cv2.FONT_HERSHEY_SIMPLEX, 1.2, 255, 3, cv2.LINE_AA)
+    m_red = get_stroked_text_mask(red_dark)
+    assert m_red is not None
+    assert np.count_nonzero((r_ref > 0) & (m_red == 0)) == 0
+    assert np.count_nonzero(m_red) < m_red.size * 0.35
+
+
+def test_stroked_mask_high_res_and_soft_outer_glow_coverage():
+    """High-res pages (e.g. 2.5x-4K) and soft Gaussian outer glows around black/chromatic text
+    must cover the entire outer fade ramp (gray ~ 50..165) without leaving white halo ghosts,
+    and chromatic thin AA punctuation near text lines must also be covered."""
+    from app.core.inpaint.color_analyzer import get_stroked_text_mask
+
+    # 1. High-res (~2.5x / 3x) thick outline + soft Gaussian outer glow on dark leather background
+    for scale, img_dim in [(2.5, 2560), (3.0, 3072)]:
+        h, w = int(160 * scale), int(460 * scale)
+        bg = np.full((h, w, 3), (18, 20, 26), dtype=np.uint8)
+        glow_src = np.zeros((h, w), dtype=np.float32)
+        org = (int(45 * scale), int(95 * scale))
+        font_scale = 1.0 * scale
+        cv2.putText(
+            glow_src, "This is it.", org, cv2.FONT_HERSHEY_SIMPLEX,
+            font_scale, 255.0, max(3, int(round(6 * scale))), cv2.LINE_AA
+        )
+        k = int(round(9 * scale)) | 1
+        glow_blur = cv2.GaussianBlur(glow_src, (k, k), 2.4 * scale)
+        canvas = np.clip(bg.astype(np.float32) + np.expand_dims(glow_blur * 1.3, 2), 0, 255).astype(np.uint8)
+        cv2.putText(
+            canvas, "This is it.", org, cv2.FONT_HERSHEY_SIMPLEX,
+            font_scale, (6, 6, 6), max(2, int(round(2.5 * scale))), cv2.LINE_AA
+        )
+
+        m = get_stroked_text_mask(canvas, img_max_dim=img_dim)
+        assert m is not None
+        gray = cv2.cvtColor(canvas, cv2.COLOR_BGR2GRAY)
+        # Every visible outer-glow pixel significantly brighter than the dark background must be masked
+        visible_glow = gray > 55
+        assert np.count_nonzero(visible_glow) > 100
+        uncovered = int(np.count_nonzero(visible_glow & (m == 0)))
+        assert uncovered == 0, f"Scale {scale}x left {uncovered} soft-glow pixels unmasked"
+
+    # 2. 1x extra-wide Gaussian outer glow when img_max_dim is 1024 (compact-halo TOPHAT auto-boost)
+    w_bg = np.full((180, 420, 3), (22, 24, 28), dtype=np.uint8)
+    w_halo = np.zeros((180, 420), dtype=np.float32)
+    cv2.putText(w_halo, "Soft Glow", (35, 105), cv2.FONT_HERSHEY_SIMPLEX, 1.1, 255.0, 9, cv2.LINE_AA)
+    w_blur = cv2.GaussianBlur(w_halo, (21, 21), 5.0)
+    w_canvas = np.clip(w_bg.astype(np.float32) + np.expand_dims(w_blur * 1.35, 2), 0, 255).astype(np.uint8)
+    cv2.putText(w_canvas, "Soft Glow", (35, 105), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (5, 5, 5), 3, cv2.LINE_AA)
+    m_wide = get_stroked_text_mask(w_canvas, img_max_dim=1024)
+    assert m_wide is not None
+    w_gray = cv2.cvtColor(w_canvas, cv2.COLOR_BGR2GRAY)
+    assert np.count_nonzero((w_gray > 60) & (m_wide == 0)) == 0
+
+    # 3. Thin mid-saturation chromatic punctuation (e.g. AA pink quote mark) adjacent to white-wall text
+    wall = np.full((110, 260, 3), (242, 242, 244), dtype=np.uint8)
+    cv2.putText(wall, "Uniform", (35, 68), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (125, 45, 225), 3, cv2.LINE_AA)
+    # Place thin quote-like AA marks (~6-11px from "Uniform") with mid saturation (~62)
+    cv2.line(wall, (167, 42), (167, 48), (130, 118, 180), 2)
+    cv2.line(wall, (172, 42), (172, 48), (132, 120, 182), 2)
+    m_wall = get_stroked_text_mask(wall, img_max_dim=1024)
+    assert m_wall is not None
+    assert m_wall[45, 167] == 255 and m_wall[45, 172] == 255

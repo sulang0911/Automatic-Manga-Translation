@@ -83,10 +83,12 @@ def is_background_uniform(crop: np.ndarray, std_thresh: float = 16.0) -> bool:
     return True
 
 
-def get_stroked_text_mask(crop: np.ndarray) -> Optional[np.ndarray]:
+def get_stroked_text_mask(crop: np.ndarray, img_max_dim: Optional[int] = None) -> Optional[np.ndarray]:
     """
     Extracts a precise binary mask of stroked/outlined text (e.g. black text with white outline,
     or red/cyan text with white/dark outline) on non-uniform 3D/CG backgrounds.
+    Scales morphological coupling, outline enclosure, and outer-glow dilation proportionally
+    with page resolution (img_max_dim) and measured halo falloff width.
     Ignores background objects (metal pipes, glowing lights, SFX burst lines) that lack coupled glyph cores.
     Returns None if the crop does not exhibit coupled stroked text.
     """
@@ -104,13 +106,52 @@ def get_stroked_text_mask(crop: np.ndarray) -> Optional[np.ndarray]:
     sat = max_c - min_c
     chroma_core = ((sat > 75) & (max_c > 125)).astype(np.uint8) * 255
 
-    k5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    bright_dil = cv2.dilate(bright, k5)
-    dark_dil = cv2.dilate(dark, k5)
+    # Estimate resolution / soft-glow scale; TOPHAT strips large white walls so only compact halos measure width.
+    if img_max_dim is not None and img_max_dim > 0:
+        s_dim = max(1.0, float(img_max_dim) / 1024.0)
+    else:
+        s_dim = max(1.0, float(max(crop.shape[:2])) / 650.0)
+    white_aa = cv2.bitwise_and((gray > 105).astype(np.uint8) * 255, cv2.bitwise_not(chroma_core))
+    k25 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25))
+    halo_only = cv2.morphologyEx(white_aa, cv2.MORPH_TOPHAT, k25)
+    dt_w = cv2.distanceTransform(halo_only, cv2.DIST_L2, 3)
+    near_d = cv2.dilate(cv2.bitwise_or(dark, chroma_core), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
+    vals = dt_w[(halo_only > 0) & (near_d > 0)]
+    med_hw = float(np.percentile(vals, 85)) if len(vals) > 20 else 2.0
+    s = max(1.0, min(4.0, max(s_dim, min(3.2, med_hw / 2.2))))
 
-    # Coupled dark+bright or chroma+bright strokes
+    couple_k = max(5, min(13, int(round(2.0 * s)) * 2 + 1))
+    k_couple = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (couple_k, couple_k))
+    bright_dil = cv2.dilate(bright, k_couple)
+
+    # Filter out large/thick chromatic background regions (e.g. yellow floor, warm wood, colored walls)
+    # so colored scenery behind black+white-outline text does not masquerade as chromatic text strokes.
+    text_chroma = chroma_core
+    if np.any(chroma_core):
+        h_c, w_c = chroma_core.shape
+        crop_area = float(h_c * w_c)
+        n_cc, labels, stats, _ = cv2.connectedComponentsWithStats(chroma_core)
+        erode_k = max(7, min(25, int(round(3.0 * s)) * 2 + 1))
+        k_erode = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erode_k, erode_k))
+        wo_dil = cv2.dilate(cv2.bitwise_and(bright, cv2.bitwise_not(chroma_core)), k_couple)
+        text_chroma = np.zeros_like(chroma_core)
+        for cid in range(1, n_cc):
+            x, y, cw, ch, area = stats[cid]
+            touches_border = (x == 0 or y == 0 or x + cw >= w_c or y + ch >= h_c)
+            if touches_border and area > crop_area * 0.04:
+                continue
+            comp_mask = (labels == cid).astype(np.uint8) * 255
+            eroded_px = np.count_nonzero(cv2.erode(comp_mask, k_erode))
+            if touches_border and eroded_px > area * 0.25:
+                continue
+            if not touches_border and area > crop_area * 0.08 and eroded_px > area * 0.35:
+                if np.count_nonzero(cv2.bitwise_and(comp_mask, wo_dil)) < area * 0.45:
+                    continue
+            text_chroma[labels == cid] = 255
+
+    # Coupled dark+bright or chromatic-glyph+bright strokes
     coupled_dark = cv2.bitwise_and(dark, bright_dil)
-    coupled_chroma = cv2.bitwise_and(chroma_core, bright_dil)
+    coupled_chroma = cv2.bitwise_and(text_chroma, bright_dil)
 
     n_dark = int(np.count_nonzero(coupled_dark))
     n_chroma = int(np.count_nonzero(coupled_chroma))
@@ -118,29 +159,43 @@ def get_stroked_text_mask(crop: np.ndarray) -> Optional[np.ndarray]:
     if n_dark + n_chroma < 12:
         return None
 
-    k9 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
-    if n_chroma > n_dark and n_chroma >= 12:
+    # Dark glyph strokes enclosed by bright outlines (black fill + white outline) must not be
+    # discarded even when chromatic elements also appear in the crop.
+    seed_r = max(4, min(16, int(round(4.0 * s))))
+    k_seed = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (seed_r * 2 + 1, seed_r * 2 + 1))
+    bright_closed = cv2.morphologyEx(bright, cv2.MORPH_CLOSE, k_seed)
+    n_dark_enclosed = int(np.count_nonzero(cv2.bitwise_and(dark, bright_closed)))
+    n_chroma_enclosed = int(np.count_nonzero(cv2.bitwise_and(text_chroma, bright_closed)))
+    has_strong_dark_text = (n_dark >= 40 and n_dark_enclosed >= max(30, int(n_chroma_enclosed * 0.45)))
+
+    if n_chroma > n_dark and n_chroma >= 12 and not has_strong_dark_text:
         # Chromatic-core stroked text (e.g. red SFX letters with white outline on pink glow):
         # Do NOT include dark background pixels outside the glow so inpainting fills with pure glow color
-        coupled_bright = cv2.bitwise_and(bright, cv2.dilate(chroma_core, k5))
+        coupled_bright = cv2.bitwise_and(bright, cv2.dilate(text_chroma, k_couple))
         core_seeds = cv2.bitwise_or(coupled_chroma, coupled_bright)
-        seed_zone = cv2.dilate(core_seeds, k9)
-        aa_bright = (gray > 140).astype(np.uint8) * 255
-        stroke_mask = cv2.bitwise_or(chroma_core, cv2.bitwise_and(aa_bright, seed_zone))
-        max_d = max(crop.shape[:2])
-        halo_k = 19 if max_d >= 1400 else (13 if max_d >= 600 else 7)
-        k_halo = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (halo_k, halo_k))
+        seed_zone = cv2.dilate(core_seeds, k_seed)
+        aa_bright = (gray > 115).astype(np.uint8) * 255
+        # Catch thin anti-aliased chromatic punctuation (e.g. quotes) near text lines
+        line_r = max(12, min(48, int(round(12.0 * s))))
+        k_line = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (line_r * 2 + 1, line_r * 2 + 1))
+        aa_chroma = (
+            (sat > 42) & (max_c > 125) & (bright_dil > 0) & (cv2.dilate(core_seeds, k_line) > 0)
+        ).astype(np.uint8) * 255
+        stroke_mask = cv2.bitwise_or(text_chroma, cv2.bitwise_or(aa_chroma, cv2.bitwise_and(aa_bright, seed_zone)))
+        halo_r = max(3, min(18, int(round(4.0 * s))))
+        k_halo = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (halo_r * 2 + 1, halo_r * 2 + 1))
         return cv2.dilate(stroke_mask, k_halo, iterations=1)
     else:
-        # Dark-core with white-outline (or white-core with dark-outline) text:
-        coupled_bright = cv2.bitwise_and(bright, cv2.dilate(cv2.bitwise_or(dark, chroma_core), k5))
+        # Dark-core with white-outline (or white-core with dark-outline, or mixed) text:
+        coupled_bright = cv2.bitwise_and(bright, cv2.dilate(cv2.bitwise_or(dark, text_chroma), k_couple))
         core_seeds = cv2.bitwise_or(coupled_dark, cv2.bitwise_or(coupled_bright, coupled_chroma))
-        seed_zone = cv2.dilate(core_seeds, k9)
-        aa_bright = (gray > 110).astype(np.uint8) * 255
+        seed_zone = cv2.dilate(core_seeds, k_seed)
+        aa_bright = (gray > 95).astype(np.uint8) * 255
         aa_dark = (gray < 88).astype(np.uint8) * 255
-        all_candidates = cv2.bitwise_or(aa_dark, cv2.bitwise_or(aa_bright, chroma_core))
+        all_candidates = cv2.bitwise_or(aa_dark, cv2.bitwise_or(aa_bright, text_chroma))
         stroke_mask = cv2.bitwise_and(all_candidates, seed_zone)
-        k_halo = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+        halo_r = max(4, min(18, int(round(4.5 * s))))
+        k_halo = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (halo_r * 2 + 1, halo_r * 2 + 1))
         return cv2.dilate(stroke_mask, k_halo, iterations=1)
 
 
