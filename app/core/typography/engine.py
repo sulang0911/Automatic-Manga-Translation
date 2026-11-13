@@ -624,15 +624,27 @@ class TypographyEngine:
             text_is_cjk = LineBreaker.is_cjk(text)
             orig_txt = getattr(block, "original_text", "") or ""
             orig_hanzi_kana = sum(1 for c in orig_txt if ('\u4e00' <= c <= '\u9fff') or ('\u3040' <= c <= '\u30ff'))
+            orig_has_kana = any('\u3040' <= c <= '\u30ff' for c in orig_txt)
             orig_horiz_script = sum(1 for c in orig_txt if ('a' <= c <= 'z' or 'A' <= c <= 'Z' or '\uac00' <= c <= '\ud7af'))
             orig_is_horizontal_script = (orig_horiz_script >= 2 and orig_hanzi_kana <= max(1, int(orig_horiz_script * 0.1)))
-            box_is_tall = (H > L * 1.5) if is_rotated else (h > w * 1.5)
+            eff_h, eff_w = (H, L) if is_rotated else (h, w)
+            box_is_tall = eff_h > eff_w * 1.5
+            orig_line_cnt = max(
+                int(getattr(block, "line_count", 1) or 1),
+                len([ln for ln in orig_txt.splitlines() if ln.strip()])
+            )
             if block.direction == TextDirection.VERTICAL.value:
-                is_vertical = box_is_tall and text_is_cjk
+                is_vertical = text_is_cjk
             elif block.direction == TextDirection.HORIZONTAL.value:
                 is_vertical = False
             elif orig_is_horizontal_script:
                 is_vertical = False
+            elif orig_has_kana and text_is_cjk:
+                # Japanese manga bubbles: support both classic tall ovals (h >= w * 1.15)
+                # and squarish multi-column bubbles (h >= w * 0.85 with >= 2 vertical columns)
+                is_vertical = (eff_h >= eff_w * 1.15) or (
+                    block.type == BlockType.BUBBLE.value and orig_line_cnt >= 2 and eff_h >= eff_w * 0.85
+                )
             else:
                 is_vertical = box_is_tall and text_is_cjk
 

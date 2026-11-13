@@ -149,8 +149,31 @@ def get_stroked_text_mask(crop: np.ndarray, img_max_dim: Optional[int] = None) -
                     continue
             text_chroma[labels == cid] = 255
 
+    # Suppress periodic B&W manga halftone screentone micro-dots on achromatic backgrounds
+    # so halftone dots around text don't saturate coupled_dark / seed_zone to 100% coverage.
+    dark_for_seed = dark
+    if not np.any(text_chroma):
+        n_dcc, d_labels, d_stats, _ = cv2.connectedComponentsWithStats(dark)
+        dot_dim = max(3, int(round(3.5 * s)))
+        dot_area = max(8, int(round(8.0 * s * s)))
+        dot_cids = []
+        large_dark = np.zeros_like(dark)
+        for cid in range(1, n_dcc):
+            cw_d = int(d_stats[cid, cv2.CC_STAT_WIDTH])
+            ch_d = int(d_stats[cid, cv2.CC_STAT_HEIGHT])
+            area_d = int(d_stats[cid, cv2.CC_STAT_AREA])
+            if cw_d <= dot_dim and ch_d <= dot_dim and area_d <= dot_area:
+                dot_cids.append(cid)
+            else:
+                large_dark[d_labels == cid] = 255
+        if len(dot_cids) >= 20 and np.any(large_dark):
+            prox_r = max(3, int(round(4.0 * s)))
+            k_prox = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (prox_r * 2 + 1, prox_r * 2 + 1))
+            near_large = cv2.dilate(large_dark, k_prox)
+            dark_for_seed = cv2.bitwise_or(large_dark, cv2.bitwise_and(dark, near_large))
+
     # Coupled dark+bright or chromatic-glyph+bright strokes
-    coupled_dark = cv2.bitwise_and(dark, bright_dil)
+    coupled_dark = cv2.bitwise_and(dark_for_seed, bright_dil)
     coupled_chroma = cv2.bitwise_and(text_chroma, bright_dil)
 
     n_dark = int(np.count_nonzero(coupled_dark))
@@ -164,7 +187,7 @@ def get_stroked_text_mask(crop: np.ndarray, img_max_dim: Optional[int] = None) -
     seed_r = max(4, min(16, int(round(4.0 * s))))
     k_seed = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (seed_r * 2 + 1, seed_r * 2 + 1))
     bright_closed = cv2.morphologyEx(bright, cv2.MORPH_CLOSE, k_seed)
-    n_dark_enclosed = int(np.count_nonzero(cv2.bitwise_and(dark, bright_closed)))
+    n_dark_enclosed = int(np.count_nonzero(cv2.bitwise_and(dark_for_seed, bright_closed)))
     n_chroma_enclosed = int(np.count_nonzero(cv2.bitwise_and(text_chroma, bright_closed)))
     has_strong_dark_text = (n_dark >= 40 and n_dark_enclosed >= max(30, int(n_chroma_enclosed * 0.45)))
 
@@ -187,7 +210,7 @@ def get_stroked_text_mask(crop: np.ndarray, img_max_dim: Optional[int] = None) -
         return cv2.dilate(stroke_mask, k_halo, iterations=1)
     else:
         # Dark-core with white-outline (or white-core with dark-outline, or mixed) text:
-        coupled_bright = cv2.bitwise_and(bright, cv2.dilate(cv2.bitwise_or(dark, text_chroma), k_couple))
+        coupled_bright = cv2.bitwise_and(bright, cv2.dilate(cv2.bitwise_or(dark_for_seed, text_chroma), k_couple))
         core_seeds = cv2.bitwise_or(coupled_dark, cv2.bitwise_or(coupled_bright, coupled_chroma))
         seed_zone = cv2.dilate(core_seeds, k_seed)
         aa_bright = (gray > 95).astype(np.uint8) * 255

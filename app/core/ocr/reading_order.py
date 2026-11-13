@@ -96,8 +96,35 @@ def _sort_manga_or_western(
 
     for tier in tiers:
         if is_rtl:
-            # Japanese Manga: Right to Left (descending X center), secondary top to bottom (ascending Y)
-            tier.sort(key=lambda b: (-((b.xmin + b.xmax) / 2.0), b.ymin))
+            # Japanese Manga: cluster vertically stacked bubbles that share horizontal overlap
+            # into sub-columns (ordered Top-to-Bottom), then order sub-columns Right-to-Left.
+            # Preserves original order cleanly when coordinates are all zero/equal.
+            sub_cols: List[List[TranslationBlock]] = []
+            for b in sorted(tier, key=lambda x: x.ymin):
+                b_w = max(0.0, b.xmax - b.xmin)
+                placed = False
+                if b_w > 0.0:
+                    for col in sub_cols:
+                        col_xmin = min(it.xmin for it in col)
+                        col_xmax = max(it.xmax for it in col)
+                        col_ymax = max(it.ymax for it in col)
+                        col_w = max(0.1, col_xmax - col_xmin)
+                        x_ov = min(b.xmax, col_xmax) - max(b.xmin, col_xmin)
+                        # Same horizontal column and stacked below previous item (not side-by-side)
+                        if x_ov >= 0.30 * min(b_w, col_w) and b.ymin >= col_ymax - 1.5:
+                            col.append(b)
+                            placed = True
+                            break
+                if not placed:
+                    sub_cols.append([b])
+
+            sub_cols.sort(
+                key=lambda col: (
+                    -sum((it.xmin + it.xmax) / 2.0 for it in col) / len(col),
+                    col[0].ymin,
+                )
+            )
+            tier[:] = [it for col in sub_cols for it in col]
         else:
             # Western Comic: Left to Right (ascending X center), secondary top to bottom (ascending Y)
             tier.sort(key=lambda b: (((b.xmin + b.xmax) / 2.0), b.ymin))

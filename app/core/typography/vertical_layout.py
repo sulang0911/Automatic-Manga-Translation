@@ -3,21 +3,34 @@ app/core/typography/vertical_layout.py
 CJK Vertical Text Rendering with RTL Column Progression and Punctuation Offset.
 """
 from dataclasses import dataclass
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Set
 import re
+
+from app.core.typography.line_breaker import GYOTO_KINSOKU, GYOMATSU_KINSOKU
 
 
 VERTICAL_GLYPH_MAP: Dict[str, str] = {
     '「': '﹁', '」': '﹂',
     '『': '﹃', '』': '﹄',
+    '“': '﹁', '”': '﹂',
+    '‘': '﹃', '’': '﹄',
     '（': '︵', '）': '︶',
+    '(': '︵', ')': '︶',
     '【': '︻', '】': '︼',
+    '[': '︻', ']': '︼',
     '《': '︽', '》': '︾',
     '〔': '︹', '〕': '︺',
-    'ー': '丨', '―': '︱', '—': '︱',
-    '…': '︙', '～': '︴',
+    'ー': '丨', '―': '︱', '—': '︱', '─': '︱',
+    '…': '︙', '～': '︴', '~': '︴',
     '!?': '⁉', '?!': '⁈', '!!': '‼', '??': '⁇'
 }
+
+VERT_GYOTO_KINSOKU: Set[str] = GYOTO_KINSOKU | set("﹂﹄︶︼︾︺︙︱︴丨")
+VERT_GYOMATSU_KINSOKU: Set[str] = GYOMATSU_KINSOKU | set("﹁﹃︵︻︽︹")
+_DOUBLE_PUNCT_PAIRS = [
+    ('！？', '⁉'), ('？！', '⁈'), ('！！', '‼'), ('？？', '⁇'),
+    ('!?', '⁉'), ('?!', '⁈'), ('!!', '‼'), ('??', '⁇'),
+]
 
 CORNER_PUNCTUATION = set("。、，．")
 
@@ -59,11 +72,11 @@ class VerticalLayoutEngine:
         font_size: float
     ) -> List[List[str]]:
         """
-        Split text into vertical columns that fit within max_height.
-        Applies vertical punctuation replacements during segmentation.
+        Split text into vertical columns that fit within max_height,
+        applying vertical punctuation replacements and Kinsoku Shori rules.
         """
         processed = text
-        for pair, repl in [('!?', '⁉'), ('?!', '⁈'), ('!!', '‼'), ('??', '⁇')]:
+        for pair, repl in _DOUBLE_PUNCT_PAIRS:
             processed = processed.replace(pair, repl)
 
         char_step = font_size * self.char_spacing_ratio
@@ -80,8 +93,30 @@ class VerticalLayoutEngine:
             for char in trimmed:
                 vert_char = VERTICAL_GLYPH_MAP.get(char, char)
                 if len(current_col) >= max_chars_per_col and current_col:
-                    columns.append(current_col)
-                    current_col = [vert_char]
+                    # Kinsoku Shori: prevent forbidden chars at column top or opening brackets at column bottom
+                    if (vert_char in VERT_GYOTO_KINSOKU or char in VERT_GYOTO_KINSOKU) and len(current_col) >= 2:
+                        split_at = len(current_col) - 1
+                        while split_at > 1 and (
+                            current_col[split_at] in VERT_GYOTO_KINSOKU
+                            or current_col[split_at - 1] in VERT_GYOMATSU_KINSOKU
+                        ):
+                            split_at -= 1
+                        if split_at >= 1 and current_col[split_at] not in VERT_GYOTO_KINSOKU:
+                            carry = current_col[split_at:]
+                            columns.append(current_col[:split_at])
+                            current_col = carry + [vert_char]
+                        else:
+                            # Fallback if column starts with prohibited punctuation: attach before breaking
+                            current_col.append(vert_char)
+                            columns.append(current_col)
+                            current_col = []
+                    elif current_col[-1] in VERT_GYOMATSU_KINSOKU and len(current_col) >= 2:
+                        opener = current_col.pop()
+                        columns.append(current_col)
+                        current_col = [opener, vert_char]
+                    else:
+                        columns.append(current_col)
+                        current_col = [vert_char]
                 else:
                     current_col.append(vert_char)
             if current_col:

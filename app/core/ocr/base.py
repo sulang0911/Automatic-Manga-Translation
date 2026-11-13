@@ -1134,25 +1134,38 @@ def merge_adjacent_boxes(
         c_ymax = max(max(b["ymin"], b["ymax"]) for b in raw_comp_boxes)
         comp_boxes = _prune_subsumed_boxes(raw_comp_boxes)
 
-        has_cjk = any(any(_is_cjk_char(c) for c in str(b.get("text", ""))) for b in comp_boxes)
-        if not has_cjk:
+        all_text = "".join(str(b.get("text", "")) for b in comp_boxes)
+        has_cjk = any(_is_cjk_char(c) for c in all_text)
+        has_hangul = any('\uac00' <= c <= '\ud7af' for c in all_text)
+        has_kana_or_han = any(('\u4e00' <= c <= '\u9fff') or ('\u3040' <= c <= '\u30ff') for c in all_text)
+        if not has_cjk or (has_hangul and not has_kana_or_han):
             is_vertical_cluster = False
         else:
             cluster_w = max(1, c_xmax - c_xmin)
             cluster_h = max(1, c_ymax - c_ymin)
+            # Only count genuine vertical text columns (tall aspect >= 1.8 and min height/width)
+            # so a narrow digit like '1' inside horizontal '第1話' never votes as a vertical column.
+            vert_cols = sum(
+                1 for b in comp_boxes
+                if abs(b["ymax"] - b["ymin"]) >= abs(b["xmax"] - b["xmin"]) * 1.80
+                and abs(b["ymax"] - b["ymin"]) >= 32
+                and abs(b["xmax"] - b["xmin"]) >= 10
+            )
+            vert_boxes = sum(1 for b in comp_boxes if abs(b["ymax"] - b["ymin"]) >= abs(b["xmax"] - b["xmin"]) * 1.30 and abs(b["xmax"] - b["xmin"]) >= 14)
+            horiz_boxes = sum(1 for b in comp_boxes if abs(b["xmax"] - b["xmin"]) >= abs(b["ymax"] - b["ymin"]) * 1.30 and abs(b["ymax"] - b["ymin"]) >= 14)
             if cluster_h >= cluster_w * 1.20:
+                is_vertical_cluster = True
+            elif vert_cols >= 2 and vert_cols > horiz_boxes:
+                # 3-4 packed vertical Japanese columns whose combined bubble is wider than tall
                 is_vertical_cluster = True
             elif cluster_w >= cluster_h * 1.20:
                 is_vertical_cluster = False
+            elif vert_boxes > horiz_boxes:
+                is_vertical_cluster = True
+            elif horiz_boxes > vert_boxes:
+                is_vertical_cluster = False
             else:
-                vert_boxes = sum(1 for b in comp_boxes if abs(b["ymax"] - b["ymin"]) >= abs(b["xmax"] - b["xmin"]) * 1.30 and abs(b["xmax"] - b["xmin"]) >= 14)
-                horiz_boxes = sum(1 for b in comp_boxes if abs(b["xmax"] - b["xmin"]) >= abs(b["ymax"] - b["ymin"]) * 1.30)
-                if vert_boxes > horiz_boxes:
-                    is_vertical_cluster = True
-                elif horiz_boxes > vert_boxes:
-                    is_vertical_cluster = False
-                else:
-                    is_vertical_cluster = cluster_h > cluster_w
+                is_vertical_cluster = cluster_h > cluster_w
 
         confs = [float(b.get("conf", 1.0) if b.get("conf") is not None else 1.0) for b in comp_boxes]
 

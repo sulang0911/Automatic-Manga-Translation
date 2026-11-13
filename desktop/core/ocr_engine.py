@@ -13,14 +13,14 @@ from typing import List, Dict, Any, Optional, Tuple
 try:
     from app.core.ocr.base import merge_adjacent_boxes, calculate_polygon_angle
     from app.core.ocr.reading_order import sort_reading_order
-    from app.core.models import TranslationBlock, ReadingOrderMode
+    from app.core.models import TranslationBlock, ReadingOrderMode, TextDirection
 except ImportError:
     _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     if _root not in sys.path:
         sys.path.insert(0, _root)
     from app.core.ocr.base import merge_adjacent_boxes, calculate_polygon_angle
     from app.core.ocr.reading_order import sort_reading_order
-    from app.core.models import TranslationBlock, ReadingOrderMode
+    from app.core.models import TranslationBlock, ReadingOrderMode, TextDirection
 
 try:
     from app.core.pipeline import (
@@ -229,8 +229,8 @@ def ensemble_recognize_text(
         if conf_sec >= 0.75:
             if alphanumeric_cnt1 >= 1 or conf_sec >= conf_pri or latin_letters_cnt2 >= 4:
                 return t2, float(conf_sec)
-        # 1c. Primary contains latin/alphanumeric noise mixed with kana (e.g. 'Sersand' or '(19)')
-        if latin_letters_cnt1 >= 3 or alphanumeric_cnt1 >= 3:
+        # 1c. Primary contains latin noise or non-CJK alphanumeric gibberish (preserve CJK + numbers like '100万円')
+        if latin_letters_cnt1 >= 3 or (alphanumeric_cnt1 >= 3 and cjk_cnt1 == 0):
             return t2, float(conf_sec)
         # 1d. Secondary has substantial English words and far outweighs CJK (e.g. status screens / banners)
         if has_substantial_english and (latin_letters_cnt2 >= 10 or latin_letters_cnt2 >= cjk_cnt1 * 2.5):
@@ -1293,6 +1293,39 @@ class OCREngine:
                 if not is_uniform_banner:
                     is_bubble = False
 
+            orig_txt = str(box.get("text", "") or "")
+            has_kana = any('\u3040' <= c <= '\u30ff' for c in orig_txt)
+            has_hangul = any('\uac00' <= c <= '\ud7af' for c in orig_txt)
+            has_hanzi = any('\u4e00' <= c <= '\u9fff' for c in orig_txt)
+            bw_px = max(1, xmax - xmin)
+            bh_px = max(1, ymax - ymin)
+            blk_lines = box.get("lines") or []
+            v_lines = 0
+            h_lines = 0
+            for ln in blk_lines:
+                try:
+                    pts_l = np.asarray(ln, dtype=np.float32)
+                    if len(pts_l) >= 3:
+                        lw_l = float(np.max(pts_l[:, 0]) - np.min(pts_l[:, 0]))
+                        lh_l = float(np.max(pts_l[:, 1]) - np.min(pts_l[:, 1]))
+                        if lh_l >= lw_l * 1.25:
+                            v_lines += 1
+                        elif lw_l >= lh_l * 1.25:
+                            h_lines += 1
+                except Exception:
+                    continue
+
+            blk_direction = TextDirection.AUTO.value
+            if page_is_english or norm_lang == "en" or (has_hangul and not has_kana):
+                blk_direction = TextDirection.HORIZONTAL.value
+            elif has_kana or (norm_lang == "ja" and has_hanzi):
+                if (v_lines > h_lines) or (bh_px > bw_px * 1.15) or (
+                    is_bubble and int(box.get("line_count", 1) or 1) >= 2 and bh_px >= bw_px * 0.85
+                ):
+                    blk_direction = TextDirection.VERTICAL.value
+                elif bw_px > bh_px * 1.25 and h_lines >= v_lines:
+                    blk_direction = TextDirection.HORIZONTAL.value
+
             tb = TranslationBlock(
                 id=str(uuid.uuid4())[:8],
                 original_text=box["text"],
@@ -1306,6 +1339,7 @@ class OCREngine:
                 text_color=detected_text_color,
                 line_colors=detected_line_colors,
                 type="bubble" if is_bubble else "onomatopoeia",
+                direction=blk_direction,
                 confidence=float(box.get("conf", 1.0)),
                 line_count=int(box.get("line_count", 1)),
                 angle=float(box.get("angle", 0.0) or 0.0)

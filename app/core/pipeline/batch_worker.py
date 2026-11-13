@@ -36,6 +36,7 @@ class BatchWorker(QThread):
         root_dir: Optional[str] = None,
         force_retranslate: bool = False,
         retranslate_from_cache: bool = False,
+        clear_cache_dirs: bool = True,
         parent=None
     ):
         super().__init__(parent)
@@ -45,6 +46,7 @@ class BatchWorker(QThread):
         self.root_dir = root_dir
         self.force_retranslate = force_retranslate
         self.retranslate_from_cache = retranslate_from_cache
+        self.clear_cache_dirs = clear_cache_dirs
         self._is_cancelled = False
         self._is_paused = False
 
@@ -224,10 +226,16 @@ class BatchWorker(QThread):
 
         cache_mgr = get_cache_manager()
 
-        # When force_retranslate is True, first completely clear all software-generated cache files & folders
+        # When force_retranslate is True, clear software-generated cache before reprocessing
         if self.force_retranslate and self.queue_items:
-            self.sig_batch_progress.emit(1, total, "", 0, "正在清理原有缓存文件夹...")
-            cache_mgr.clear_caches_for_items(self.queue_items)
+            self.sig_batch_progress.emit(1, total, "", 0, "正在清理原有缓存...")
+            if self.clear_cache_dirs:
+                cache_mgr.clear_caches_for_items(self.queue_items)
+            else:
+                for it in self.queue_items:
+                    p = it.get("path") if isinstance(it, dict) else str(it)
+                    if p:
+                        cache_mgr.clear_cache(p)
 
         import time
         handled_indices = set()

@@ -135,8 +135,10 @@ class PromptTemplates:
             )
         else:
             rule_3 = (
-                "3. Honorifics & Speech Register:\n"
+                "3. Japanese Manga Localization, Honorifics & OCR Furigana Handling:\n"
                 "   - Preserve character personality: tsundere, polite (keigo), delinquent (ore/tameguchi), archaic/samurai, gyaru, or child speech.\n"
+                "   - Recover omitted Japanese subjects/objects (zero-pronouns) accurately from verb register, sentence-final particles (〜わ/〜ぜ/〜ぞ/〜の/〜かしら), and preceding context.\n"
+                "   - Clean OCR ruby/furigana artifacts automatically (do NOT double-translate stray hiragana/katakana reading glosses attached beside kanji); keep dialogue concise and punchy to fit vertical Japanese speech bubbles.\n"
                 "   - Handle Japanese honorifics contextually:\n"
                 "     * When translating to Chinese: '-san' -> 先生/小姐/同学/自然称呼; '-chan' -> 小X/酱; '-kun' -> 君/同学; '-senpai' -> 前辈/学长; '-sensei' -> 老师; '-sama' -> 大人/阁下.\n"
                 "     * When translating to English: Retain common manga honorifics (e.g. Senpai, Sensei, -san) where culturally fitting.\n"

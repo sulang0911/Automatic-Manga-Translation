@@ -81,3 +81,14 @@ def test_multi_tier_complex_manga_page():
     ordered = sort_reading_order(shuffled, mode=ReadingOrderMode.MANGA_RTL.value)
 
     assert [b.id for b in ordered] == ["t1_r", "t1_l", "t2_m", "t3_r", "t3_m", "t3_l"]
+
+
+def test_manga_rtl_stacked_left_panels_adjacent_to_tall_right_panel():
+    """Tall right-side manga bubble spanning two left-side stacked bubbles must keep top-to-bottom order on the left."""
+    r_tall = TranslationBlock(id="r_tall", xmin=65.0, ymin=5.0, xmax=90.0, ymax=65.0)
+    l_top = TranslationBlock(id="l_top", xmin=15.0, ymin=8.0, xmax=38.0, ymax=28.0)
+    # Lower-left bubble overlaps l_top horizontally and is slightly shifted right
+    l_bot = TranslationBlock(id="l_bot", xmin=20.0, ymin=35.0, xmax=44.0, ymax=58.0)
+
+    ordered = sort_reading_order([l_bot, l_top, r_tall], mode=ReadingOrderMode.MANGA_RTL.value)
+    assert [b.id for b in ordered] == ["r_tall", "l_top", "l_bot"]

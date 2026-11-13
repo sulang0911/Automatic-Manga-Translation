@@ -373,5 +373,65 @@ def test_vertical_bubble_uses_tall_column_height_during_auto_fit():
     assert bh == pytest.approx(360.0, abs=1.0)
 
 
+def test_vertical_kinsoku_and_chinese_quotes():
+    """Vertical layout maps Chinese curly quotes / fullwidth double punct and enforces Kinsoku Shori."""
+    v = VerticalLayoutEngine()
+    cols = v.wrap_vertical_columns(
+        text="“真的假的！？太棒了。”",
+        max_height=20.0 * 1.10 * 5.2,  # 5 chars per column
+        font_size=20.0,
+    )
+    assert len(cols) >= 2
+    assert cols[0][0] == "﹁"
+    flat = "".join("".join(c) for c in cols)
+    assert "⁉" in flat
+    assert cols[-1][-1] == "﹂"
+    # Gyōtō kinsoku chars must never begin a vertical column
+    for col in cols:
+        assert col[0] not in ("。", "、", "！", "？", "⁉", "‼", "﹂", "︶")
+
+
+def test_japanese_oval_bubble_multicolumn_auto_vertical_vs_english_korean():
+    """Squarish multi-column Japanese bubble & explicit VERTICAL render vertically RTL; Korean/English stay horizontal."""
+    engine = TypographyEngine()
+    img = np.full((400, 400, 3), 255, dtype=np.uint8)
+    calls = []
+    orig_compute = engine.vertical_layout.compute_layout
+
+    def spy_compute(*args, **kwargs):
+        calls.append(kwargs.get("text") if "text" in kwargs else args[0])
+        return orig_compute(*args, **kwargs)
+
+    engine.vertical_layout.compute_layout = spy_compute
+
+    # 1. Squarish 3-column Japanese oval bubble (120x120) -> vertical RTL
+    ja_multi = TranslationBlock(
+        id="ja_oval", xmin=10.0, ymin=10.0, xmax=40.0, ymax=40.0,
+        original_text="そんな\nこと\nないよ",
+        translated_text="才没有那种事",
+        line_count=3,
+        type="bubble",
+    )
+    # 2. Explicit VERTICAL on square box -> honored for CJK
+    explicit_vert = TranslationBlock(
+        id="exp_v", xmin=50.0, ymin=10.0, xmax=80.0, ymax=40.0,
+        original_text="まさか",
+        translated_text="难道说",
+        direction=TextDirection.VERTICAL.value,
+    )
+    # 3. Squarish Korean bubble -> stays horizontal under AUTO
+    ko_block = TranslationBlock(
+        id="ko_sq", xmin=10.0, ymin=50.0, xmax=40.0, ymax=85.0,
+        original_text="정말\n그래요?",
+        translated_text="真的吗？",
+        line_count=2,
+    )
+    engine.render_page(img, [ja_multi, explicit_vert, ko_block], StyleConfig(font_size_scale=0.8))
+    assert "才没有那种事" in calls
+    assert "难道说" in calls
+    assert "真的吗？" not in calls
+
+
+
 
 

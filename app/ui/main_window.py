@@ -328,6 +328,7 @@ class MainWindow(QMainWindow):
         self.page_list = PageListWidget(self.sidebar_drawer)
         self.page_list.sig_page_selected.connect(self._on_page_selected)
         self.page_list.sig_page_removed.connect(self._on_page_removed)
+        self.page_list.sig_pages_removed.connect(self._on_pages_removed)
         self.page_list.sig_start_batch.connect(lambda: self._start_batch(force_retranslate=False))
         self.page_list.sig_start_retranslate_from_cache.connect(lambda: self._start_batch(force_retranslate=False, retranslate_from_cache=True))
         self.page_list.sig_start_retranslate_all.connect(lambda: self._start_batch(force_retranslate=True))
@@ -338,6 +339,11 @@ class MainWindow(QMainWindow):
         self.page_list.sig_export_all.connect(self._export_all_pages)
         self.page_list.sig_edit_page_style.connect(self._open_page_style_dialog)
         self.page_list.sig_cache_cleared.connect(self._on_page_cache_cleared)
+        self.page_list.sig_batch_translate_selected.connect(lambda items: self._start_selected_batch(items, force_retranslate=False))
+        self.page_list.sig_retranslate_selected_from_cache.connect(lambda items: self._start_selected_batch(items, force_retranslate=False, retranslate_from_cache=True))
+        self.page_list.sig_retranslate_selected.connect(lambda items: self._start_selected_batch(items, force_retranslate=True))
+        self.page_list.sig_export_selected.connect(self._export_selected_pages)
+        self.page_list.sig_batch_cache_cleared.connect(self._on_pages_cache_cleared)
         self.page_list.sig_count_changed.connect(lambda count: self.drop_zone.set_compact(count > 0))
         drawer_layout.addWidget(self.page_list, 1)
 
@@ -814,10 +820,14 @@ class MainWindow(QMainWindow):
         self._finalize_paths_added(new_count, paths)
 
     def _on_page_removed(self, page_id: str):
+        self._on_pages_removed([page_id])
+
+    def _on_pages_removed(self, page_ids: List[str]):
+        removed_ids = set(page_ids)
         total = len(self.page_list.items_data)
         if total == 0:
             self._on_page_list_cleared()
-        elif self.current_image_data and self.current_image_data.get("id") == page_id:
+        elif self.current_image_data and self.current_image_data.get("id") in removed_ids:
             last_row = getattr(self.page_list, "last_removed_row", 0)
             new_idx = max(0, min(total - 1, last_row))
             self.page_list.list_widget.setCurrentRow(new_idx)
@@ -1903,33 +1913,26 @@ class MainWindow(QMainWindow):
                 pass
         self.status_label.setText(f"翻译源语言已切换为: {lang}")
 
-    def _on_page_cache_cleared(self, item_data: Dict[str, Any]):
-        """Called when user clears cache for a page from the sidebar right-click menu."""
-        path = item_data.get("path", "")
-        filename = os.path.basename(path)
-        if not self.current_image_data or self.current_image_data.get("path") != path:
-            self.toast.show_message(f"已清除【{filename}】缓存", "success")
+    def _reset_active_canvas_to_original(self, push_undo: bool = True):
+        """Resets the currently displayed canvas page back to original image state."""
+        if not self.current_image_data:
             return
+        if push_undo:
+            self._push_undo_snapshot("清除页面缓存")
 
-        self._push_undo_snapshot("清除页面缓存")
-
-        # Reset in-memory data
+        path = self.current_image_data.get("path", "")
         self.current_image_data["blocks"] = []
         self.current_image_data["erased_img"] = None
         self.current_image_data["translated_img"] = None
 
-        # Reset canvas to original image
         original_cv = self.current_image_data.get("original_cv")
         if original_cv is None:
             original_cv = self.current_image_data.get("img")
-        if original_cv is None:
-            # Try to reload from disk
-            import cv2
-            if path and os.path.exists(path):
-                original_cv = safe_cv2_imread(path)
-                if original_cv is not None:
-                    self.current_image_data["original_cv"] = original_cv
-                    self.current_image_data["img"] = original_cv
+        if original_cv is None and path and os.path.exists(path):
+            original_cv = safe_cv2_imread(path)
+            if original_cv is not None:
+                self.current_image_data["original_cv"] = original_cv
+                self.current_image_data["img"] = original_cv
 
         self.canvas_view.set_data(
             original_cv=original_cv,
@@ -1942,8 +1945,32 @@ class MainWindow(QMainWindow):
             self._mode_buttons["original"].setChecked(True)
         self.inspector_panel.set_blocks([])
         self._update_status_bubble_count(0)
+
+    def _on_page_cache_cleared(self, item_data: Dict[str, Any]):
+        """Called when user clears cache for a page from the sidebar right-click menu."""
+        path = item_data.get("path", "")
+        filename = os.path.basename(path)
+        if not self.current_image_data or self.current_image_data.get("path") != path:
+            self.toast.show_message(f"已清除【{filename}】缓存", "success")
+            return
+
+        self._reset_active_canvas_to_original(push_undo=True)
         self.status_label.setText(f"已清除【{filename}】本地缓存，已重置为原图！")
         self.toast.show_message(f"🧹 已清除【{filename}】缓存，重置为原图", "success")
+
+    def _on_pages_cache_cleared(self, cleared_items: List[Dict[str, Any]]):
+        """Called when user clears caches for multiple selected pages from the sidebar right-click menu."""
+        if not cleared_items:
+            return
+        cleared_ids = {it.get("id") for it in cleared_items if it.get("id")}
+        cleared_paths = {it.get("path") for it in cleared_items if it.get("path")}
+        cur_id = self.current_image_data.get("id") if self.current_image_data else None
+        cur_path = self.current_image_data.get("path") if self.current_image_data else None
+        if self.current_image_data and (cur_id in cleared_ids or cur_path in cleared_paths):
+            self._reset_active_canvas_to_original(push_undo=True)
+        count = len(cleared_items)
+        self.status_label.setText(f"已清除选中的 {count} 个页面缓存")
+        self.toast.show_message(f"🧹 已清除选中的 {count} 个页面缓存", "success")
 
     def _on_canvas_clear_cache_requested(self):
         """Called when user clicks 'Clear Page Cache' from the canvas right-click menu."""
@@ -2471,12 +2498,35 @@ class MainWindow(QMainWindow):
             self.page_list.update_item_status(page_id, "failed", f"失败: {short_err}")
         self.toast.show_message(err_msg, "error")
 
+    def _start_selected_batch(
+        self,
+        selected_items: List[Dict[str, Any]],
+        force_retranslate: bool = False,
+        export_dir: Optional[str] = None,
+        retranslate_from_cache: bool = False,
+    ):
+        """Runs batch processing scoped strictly to Ctrl/Shift-selected pages."""
+        if not selected_items:
+            self.toast.show_message("请先在左侧列表选中要处理的页面！", "warning")
+            return
+        if self.active_batch_worker and self.active_batch_worker.isRunning():
+            self.toast.show_message("当前正在执行批处理任务，请先等待完成或取消后再操作。", "warning")
+            return
+        self._start_batch(
+            queue_items=list(selected_items),
+            force_retranslate=force_retranslate,
+            export_dir=export_dir,
+            retranslate_from_cache=retranslate_from_cache,
+            clear_cache_dirs=False,
+        )
+
     def _start_batch(
         self,
         queue_items: Optional[List[Dict[str, Any]]] = None,
         force_retranslate: bool = False,
         export_dir: Optional[str] = None,
-        retranslate_from_cache: bool = False
+        retranslate_from_cache: bool = False,
+        clear_cache_dirs: Optional[bool] = None,
     ):
         """Launches BatchWorker QThread for chapter queue."""
         self._flush_pending_edits()
@@ -2497,10 +2547,13 @@ class MainWindow(QMainWindow):
                 self.page_list.retranslate_all_btn.setText("全部重译")
             return
 
-        items = queue_items or self.page_list.items_data
+        is_subset = queue_items is not None
+        items = queue_items if is_subset else self.page_list.items_data
         if not items:
             self.toast.show_message("处理队列为空，请先添加漫画页面！", "warning")
             return
+        if clear_cache_dirs is None:
+            clear_cache_dirs = not is_subset
 
         self.progress_bar.show()
         self.progress_bar.setValue(0)
@@ -2517,12 +2570,17 @@ class MainWindow(QMainWindow):
         if hasattr(self.page_list, "retranslate_all_btn"):
             self.page_list.retranslate_all_btn.setText("⏹ 取消")
 
-        # When force_retranslate is True (全部重新翻译), clear all software-generated cache files & folders first
+        # When force_retranslate is True, clear software cache only for target items
         if force_retranslate:
             cache_mgr = get_cache_manager()
-            cache_mgr.clear_caches_for_items(items)
+            if clear_cache_dirs:
+                cache_mgr.clear_caches_for_items(items)
+            else:
+                for it in items:
+                    if it.get("path"):
+                        cache_mgr.clear_cache(it["path"])
 
-            # Reset in-memory state for all queue items
+            # Reset in-memory state for target queue items
             for it in items:
                 it["blocks"] = []
                 it["erased_img"] = None
@@ -2530,34 +2588,26 @@ class MainWindow(QMainWindow):
                 if hasattr(self.page_list, "update_item_status"):
                     self.page_list.update_item_status(it.get("id"), "queued", "等待中")
 
-            # Reset canvas view to original mode if current page is in list
-            if self.current_image_data:
-                self.current_image_data["blocks"] = []
-                self.current_image_data["erased_img"] = None
-                self.current_image_data["translated_img"] = None
-                if hasattr(self, "canvas_view") and hasattr(self.canvas_view, "original_cv"):
-                    self.canvas_view.set_data(
-                        original_cv=self.canvas_view.original_cv,
-                        translated_cv=None,
-                        erased_cv=None,
-                        blocks=[]
-                    )
-                    self.canvas_view.set_view_mode("original")
-                    if hasattr(self, "_mode_buttons") and "original" in self._mode_buttons:
-                        self._mode_buttons["original"].setChecked(True)
-                if hasattr(self, "inspector_panel"):
-                    self.inspector_panel.set_blocks([])
+            # Reset canvas view to original mode only if current active page is included in target items
+            target_ids = {it.get("id") for it in items if it.get("id")}
+            target_paths = {it.get("path") for it in items if it.get("path")}
+            cur_id = self.current_image_data.get("id") if self.current_image_data else None
+            cur_path = self.current_image_data.get("path") if self.current_image_data else None
+            if self.current_image_data and (cur_id in target_ids or cur_path in target_paths):
+                self._reset_active_canvas_to_original(push_undo=False)
 
-            self.status_label.setText("已清理旧缓存文件夹，正在启动全量重新翻译...")
-            self.toast.show_message("已清理原有缓存文件夹，开始全量重新翻译...", "info")
+            scope_desc = f"选中的 {len(items)} 页" if is_subset else "全量"
+            self.status_label.setText(f"已清理旧缓存，正在启动{scope_desc}重新翻译...")
+            self.toast.show_message(f"已清理原有缓存，开始{scope_desc}重新翻译...", "info")
         elif retranslate_from_cache:
             for it in items:
                 it["translated_img"] = None
                 it["blocks"] = None
                 if hasattr(self.page_list, "update_item_status"):
                     self.page_list.update_item_status(it.get("id"), "processing", "待重译(缓存)")
-            self.status_label.setText("正在基于缓存中的识别文字重新翻译并渲染...")
-            self.toast.show_message("开始基于缓存直接重新翻译与排版渲染 (免重新OCR识别)...", "info")
+            scope_desc = f"选中的 {len(items)} 页" if is_subset else "缓存中的识别文字"
+            self.status_label.setText(f"正在基于{scope_desc}重新翻译并渲染...")
+            self.toast.show_message(f"开始基于缓存直接重新翻译与排版渲染 (免重新OCR识别)...", "info")
 
         if export_dir:
             export_dir = os.path.abspath(export_dir)
@@ -2572,6 +2622,7 @@ class MainWindow(QMainWindow):
             export_dir=export_dir,
             force_retranslate=force_retranslate,
             retranslate_from_cache=retranslate_from_cache,
+            clear_cache_dirs=clear_cache_dirs,
             parent=self
         )
         self.active_batch_worker.sig_batch_progress.connect(self._on_batch_progress)
@@ -2608,7 +2659,7 @@ class MainWindow(QMainWindow):
             is_multi_batch_running = (
                 self.active_batch_worker is not None
                 and self.active_batch_worker.isRunning()
-                and len(getattr(self.page_list, "items_data", [])) > 1
+                and len(getattr(self.active_batch_worker, "queue_items", []) or []) > 1
             )
             if not is_multi_batch_running:
                 self._on_page_selected(self.current_image_data)
@@ -2703,6 +2754,35 @@ class MainWindow(QMainWindow):
             self.toast.show_message(f"成功导出页面至: {os.path.basename(file_path)}", "success")
         else:
             self.toast.show_message("页面导出失败，请检查写入权限。", "error")
+
+    def _export_selected_pages(self, selected_items: List[Dict[str, Any]]):
+        """Batch exports only the Ctrl/Shift-selected pages to an output folder."""
+        if not selected_items:
+            self.toast.show_message("请先选中要导出的页面！", "warning")
+            return
+        if self.active_batch_worker and self.active_batch_worker.isRunning():
+            self.toast.show_message("当前正在执行批处理任务，请先等待完成或取消后再操作。", "warning")
+            return
+
+        self._flush_pending_edits()
+        get_cache_manager().flush_pending_writes(timeout=5.0)
+
+        default_dir = getattr(self.config, "export_dir", "") or os.path.join(os.getcwd(), "exported_chapter")
+        chosen_dir = QFileDialog.getExistingDirectory(
+            self,
+            f"选择选中 {len(selected_items)} 个页面的导出目录",
+            default_dir,
+        )
+        if not chosen_dir:
+            return
+
+        self.toast.show_message(f"开始批量导出选中的 {len(selected_items)} 个页面至: {os.path.basename(chosen_dir)}", "info")
+        self._start_batch(
+            queue_items=list(selected_items),
+            force_retranslate=False,
+            export_dir=chosen_dir,
+            clear_cache_dirs=False,
+        )
 
     def _export_all_pages(self):
         """Batch exports all pages to an output folder with on-the-fly rendering."""

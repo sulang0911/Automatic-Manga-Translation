@@ -11,7 +11,8 @@ from typing import List, Dict, Optional, Any, Callable, Tuple
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QListWidget,
-    QListWidgetItem, QToolButton, QFrame, QMenu, QFileDialog, QPushButton, QButtonGroup
+    QListWidgetItem, QToolButton, QFrame, QMenu, QFileDialog, QPushButton, QButtonGroup,
+    QAbstractItemView,
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QSize
 from PyQt6.QtGui import QPixmap, QIcon, QColor, QPainter, QBrush, QDragEnterEvent, QDropEvent, QCursor
@@ -270,6 +271,12 @@ class PageListWidget(QWidget):
     sig_export_all = pyqtSignal()
     sig_edit_page_style = pyqtSignal(dict)
     sig_cache_cleared = pyqtSignal(dict)
+    sig_batch_translate_selected = pyqtSignal(list)
+    sig_retranslate_selected_from_cache = pyqtSignal(list)
+    sig_retranslate_selected = pyqtSignal(list)
+    sig_export_selected = pyqtSignal(list)
+    sig_batch_cache_cleared = pyqtSignal(list)
+    sig_pages_removed = pyqtSignal(list)
     sig_count_changed = pyqtSignal(int)
     sig_async_batch_ready = pyqtSignal(int, list, list, object)
 
@@ -381,8 +388,9 @@ class PageListWidget(QWidget):
 
         layout.addWidget(self.filter_bar)
 
-        # List Widget
+        # List Widget (supports Ctrl/Shift multi-selection for batch context menu actions)
         self.list_widget = QListWidget(self)
+        self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.list_widget.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
         self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.list_widget.currentRowChanged.connect(self._on_row_changed)
@@ -655,9 +663,24 @@ class PageListWidget(QWidget):
         if callable(on_finished):
             on_finished(added_count)
 
+    def get_selected_items(self) -> List[Dict[str, Any]]:
+        """Returns visible selected page dicts ordered by their list index."""
+        selected_rows = sorted(
+            {
+                self.list_widget.row(li)
+                for li in self.list_widget.selectedItems()
+                if not li.isHidden() and 0 <= self.list_widget.row(li) < len(self.items_data)
+            }
+        )
+        return [self.items_data[r] for r in selected_rows]
+
     def eventFilter(self, watched, event):
         if watched == self.list_widget and event.type() == event.Type.KeyPress:
             if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+                selected = self.get_selected_items()
+                if len(selected) > 1:
+                    self.remove_items([d["id"] for d in selected if d.get("id")])
+                    return True
                 curr_row = self.list_widget.currentRow()
                 if 0 <= curr_row < len(self.items_data):
                     item_id = self.items_data[curr_row].get("id")
@@ -674,11 +697,52 @@ class PageListWidget(QWidget):
                 removed = self.items_data.pop(row)
                 if removed.get("path"):
                     AsyncThumbnailManager.instance().invalidate(removed["path"])
-                self.list_widget.takeItem(row)
+                prev_block = self.list_widget.blockSignals(True)
+                try:
+                    self.list_widget.takeItem(row)
+                finally:
+                    self.list_widget.blockSignals(prev_block)
                 self._item_widgets.pop(item_id, None)
                 self._update_count()
                 self.sig_page_removed.emit(item_id)
                 break
+
+    def remove_items(self, item_ids: List[str]):
+        """Removes multiple page items cleanly in one pass."""
+        if not item_ids:
+            return
+        if len(item_ids) == 1:
+            self.remove_item(item_ids[0])
+            return
+        id_set = set(item_ids)
+        rows_to_remove = [
+            row for row, item in enumerate(self.items_data) if item.get("id") in id_set
+        ]
+        if not rows_to_remove:
+            return
+        first_removed_row = rows_to_remove[0]
+        removed_ids: List[str] = []
+        thumb_mgr = AsyncThumbnailManager.instance()
+        self.list_widget.setUpdatesEnabled(False)
+        prev_block = self.list_widget.blockSignals(True)
+        try:
+            for row in reversed(rows_to_remove):
+                removed = self.items_data.pop(row)
+                rid = removed.get("id")
+                if rid:
+                    removed_ids.append(rid)
+                    self._item_widgets.pop(rid, None)
+                if removed.get("path"):
+                    thumb_mgr.invalidate(removed["path"])
+                self.list_widget.takeItem(row)
+        finally:
+            self.list_widget.blockSignals(prev_block)
+            self.list_widget.setUpdatesEnabled(True)
+        self.last_removed_row = first_removed_row
+        self._update_count()
+        if removed_ids:
+            removed_ids.reverse()
+            self.sig_pages_removed.emit(removed_ids)
 
     def cleanup_temp_dirs(self):
         """Removes any temporary directories created during zip/cbz archive imports."""
@@ -790,6 +854,74 @@ class PageListWidget(QWidget):
         if 0 <= row < len(self.items_data):
             self.sig_edit_page_style.emit(self.items_data[row])
 
+    def _reset_items_cache_state(self, items_list: List[Dict[str, Any]]) -> None:
+        """Clears per-page disk caches and resets in-memory state/UI without removing sibling caches."""
+        cache_mgr = get_cache_manager()
+        for item_data in items_list:
+            item_path = item_data.get("path", "")
+            if item_path:
+                cache_mgr.clear_cache(item_path)
+            item_data["blocks"] = []
+            item_data["erased_img"] = None
+            item_data["translated_img"] = None
+            item_id = item_data.get("id")
+            if item_id:
+                self.update_item_status(item_id, "queued", "等待中")
+                item_widget = self._item_widgets.get(item_id)
+                if item_widget:
+                    item_widget.reload_thumbnail()
+
+    def _exec_multi_context_menu(self, pos, selected_items: List[Dict[str, Any]]) -> None:
+        """Builds and executes the batch right-click menu for multiple selected pages."""
+        count = len(selected_items)
+        menu = QMenu(self)
+        header_act = menu.addAction(f"已选中 {count} 个页面")
+        header_act.setEnabled(False)
+        menu.addSeparator()
+
+        act_batch_translate = menu.addAction(
+            get_icon("play_all", color="#0A84FF", size=14),
+            f"批量翻译选中页面 ({count} 页，跳过已完成)",
+        )
+        act_retranslate_cached = menu.addAction(
+            get_icon("sparkles", color="#0A84FF", size=14),
+            f"按缓存重译选中页面 ({count} 页，免重新识别)",
+        )
+        act_retranslate = menu.addAction(
+            get_icon("refresh", color="#FF9F0A", size=14),
+            f"完全重译选中页面 ({count} 页，清除缓存)",
+        )
+        act_export = menu.addAction(
+            get_icon("download", color="#30D158", size=14),
+            f"批量导出选中页面 ({count} 页)...",
+        )
+        menu.addSeparator()
+        act_clear_cache = menu.addAction(
+            get_icon("trash", color="#FF9F0A", size=14),
+            f"批量清除选中页面缓存 ({count} 页)",
+        )
+        act_remove = menu.addAction(
+            get_icon("trash", color="#FF453A", size=14),
+            f"从列表中移除选中页面 ({count} 页)",
+        )
+
+        chosen = menu.exec(self.list_widget.mapToGlobal(pos))
+        if chosen is None:
+            return
+        if chosen == act_batch_translate:
+            self.sig_batch_translate_selected.emit(selected_items)
+        elif chosen == act_retranslate_cached:
+            self.sig_retranslate_selected_from_cache.emit(selected_items)
+        elif chosen == act_retranslate:
+            self.sig_retranslate_selected.emit(selected_items)
+        elif chosen == act_export:
+            self.sig_export_selected.emit(selected_items)
+        elif chosen == act_clear_cache:
+            self._reset_items_cache_state(selected_items)
+            self.sig_batch_cache_cleared.emit(selected_items)
+        elif chosen == act_remove:
+            self.remove_items([d["id"] for d in selected_items if d.get("id")])
+
     def _show_context_menu(self, pos):
         item = self.list_widget.itemAt(pos)
         if not item:
@@ -797,7 +929,16 @@ class PageListWidget(QWidget):
         row = self.list_widget.row(item)
         if not (0 <= row < len(self.items_data)):
             return
-        self.list_widget.setCurrentItem(item)
+        # Only reset selection to clicked item if it wasn't part of the current selection;
+        # right-clicking a multi-selected item preserves Ctrl/Shift multi-selection.
+        if not item.isSelected():
+            self.list_widget.setCurrentItem(item)
+
+        selected_items = self.get_selected_items()
+        if len(selected_items) >= 2:
+            self._exec_multi_context_menu(pos, selected_items)
+            return
+
         data = self.items_data[row]
         path = data.get("path", "")
 
@@ -827,15 +968,7 @@ class PageListWidget(QWidget):
         elif chosen == act_retranslate_cached_all:
             self.sig_start_retranslate_from_cache.emit()
         elif chosen == act_retranslate_this:
-            if path:
-                get_cache_manager().clear_cache(path)
-            data["blocks"] = []
-            data["erased_img"] = None
-            data["translated_img"] = None
-            self.update_item_status(data["id"], "queued", "等待中")
-            item_widget = self._item_widgets.get(data["id"])
-            if item_widget:
-                item_widget.reload_thumbnail()
+            self._reset_items_cache_state([data])
             self.sig_translate_page.emit(data)
         elif chosen == act_retranslate_all:
             self.sig_start_retranslate_all.emit()
@@ -849,14 +982,7 @@ class PageListWidget(QWidget):
                 subprocess.Popen(f'explorer /select,"{os.path.normpath(path)}"')
         elif chosen == act_clear_cache:
             if path:
-                get_cache_manager().clear_cache(path)
-                data["blocks"] = []
-                data["erased_img"] = None
-                data["translated_img"] = None
-                self.update_item_status(data["id"], "queued", "等待中")
-                item_widget = self._item_widgets.get(data["id"])
-                if item_widget:
-                    item_widget.reload_thumbnail()
+                self._reset_items_cache_state([data])
                 self.sig_cache_cleared.emit(data)
         elif chosen == act_remove:
             self.remove_item(data["id"])

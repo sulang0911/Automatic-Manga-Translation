@@ -818,3 +818,38 @@ def test_stroked_mask_high_res_and_soft_outer_glow_coverage():
     m_wall = get_stroked_text_mask(wall, img_max_dim=1024)
     assert m_wall is not None
     assert m_wall[45, 167] == 255 and m_wall[45, 172] == 255
+
+
+def test_merge_wide_4col_vertical_japanese_bubble():
+    """A 4-column Japanese vertical speech bubble wider than tall still merges Right-to-Left."""
+    from app.core.ocr.base import merge_adjacent_boxes
+    boxes = [
+        {"xmin": 260, "ymin": 100, "xmax": 280, "ymax": 190, "text": "一列", "conf": 0.95},
+        {"xmin": 230, "ymin": 100, "xmax": 250, "ymax": 190, "text": "二列", "conf": 0.95},
+        {"xmin": 200, "ymin": 100, "xmax": 220, "ymax": 190, "text": "三列", "conf": 0.95},
+        {"xmin": 170, "ymin": 100, "xmax": 190, "ymax": 190, "text": "四列", "conf": 0.95},
+    ]
+    merged = merge_adjacent_boxes(boxes, img_w=1000, img_h=1000)
+    assert len(merged) == 1
+    assert merged[0]["text"] == "一列\n二列\n三列\n四列"
+
+
+def test_halftone_screentone_stroked_text_mask_preserves_dots():
+    """White-outlined black text over B&W manga halftone screentone must mask glyphs cleanly without 100% saturation."""
+    from app.core.inpaint.color_analyzer import get_stroked_text_mask
+    h, w = 160, 260
+    canvas = np.full((h, w, 3), 245, dtype=np.uint8)
+    for y in range(0, h, 4):
+        for x in range((y // 2) % 4, w, 4):
+            canvas[y:y+2, x:x+2] = 45
+    ref = np.zeros((h, w), dtype=np.uint8)
+    cv2.putText(canvas, "NANI?!", (35, 95), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 8, cv2.LINE_AA)
+    cv2.putText(canvas, "NANI?!", (35, 95), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (10, 10, 10), 3, cv2.LINE_AA)
+    cv2.putText(ref, "NANI?!", (35, 95), cv2.FONT_HERSHEY_SIMPLEX, 1.2, 255, 3, cv2.LINE_AA)
+
+    m = get_stroked_text_mask(canvas, img_max_dim=1024)
+    assert m is not None
+    assert np.count_nonzero((ref > 0) & (m == 0)) == 0
+    assert np.count_nonzero(m) < m.size * 0.45
+    # Clean corner screentone away from text must stay unmasked
+    assert np.count_nonzero(m[0:20, 0:20]) == 0

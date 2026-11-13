@@ -421,4 +421,53 @@ class TestOCREngineEnsemblePipeline:
         assert res_t == text_sec
         assert res_c == pytest.approx(0.14)
 
+    def test_ensemble_preserves_japanese_cjk_with_digits(self):
+        """Japanese text with digits like '100万円' from Manga-OCR must NOT be overwritten by spurious ASCII noise."""
+        res_t, _ = ensemble_recognize_text(
+            "100万円", 0.95, "II00", 0.30, target_lang="japan"
+        )
+        assert res_t == "100万円"
+
+    def test_ocr_detect_sets_japanese_vertical_direction_and_korean_horizontal(self):
+        """detect_and_recognize sets VERTICAL on Japanese tall/multi-column CTD boxes and HORIZONTAL on Hangul."""
+        from unittest.mock import MagicMock
+        from app.core.models import TextDirection
+
+        eng = OCREngine(engine_type="ctd", use_gpu=False, lang="japan", is_manual=True)
+        eng.enable_ensemble_detection = False
+        eng.enable_ensemble_recognition = False
+
+        mock_ctd = MagicMock()
+        mock_ctd.detect.return_value = ([
+            {
+                "xmin": 220, "ymin": 30, "xmax": 280, "ymax": 170,
+                "text": "", "conf": 0.95,
+                "polygon": [[220, 30], [280, 30], [280, 170], [220, 170]],
+                "angle": 0.0,
+                "lines": [[[255, 35], [275, 35], [275, 165], [255, 165]]],
+                "line_count": 1,
+            },
+            {
+                "xmin": 40, "ymin": 30, "xmax": 95, "ymax": 170,
+                "text": "", "conf": 0.92,
+                "polygon": [[40, 30], [95, 30], [95, 170], [40, 170]],
+                "angle": 0.0,
+                "lines": [],
+                "line_count": 1,
+            },
+        ], None)
+        eng._ctd_detector = mock_ctd
+
+        mock_manga = MagicMock()
+        mock_manga.recognize_crop.side_effect = ["そんなバカな！", "정말이세요"]
+        eng._manga_ocr = mock_manga
+
+        img = np.full((300, 300, 3), 255, dtype=np.uint8)
+        blocks = eng.detect_and_recognize(img)
+        assert len(blocks) == 2
+        assert blocks[0]["original_text"] == "そんなバカな！"
+        assert blocks[0]["direction"] == TextDirection.VERTICAL.value
+        assert blocks[1]["original_text"] == "정말이세요"
+        assert blocks[1]["direction"] == TextDirection.HORIZONTAL.value
+
 
