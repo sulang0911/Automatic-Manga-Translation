@@ -84,7 +84,17 @@ class BlockOcrTranslateWorker(QThread):
                 return
 
             ocr_cfg = self.config.get("ocr", {}) if isinstance(self.config.get("ocr"), dict) else {}
-            from app.core.pipeline.utils import normalize_source_lang, is_auto_source_lang, source_lang_to_ocr_lang, build_ocr_engine_kwargs
+            from app.core.pipeline.utils import (
+                normalize_source_lang,
+                is_auto_source_lang,
+                source_lang_to_ocr_lang,
+                build_ocr_engine_kwargs,
+                extract_onomatopoeia_mode,
+                is_block_ignored_onomatopoeia,
+                partition_render_blocks,
+                prepare_render_base,
+            )
+            onoma_mode = extract_onomatopoeia_mode(self.config)
             effective_source = self.config.get("source_lang") or ocr_cfg.get("lang") or self.config.get("ocr_lang")
             ocr_lang = source_lang_to_ocr_lang(effective_source)
             is_manual = not is_auto_source_lang(effective_source)
@@ -148,17 +158,24 @@ class BlockOcrTranslateWorker(QThread):
                     blocks=[tb],
                     mode="text",
                     source_lang=source_lang,
-                    target_lang=target_lang
+                    target_lang=target_lang,
+                    onomatopoeia_mode=onoma_mode,
                 )
                 if trans_res and len(trans_res) > 0:
                     r0 = trans_res[0]
                     if isinstance(r0, dict):
                         trans_text = str(r0.get("translated_text", "")).strip()
+                        if r0.get("type"):
+                            tb["type"] = r0["type"]
                     else:
                         trans_text = str(getattr(r0, "translated_text", "")).strip()
+                        if getattr(r0, "type", ""):
+                            tb["type"] = r0.type
             else:
                 self.sig_progress.emit(50, "框选区域未检测到文字，保留空白气泡框...")
 
+            if is_block_ignored_onomatopoeia(tb, onoma_mode):
+                trans_text = ""
             tb["translated_text"] = trans_text
 
             if self._is_cancelled:
@@ -167,16 +184,20 @@ class BlockOcrTranslateWorker(QThread):
             # 4. Clean Stroke-Level Background Inpainting (No Outer Border Smudges)
             self.sig_progress.emit(75, "正在消除框选文字底层背景...")
             base_erased = self.existing_erased.copy() if self.existing_erased is not None else self.original_cv.copy()
-            
-            new_erased = self._inpaint_clean_box(
-                base_erased=base_erased,
-                xmin_px=xmin_px,
-                ymin_px=ymin_px,
-                xmax_px=xmax_px,
-                ymax_px=ymax_px,
-                tight_box=tight_box,
-                tb=tb
-            )
+
+            if is_block_ignored_onomatopoeia(tb, onoma_mode):
+                render_blocks, ignored_blocks = partition_render_blocks(self.all_blocks, onoma_mode)
+                new_erased = prepare_render_base(base_erased, self.original_cv, render_blocks, [tb])
+            else:
+                new_erased = self._inpaint_clean_box(
+                    base_erased=base_erased,
+                    xmin_px=xmin_px,
+                    ymin_px=ymin_px,
+                    xmax_px=xmax_px,
+                    ymax_px=ymax_px,
+                    tight_box=tight_box,
+                    tb=tb
+                )
 
             if self._is_cancelled:
                 return
@@ -184,7 +205,9 @@ class BlockOcrTranslateWorker(QThread):
             # 5. Typography Rendering & Cache Saving
             self.sig_progress.emit(90, "正在生成高质量排版与字体渲染...")
             typo_eng = TypographyEngine()
-            rendered_img = typo_eng.render_translations(new_erased, self.all_blocks, self.config)
+            render_blocks, ignored_blocks = partition_render_blocks(self.all_blocks, onoma_mode)
+            render_base = prepare_render_base(new_erased, self.original_cv, render_blocks, ignored_blocks)
+            rendered_img = typo_eng.render_translations(render_base, render_blocks, self.config)
 
             cache_mgr = get_cache_manager()
             if self.image_path:

@@ -83,6 +83,14 @@ class PipelineWorker(QThread):
                     })
                     return
 
+            from app.core.pipeline.utils import (
+                extract_onomatopoeia_mode,
+                is_block_ignored_onomatopoeia,
+                partition_render_blocks,
+                prepare_render_base,
+            )
+            onoma_mode = extract_onomatopoeia_mode(self.config)
+
             if blocks:
                 try:
                     from app.core.inpaint.color_analyzer import refresh_blocks_text_colors
@@ -90,37 +98,17 @@ class PipelineWorker(QThread):
                 except Exception:
                     pass
 
-            # 2. Inpainting Stage
-            if erased_img is None or self.mode in ["full", "inpaint_only"]:
-                if self._is_cancelled: return
-                self.sig_progress.emit(45, "正在执行图像背景文字清除与智能修复...")
-                inpaint_eng = InpaintEngine(mode=self.config.get("inpaint_engine", "auto"))
-                
-                def inpaint_cb(pct, msg):
-                    self.sig_progress.emit(int(45 + pct * 0.25), msg)
-
-                erased_img = inpaint_eng.inpaint(
-                    original_img, blocks,
-                    bubble_dilation=self.config.get("bubble_dilation", 3),
-                    onomatopoeia_dilation=self.config.get("onomatopoeia_dilation", 6),
-                    feather_radius=self.config.get("feather_radius", 4),
-                    progress_callback=inpaint_cb
+            # 2. Translation Stage (before Inpaint so LLM-classified onomatopoeia stays un-erased when ignored)
+            if self.mode not in ("ocr_only", "inpaint_only") and (
+                self.mode in ["full", "translate_only"] or any(
+                    bool(str(b.get("original_text", "")).strip())
+                    and not b.get("translated_text")
+                    and not is_block_ignored_onomatopoeia(b, onoma_mode)
+                    for b in (blocks or [])
                 )
-                self.sig_step_done.emit("inpaint", erased_img)
-
-                if self.mode == "inpaint_only":
-                    self.sig_finished.emit({
-                        "original_img": original_img,
-                        "blocks": blocks,
-                        "erased_img": erased_img,
-                        "translated_img": None
-                    })
-                    return
-
-            # 3. Translation Stage
-            if self.mode in ["full", "translate_only"] or any(not b.get("translated_text") for b in blocks):
+            ):
                 if self._is_cancelled: return
-                self.sig_progress.emit(72, "正在调用大语言模型进行精准翻译...")
+                self.sig_progress.emit(50, "正在调用大语言模型进行精准翻译...")
                 trans_eng = TranslationEngine(
                     provider=self.config.get("provider", "deepseek"),
                     api_key=self.config.get("api_key", ""),
@@ -133,17 +121,47 @@ class PipelineWorker(QThread):
                 )
 
                 def trans_cb(pct, msg):
+                    self.sig_progress.emit(int(50 + pct * 0.20), msg)
+
+                blocks = trans_eng.translate_blocks(blocks, progress_callback=trans_cb, onomatopoeia_mode=onoma_mode)
+                self.sig_step_done.emit("translate", blocks)
+
+            # 3. Inpainting Stage
+            if erased_img is None or self.mode in ["full", "inpaint_only"]:
+                if self._is_cancelled: return
+                self.sig_progress.emit(72, "正在执行图像背景文字清除与智能修复...")
+                inpaint_eng = InpaintEngine(mode=self.config.get("inpaint_engine", "auto"))
+
+                def inpaint_cb(pct, msg):
                     self.sig_progress.emit(int(72 + pct * 0.18), msg)
 
-                blocks = trans_eng.translate_blocks(blocks, progress_callback=trans_cb)
-                self.sig_step_done.emit("translate", blocks)
+                erased_img = inpaint_eng.inpaint(
+                    original_img, blocks,
+                    bubble_dilation=self.config.get("bubble_dilation", 3),
+                    onomatopoeia_dilation=self.config.get("onomatopoeia_dilation", 6),
+                    feather_radius=self.config.get("feather_radius", 4),
+                    progress_callback=inpaint_cb,
+                    onomatopoeia_mode=onoma_mode
+                )
+                self.sig_step_done.emit("inpaint", erased_img)
+
+                if self.mode == "inpaint_only":
+                    self.sig_finished.emit({
+                        "original_img": original_img,
+                        "blocks": blocks,
+                        "erased_img": erased_img,
+                        "translated_img": None
+                    })
+                    return
 
             # 4. Typography Rendering Stage
             if self._is_cancelled: return
             self.sig_progress.emit(92, "正在生成高保真排版与字体渲染...")
             typo_eng = TypographyEngine()
             base_bg = erased_img if erased_img is not None else original_img
-            translated_img = typo_eng.render_translations(base_bg, blocks, self.config)
+            render_blocks, ignored_blocks = partition_render_blocks(blocks, onoma_mode)
+            render_base = prepare_render_base(base_bg, original_img, render_blocks, ignored_blocks)
+            translated_img = typo_eng.render_translations(render_base, render_blocks, self.config)
             self.sig_step_done.emit("render", translated_img)
 
             self.sig_progress.emit(100, "处理完成！")

@@ -138,66 +138,32 @@ class PipelineWorker(QThread):
                     })
                     return
 
+            from app.core.pipeline.utils import (
+                extract_onomatopoeia_mode,
+                heal_mislabeled_onomatopoeia_blocks,
+                is_block_ignored_onomatopoeia,
+                partition_render_blocks,
+                prepare_render_base,
+            )
+            onoma_mode = extract_onomatopoeia_mode(self.config)
+
             if blocks:
+                if self.mode == "translate_only":
+                    heal_mislabeled_onomatopoeia_blocks(blocks)
                 refresh_blocks_text_colors(original_img, blocks)
 
-            # 2. Inpainting Stage
-            erased_saved = False
-            if erased_img is None and cache_status["erased"] and self.mode not in ("full", "inpaint_only"):
-                self.sig_progress.emit(50, "从本地缓存直接载入无字底图(免重复擦除)...")
-                erased_img = cache_mgr.load_page_cache(self.image_path, load_images=True)["erased_img"]
-                erased_saved = True
-                self.sig_step_done.emit("inpaint", erased_img)
-            elif erased_img is None or self.mode in ["full", "inpaint_only"]:
-                if self._is_cancelled:
-                    return
-                self.sig_progress.emit(45, "正在执行图像背景文字清除与智能修复...")
-                inp_cfg = self.config.get("inpaint", {}) if isinstance(self.config.get("inpaint"), dict) else {}
-                inpaint_eng = InpaintEngine(mode=inp_cfg.get("engine", self.config.get("inpaint_engine", "auto")))
-
-                def inpaint_cb(pct, msg):
-                    self.sig_progress.emit(int(45 + pct * 0.25), msg)
-
-                onoma_mode = "normal"
-                if hasattr(self.config, "style"):
-                    onoma_mode = getattr(self.config.style, "onomatopoeia_mode", "normal")
-                elif isinstance(self.config, dict):
-                    style_cfg = self.config.get("style", {})
-                    if isinstance(style_cfg, dict):
-                        onoma_mode = style_cfg.get("onomatopoeia_mode", "normal")
-
-                erased_img = inpaint_eng.inpaint(
-                    original_img, blocks,
-                    bubble_dilation=self.config.get("bubble_dilation", 3),
-                    onomatopoeia_dilation=self.config.get("onomatopoeia_dilation", 6),
-                    feather_radius=self.config.get("feather_radius", 4),
-                    progress_callback=inpaint_cb,
-                    manual_mask=self.manual_mask,
-                    onomatopoeia_mode=onoma_mode
+            # 2. Translation Stage (before Inpainting so LLM-identified onomatopoeia stays un-erased when ignored)
+            if self.mode not in ("ocr_only", "inpaint_only") and (
+                self.mode in ["full", "translate_only"] or any(
+                    bool((getattr(b, "original_text", "") if hasattr(b, "original_text") else b.get("original_text", "")).strip())
+                    and not (getattr(b, "translated_text", "") if hasattr(b, "translated_text") else b.get("translated_text", ""))
+                    and not is_block_ignored_onomatopoeia(b, onoma_mode)
+                    for b in (blocks or [])
                 )
-                cache_mgr.save_page_cache(self.image_path, erased_img=erased_img, blocks=blocks)
-                erased_saved = True
-                cleanup_gpu_memory(trim_ram=False)
-                self.sig_step_done.emit("inpaint", erased_img)
-
-                if self.mode == "inpaint_only":
-                    self.sig_finished.emit({
-                        "original_img": original_img,
-                        "blocks": blocks,
-                        "erased_img": erased_img,
-                        "translated_img": None
-                    })
-                    return
-
-            # 3. Translation Stage
-            if self.mode in ["full", "translate_only"] or any(
-                bool((getattr(b, "original_text", "") if hasattr(b, "original_text") else b.get("original_text", "")).strip()) and
-                not (getattr(b, "translated_text", "") if hasattr(b, "translated_text") else b.get("translated_text", ""))
-                for b in (blocks or [])
             ):
                 if self._is_cancelled:
                     return
-                self.sig_progress.emit(72, "正在调用大语言模型进行精准翻译...")
+                self.sig_progress.emit(48, "正在调用大语言模型进行精准翻译...")
                 llm_cfg = self.config.get("llm", {}) if isinstance(self.config.get("llm"), dict) else {}
                 provider_name = llm_cfg.get("provider", self.config.get("provider", "openai"))
                 api_key = llm_cfg.get("api_key", self.config.get("api_key", ""))
@@ -226,7 +192,7 @@ class PipelineWorker(QThread):
                 )
 
                 def trans_cb(pct, msg):
-                    self.sig_progress.emit(int(72 + pct * 0.18), msg)
+                    self.sig_progress.emit(int(48 + pct * 0.18), msg)
 
                 source_lang = self.config.get("source_lang", "自动识别")
                 target_lang = self.config.get("target_lang", "简体中文")
@@ -243,10 +209,51 @@ class PipelineWorker(QThread):
                     mode="text",
                     source_lang=source_lang,
                     target_lang=target_lang,
-                    progress_callback=trans_cb
+                    progress_callback=trans_cb,
+                    onomatopoeia_mode=onoma_mode,
                 )
                 cache_mgr.save_page_cache(self.image_path, blocks=blocks)
                 self.sig_step_done.emit("translate", blocks)
+
+            # 3. Inpainting Stage
+            erased_saved = False
+            if erased_img is None and cache_status["erased"] and self.mode not in ("full", "inpaint_only"):
+                self.sig_progress.emit(72, "从本地缓存直接载入无字底图(免重复擦除)...")
+                erased_img = cache_mgr.load_page_cache(self.image_path, load_images=True)["erased_img"]
+                erased_saved = True
+                self.sig_step_done.emit("inpaint", erased_img)
+            elif erased_img is None or self.mode in ["full", "inpaint_only"]:
+                if self._is_cancelled:
+                    return
+                self.sig_progress.emit(70, "正在执行图像背景文字清除与智能修复...")
+                inp_cfg = self.config.get("inpaint", {}) if isinstance(self.config.get("inpaint"), dict) else {}
+                inpaint_eng = InpaintEngine(mode=inp_cfg.get("engine", self.config.get("inpaint_engine", "auto")))
+
+                def inpaint_cb(pct, msg):
+                    self.sig_progress.emit(int(70 + pct * 0.20), msg)
+
+                erased_img = inpaint_eng.inpaint(
+                    original_img, blocks,
+                    bubble_dilation=self.config.get("bubble_dilation", 3),
+                    onomatopoeia_dilation=self.config.get("onomatopoeia_dilation", 6),
+                    feather_radius=self.config.get("feather_radius", 4),
+                    progress_callback=inpaint_cb,
+                    manual_mask=self.manual_mask,
+                    onomatopoeia_mode=onoma_mode
+                )
+                cache_mgr.save_page_cache(self.image_path, erased_img=erased_img, blocks=blocks)
+                erased_saved = True
+                cleanup_gpu_memory(trim_ram=False)
+                self.sig_step_done.emit("inpaint", erased_img)
+
+                if self.mode == "inpaint_only":
+                    self.sig_finished.emit({
+                        "original_img": original_img,
+                        "blocks": blocks,
+                        "erased_img": erased_img,
+                        "translated_img": None
+                    })
+                    return
 
             # 4. Typography Rendering Stage
             if self._is_cancelled:
@@ -254,21 +261,9 @@ class PipelineWorker(QThread):
             self.sig_progress.emit(92, "正在生成高保真排版与字体渲染...")
             typo_eng = TypographyEngine()
             base_bg = erased_img if erased_img is not None else original_img
-            
-            onoma_mode = "normal"
-            if hasattr(self.config, "style"):
-                onoma_mode = getattr(self.config.style, "onomatopoeia_mode", "normal")
-            elif isinstance(self.config, dict):
-                style_cfg = self.config.get("style", {})
-                if isinstance(style_cfg, dict):
-                    onoma_mode = style_cfg.get("onomatopoeia_mode", "normal")
-
-            render_blocks = [
-                b for b in blocks 
-                if (getattr(b, "type", "") if hasattr(b, "type") else b.get("type", "")) != "onomatopoeia" or onoma_mode != "ignore" or (getattr(b, "force_erase", False) if hasattr(b, "force_erase") else b.get("force_erase", False))
-            ]
-            
-            translated_img = typo_eng.render_translations(base_bg, render_blocks, self.config)
+            render_blocks, ignored_blocks = partition_render_blocks(blocks, onoma_mode)
+            render_base = prepare_render_base(base_bg, original_img, render_blocks, ignored_blocks)
+            translated_img = typo_eng.render_translations(render_base, render_blocks, self.config)
             cache_mgr.save_page_cache(
                 self.image_path,
                 erased_img=None if erased_saved else erased_img,

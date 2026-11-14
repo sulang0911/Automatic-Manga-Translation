@@ -7,7 +7,7 @@ import cv2
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional, Callable, Tuple
 import numpy as np
-from app.core.models import TranslationBlock
+from app.core.models import TranslationBlock, BlockType
 from app.core.inpaint.color_analyzer import get_background_color_hex
 
 
@@ -1333,3 +1333,38 @@ def merge_adjacent_boxes(
         })
 
     return merged
+
+
+def classify_ocr_block_type(
+    crop: Optional[np.ndarray],
+    text: str,
+    xmin: int,
+    ymin: int,
+    xmax: int,
+    ymax: int,
+) -> str:
+    """
+    Classifies an OCR box as 'bubble' or 'onomatopoeia'.
+    Floating subtitles/dialogue over textured art keep 'bubble'; only extreme-aspect
+    non-uniform regions whose text does not match dialogue prose become 'onomatopoeia'.
+    """
+    from app.core.pipeline.utils import is_likely_dialogue_prose
+
+    if is_likely_dialogue_prose(text):
+        return BlockType.BUBBLE.value
+
+    aspect = (xmax - xmin) / max(1, (ymax - ymin))
+    if aspect > 4.0 or aspect < 0.15:
+        is_uniform_banner = False
+        if crop is not None and crop.size > 0:
+            gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
+            h_c, w_c = gray.shape[:2]
+            if h_c >= 4 and w_c >= 4:
+                border_pixels = np.concatenate([gray[0, :], gray[-1, :], gray[:, 0], gray[:, -1]])
+                border_std = float(np.std(border_pixels))
+                med_lum = float(np.median(border_pixels))
+                if border_std < 25.0 or med_lum > 220 or med_lum < 35:
+                    is_uniform_banner = True
+        if not is_uniform_banner:
+            return BlockType.ONOMATOPOEIA.value
+    return BlockType.BUBBLE.value

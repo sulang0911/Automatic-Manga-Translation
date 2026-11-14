@@ -380,11 +380,13 @@ def align_translations_to_blocks(parsed_data: Any, blocks: List[TranslationBlock
     if isinstance(parsed_data, list):
         for idx, item in enumerate(parsed_data):
             if isinstance(item, dict):
+                raw_type = str(item.get("type", "") or "").strip()
                 candidates.append({
                     "raw_id": str(item.get("id", item.get("block_id", ""))).strip(),
                     "orig_text": str(item.get("original_text", item.get("text", item.get("source_text", "")))).strip(),
                     "trans_text": str(item.get("translated_text", item.get("translation", ""))).strip(),
-                    "type": item.get("type", "bubble"),
+                    "type": raw_type or "bubble",
+                    "_type_explicit": bool(raw_type),
                     "index": idx
                 })
             elif isinstance(item, str):
@@ -393,6 +395,7 @@ def align_translations_to_blocks(parsed_data: Any, blocks: List[TranslationBlock
                     "orig_text": "",
                     "trans_text": item.strip(),
                     "type": "bubble",
+                    "_type_explicit": False,
                     "index": idx
                 })
     elif isinstance(parsed_data, dict):
@@ -408,11 +411,13 @@ def align_translations_to_blocks(parsed_data: Any, blocks: List[TranslationBlock
         # Direct dict mapping: {id: text} or {id: {translated_text: ...}}
         for idx, (k, v) in enumerate(parsed_data.items()):
             if isinstance(v, dict):
+                raw_type = str(v.get("type", "") or "").strip()
                 candidates.append({
                     "raw_id": str(k).strip(),
                     "orig_text": str(v.get("original_text", v.get("text", ""))).strip(),
                     "trans_text": str(v.get("translated_text", v.get("translation", ""))).strip(),
-                    "type": v.get("type", "bubble"),
+                    "type": raw_type or "bubble",
+                    "_type_explicit": bool(raw_type),
                     "index": idx
                 })
             elif isinstance(v, str):
@@ -421,6 +426,7 @@ def align_translations_to_blocks(parsed_data: Any, blocks: List[TranslationBlock
                     "orig_text": "",
                     "trans_text": v.strip(),
                     "type": "bubble",
+                    "_type_explicit": False,
                     "index": idx
                 })
 
@@ -532,7 +538,7 @@ def align_translations_to_blocks(parsed_data: Any, blocks: List[TranslationBlock
         if b_idx in assignments:
             cand = assignments[b_idx]
             block.translated_text = cand["trans_text"]
-            if cand.get("type"):
+            if cand.get("type") and (cand.get("_type_explicit", True) or block.type != "onomatopoeia"):
                 block.type = cand["type"]
         elif not block.translated_text:
             block.translated_text = block.original_text
@@ -560,5 +566,11 @@ def align_translations_to_blocks(parsed_data: Any, blocks: List[TranslationBlock
                 swapped_indices.add(i)
                 swapped_indices.add(j)
                 break
+
+    # Prevent accidental automatic SFX tagging on clear dialogue/narration prose
+    from app.core.pipeline.utils import is_likely_dialogue_prose
+    for block in blocks:
+        if str(getattr(block, "type", "") or "").lower() == "onomatopoeia" and is_likely_dialogue_prose(block.original_text):
+            block.type = "bubble"
 
     return blocks

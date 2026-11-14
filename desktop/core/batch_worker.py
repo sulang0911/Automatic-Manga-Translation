@@ -126,14 +126,24 @@ class BatchWorker(QThread):
                 if original_img is None:
                     raise RuntimeError("无法解码图像文件")
 
+                from app.core.pipeline.utils import (
+                    extract_onomatopoeia_mode,
+                    partition_render_blocks,
+                    prepare_render_base,
+                )
+                onoma_mode = extract_onomatopoeia_mode(self.config)
+
                 # OCR
                 self.sig_batch_progress.emit(idx + 1, total, filename, 30, "正在识别文字...")
                 blocks = ocr_eng.detect_and_recognize(original_img)
                 cleanup_gpu_memory(trim_ram=False)
 
+                # Translate before Inpaint so LLM-classified onomatopoeia stays un-erased when ignored
+                self.sig_batch_progress.emit(idx + 1, total, filename, 55, "正在大模型翻译...")
+                blocks = trans_eng.translate_blocks(blocks, onomatopoeia_mode=onoma_mode)
+
                 # Inpaint
-                self.sig_batch_progress.emit(idx + 1, total, filename, 55, "正在消除背景...")
-                onoma_mode = self.config.get("onomatopoeia_mode", "normal")
+                self.sig_batch_progress.emit(idx + 1, total, filename, 75, "正在消除背景...")
                 erased_img = inpaint_eng.inpaint(
                     original_img, blocks,
                     bubble_dilation=self.config.get("bubble_dilation", 3),
@@ -141,23 +151,16 @@ class BatchWorker(QThread):
                     feather_radius=self.config.get("feather_radius", 4),
                     onomatopoeia_mode=onoma_mode
                 )
-                if erased_img is not None:
-                    original_img = None
                 cleanup_gpu_memory(trim_ram=True)
-
-                # Translate
-                self.sig_batch_progress.emit(idx + 1, total, filename, 75, "正在大模型翻译...")
-                blocks = trans_eng.translate_blocks(blocks)
 
                 # Render
                 self.sig_batch_progress.emit(idx + 1, total, filename, 90, "正在生成排版...")
                 base_bg = erased_img if erased_img is not None else original_img
-                render_blocks = [
-                    b for b in blocks
-                    if (getattr(b, "type", "") if hasattr(b, "type") else b.get("type", "")) != "onomatopoeia" or onoma_mode != "ignore" or (getattr(b, "force_erase", False) if hasattr(b, "force_erase") else b.get("force_erase", False))
-                ]
-                translated_img = typo_eng.render_translations(base_bg, render_blocks, self.config)
-                del base_bg
+                render_blocks, ignored_blocks = partition_render_blocks(blocks, onoma_mode)
+                render_base = prepare_render_base(base_bg, original_img, render_blocks, ignored_blocks)
+                translated_img = typo_eng.render_translations(render_base, render_blocks, self.config)
+                original_img = None
+                del base_bg, render_base
 
                 # Auto save if export_dir specified
                 export_path = self.resolve_export_path(item)

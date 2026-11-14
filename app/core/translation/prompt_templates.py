@@ -161,8 +161,8 @@ class PromptTemplates:
             "   - Preserve dramatic punctuation (！？, ……, 〜, ッ) and emotional intensity without robotic literal translation.\n"
             "   - Interjections, sighs, and manga sound effects (SFX) must be translated into idiomatic comic sound effects matching context rather than omitted or transcribed as meaningless noise.\n"
             "5. Classification Guidelines for 'type':\n"
-            "   - 'bubble': Regular dialogue, narration captions, thoughts, or any text spoken INSIDE a speech or thought bubble.\n"
-            "   - 'onomatopoeia': Hand-drawn sound effects (SFX, e.g. ドキドキ, バン, ドン), physical action noises, screams, or side notes OUTSIDE bubbles.\n"
+            "   - 'bubble': All spoken dialogue, narration captions, subtitles, speaker-labeled lines (e.g. (Name) ...), or thoughts — INCLUDING floating/unboxed dialogue printed directly over artwork without a drawn speech bubble.\n"
+            "   - 'onomatopoeia': ONLY pure non-verbal hand-drawn sound effects (SFX, e.g. ドキドキ, バン, ドン, KNOCK!!, CRASH) or pure action noises; NEVER classify spoken dialogue sentences, narration, or speaker-tagged lines as 'onomatopoeia'.\n"
             "6. Output Format & Strict One-to-One Alignment:\n"
             "   - Return ONLY a valid JSON array of objects. No introductory commentary, no trailing remarks.\n"
             "   - Each object MUST correspond strictly to one input block and contain:\n"
@@ -224,6 +224,6 @@ class PromptTemplates:
             f"1. Detect vertical and horizontal {lang_str} text blocks accurately.\n"
             "2. Coordinates (ymin, xmin, ymax, xmax) must be normalized percentages (0.0 to 100.0).\n"
             "3. Identify text_color and bg_color as hex codes (e.g. #000000, #FFFFFF).\n"
-            "4. Classify each block as 'bubble' (inside speech bubble) or 'onomatopoeia' (sound effects outside bubbles).\n"
+            "4. Classify each block as 'bubble' (all spoken dialogue, subtitles, or narration, including floating text without a drawn bubble) or 'onomatopoeia' (pure sound effects / SFX only, never dialogue).\n"
             "5. Return strictly a JSON object conforming to: {\"blocks\": [{\"original_text\": \"...\", \"translated_text\": \"...\", \"ymin\": 10.5, \"xmin\": 20.0, \"ymax\": 30.0, \"xmax\": 40.0, \"text_color\": \"#000000\", \"bg_color\": \"#FFFFFF\", \"type\": \"bubble\"}]}"
         )

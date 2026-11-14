@@ -24,6 +24,11 @@ from app.core.typography.engine import TypographyEngine
 from app.core.inpaint.color_analyzer import refresh_blocks_text_colors
 from app.core.undo_manager import UndoManager, PageSnapshot, are_blocks_equal
 from app.core.pipeline.exporter import MangaExporter
+from app.core.pipeline.utils import (
+    extract_onomatopoeia_mode,
+    partition_render_blocks,
+    prepare_render_base,
+)
 from app.core.cache.cache_manager import get_cache_manager, safe_cv2_imread, safe_cv2_imwrite
 from app.ui.theme.tokens import get_tokens, build_stylesheet
 from app.ui.theme.icons import get_icon
@@ -107,7 +112,11 @@ class _ChapterArchiveExportWorker(QThread):
                     if base_bg is not None:
                         c_blocks = full_c.get("blocks", [])
                         eff_cfg = item.get("style") or full_c.get("page_style") or self.config
-                        rendered = typo_eng.render_translations(base_bg, c_blocks, eff_cfg)
+                        onoma_mode = extract_onomatopoeia_mode(eff_cfg)
+                        render_blocks, ignored_blocks = partition_render_blocks(c_blocks, onoma_mode)
+                        orig_cv = safe_cv2_imread(img_path) if (ignored_blocks and full_c.get("erased_img") is not None) else None
+                        render_base = prepare_render_base(base_bg, orig_cv, render_blocks, ignored_blocks)
+                        rendered = typo_eng.render_translations(render_base, render_blocks, eff_cfg)
                     if rendered is not None:
                         cache_mgr.save_page_cache(img_path, rendered_img=rendered)
                         dst = os.path.join(stage_dir, f"{idx + 1:04d}_{stem}.png")
@@ -1177,11 +1186,13 @@ class MainWindow(QMainWindow):
                         for b in blocks
                     ]
                     try:
-                        render_blocks = [
-                            b for b in model_blocks
-                            if b.type != "onomatopoeia" or onoma_mode != "ignore" or getattr(b, "force_erase", False)
-                        ]
-                        translated = self.typo_engine.render_page(base_bg, render_blocks, page_style)
+                        render_blocks, ignored_blocks = partition_render_blocks(model_blocks, onoma_mode)
+                        if ignored_blocks and erased is not None and cv_img is None:
+                            cv_img = safe_cv2_imread(path)
+                            if cv_img is not None:
+                                item_data["original_cv"] = cv_img
+                        render_base = prepare_render_base(base_bg, cv_img, render_blocks, ignored_blocks)
+                        translated = self.typo_engine.render_page(render_base, render_blocks, page_style)
                         if self.isVisible():
                             import threading
                             threading.Thread(
@@ -1434,7 +1445,11 @@ class MainWindow(QMainWindow):
         self.progress_bar.hide()
         orig_text = str(target_block.get("original_text", "")).strip().replace("\n", " ")
         trans_text = str(target_block.get("translated_text", "")).strip().replace("\n", " ")
-        if orig_text:
+        btype = str(target_block.get("type", "") or "").strip().lower()
+        if orig_text and not trans_text and btype == "onomatopoeia":
+            self.toast.show_message("检测到拟声词，已按设置跳过翻译并保留原图！", "info")
+            self.status_label.setText(f"拟声词已跳过翻译: {orig_text[:20]}")
+        elif orig_text:
             self.toast.show_message(f"已识别并翻译: 【{orig_text[:12]}】→【{trans_text[:12]}】", "success")
             self.status_label.setText(f"框选识别翻译完成: {orig_text[:20]} -> {trans_text[:20]}")
         else:
@@ -1640,24 +1655,37 @@ class MainWindow(QMainWindow):
             return
         blocks = self.current_image_data.get("blocks", [])
         bid = block_data.get("id")
-        
+        new_force = bool(block_data.get("force_erase", False))
+        target_block = None
+
         # We need to find the block in current_image_data and update it
         for idx, b in enumerate(blocks):
-            if isinstance(b, dict) and b.get("id") == bid:
-                b["force_erase"] = block_data.get("force_erase", False)
-            elif not isinstance(b, dict) and getattr(b, "id", None) == bid:
-                b.force_erase = block_data.get("force_erase", False)
-                
+            cur_id = b.get("id") if isinstance(b, dict) else getattr(b, "id", None)
+            if cur_id == bid:
+                target_block = b
+                if isinstance(b, dict):
+                    b["force_erase"] = new_force
+                else:
+                    b.force_erase = new_force
+                break
+
         path = self.current_image_data.get("path")
         if path:
-            from app.core.cache.cache_manager import get_cache_manager
             get_cache_manager().save_page_cache(path, blocks=blocks)
-            
+
         self.inspector_panel.set_blocks(blocks)
         if bid:
             self.inspector_panel.sig_block_selected.emit(str(bid))
-            
-        self._start_pipeline_for_page(mode="inpaint_only")
+
+        if new_force:
+            has_trans = bool(str((target_block.get("translated_text", "") if isinstance(target_block, dict) else getattr(target_block, "translated_text", "")) if target_block is not None else "").strip())
+            if not has_trans and target_block is not None:
+                tb_dict = target_block if isinstance(target_block, dict) else target_block.to_dict()
+                self._start_block_ocr_translate(tb_dict)
+                return
+            self._start_pipeline_for_page(mode="inpaint_only")
+        else:
+            self._re_render_current_page()
 
     def _re_render_current_page(self, async_cache_save: bool = False, save_erased: bool = False):
         """Performs live typography re-render onto canvas using current style configuration."""
@@ -1729,32 +1757,17 @@ class MainWindow(QMainWindow):
             refresh_blocks_text_colors(orig_cv_for_color, blocks)
 
         page_style = self.current_image_data.get("style") or self.config.style
-        onoma_mode = getattr(page_style, "onomatopoeia_mode", "normal")
-        model_blocks = []
-        ignored_blocks = []
-        for b in blocks:
-            tb = b if isinstance(b, TranslationBlock) else TranslationBlock.from_dict(b)
-            if tb.type == "onomatopoeia" and onoma_mode == "ignore" and not getattr(tb, "force_erase", False):
-                ignored_blocks.append(b)
-                continue
-            model_blocks.append(tb)
+        onoma_mode = extract_onomatopoeia_mode(page_style)
+        all_model_blocks = [
+            b if isinstance(b, TranslationBlock) else TranslationBlock.from_dict(b)
+            for b in blocks
+        ]
+        model_blocks, ignored_blocks = partition_render_blocks(all_model_blocks, onoma_mode)
 
-        render_base = base_img
-        if ignored_blocks:
-            orig_for_ignore = getattr(self.canvas_view, "original_cv", None)
-            if orig_for_ignore is None:
-                orig_for_ignore = self.current_image_data.get("original_cv")
-            if orig_for_ignore is not None and render_base is not None:
-                from app.core.inpaint.restore_helper import restore_block_pixels
-                render_base = render_base.copy()
-                for ig_b in ignored_blocks:
-                    render_base = restore_block_pixels(
-                        original_img=orig_for_ignore,
-                        erased_img=render_base,
-                        deleted_block=ig_b,
-                        remaining_blocks=model_blocks,
-                        padding=4
-                    )
+        orig_for_ignore = orig_cv_for_color
+        if ignored_blocks and orig_for_ignore is None and path and os.path.exists(path):
+            orig_for_ignore = safe_cv2_imread(path)
+        render_base = prepare_render_base(base_img, orig_for_ignore, model_blocks, ignored_blocks)
 
         try:
             rendered = self.typo_engine.render_page(render_base, model_blocks, page_style)
@@ -2241,13 +2254,13 @@ class MainWindow(QMainWindow):
             ]
             
             effective_style = item.get("style") or self.config.style
-            onoma_mode = getattr(effective_style, "onomatopoeia_mode", "normal")
-            render_blocks = [
-                tb for tb in model_blocks
-                if tb.type != "onomatopoeia" or onoma_mode != "ignore" or getattr(tb, "force_erase", False)
-            ]
+            onoma_mode = extract_onomatopoeia_mode(effective_style)
+            render_blocks, ignored_blocks = partition_render_blocks(model_blocks, onoma_mode)
+            if ignored_blocks and orig_item_cv is None and erased_img is not None:
+                orig_item_cv = safe_cv2_imread(path)
+            render_base = prepare_render_base(erased_img, orig_item_cv, render_blocks, ignored_blocks)
             try:
-                rendered = self.typo_engine.render_page(erased_img, render_blocks, effective_style)
+                rendered = self.typo_engine.render_page(render_base, render_blocks, effective_style)
                 cache_mgr.save_page_cache(path, erased_img=None if cache_mgr.has_cache(path).get("erased") else erased_img, blocks=model_blocks, rendered_img=rendered)
                 if len(items) <= 2:
                     item["translated_img"] = rendered
@@ -2321,14 +2334,12 @@ class MainWindow(QMainWindow):
         ]
         
         style_to_use = page_style if page_style is not None else self.config.style
-        onoma_mode = getattr(style_to_use, "onomatopoeia_mode", "normal")
-        render_blocks = [
-            tb for tb in model_blocks
-            if tb.type != "onomatopoeia" or onoma_mode != "ignore" or getattr(tb, "force_erase", False)
-        ]
+        onoma_mode = extract_onomatopoeia_mode(style_to_use)
+        render_blocks, ignored_blocks = partition_render_blocks(model_blocks, onoma_mode)
+        render_base = prepare_render_base(erased_img, orig_single_cv, render_blocks, ignored_blocks)
 
         try:
-            rendered = self.typo_engine.render_page(erased_img, render_blocks, style_to_use)
+            rendered = self.typo_engine.render_page(render_base, render_blocks, style_to_use)
             item_data["translated_img"] = rendered
             cache_mgr.save_page_cache(path, erased_img=erased_img, blocks=model_blocks, rendered_img=rendered)
 
@@ -2481,6 +2492,8 @@ class MainWindow(QMainWindow):
             self.canvas_view.set_view_mode("translated")
             self.inspector_panel.set_blocks(result.get("blocks", []))
             self._update_status_bubble_count(len(result.get("blocks", [])))
+            if result.get("translated_img") is None and result.get("erased_img") is not None:
+                self._re_render_current_page(save_erased=True)
 
         self.toast.show_message("漫画翻译已成功完成！", "success")
 

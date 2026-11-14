@@ -66,15 +66,42 @@ class TranslationEngine:
             return {"http": None, "https": None}
         return None
 
-    def translate_blocks(self, blocks: List[Dict[str, Any]], progress_callback=None) -> List[Dict[str, Any]]:
+    def translate_blocks(
+        self,
+        blocks: List[Dict[str, Any]],
+        progress_callback=None,
+        onomatopoeia_mode: str = "normal",
+    ) -> List[Dict[str, Any]]:
         if not blocks:
             return []
+
+        from app.core.pipeline.utils import is_block_ignored_onomatopoeia
+        active_blocks: List[Dict[str, Any]] = []
+        for b in blocks:
+            if is_block_ignored_onomatopoeia(b, onomatopoeia_mode):
+                if isinstance(b, dict):
+                    b["translated_text"] = ""
+                else:
+                    b.translated_text = ""
+            else:
+                active_blocks.append(b)
+
+        if not active_blocks:
+            return blocks
+
+        def _clear_ignored_onomatopoeia():
+            for b in blocks:
+                if is_block_ignored_onomatopoeia(b, onomatopoeia_mode):
+                    if isinstance(b, dict):
+                        b["translated_text"] = ""
+                    else:
+                        b.translated_text = ""
 
         if not self.api_key and self.provider != "custom":
             # If no API key provided, generate simulated/preview translation
             if progress_callback:
                 progress_callback(50, "未配置 API Key，正在使用本地演示翻译模式...")
-            for b in blocks:
+            for b in active_blocks:
                 if not b.get("translated_text"):
                     b["translated_text"] = f"【译】{b.get('original_text', '')}"
             return blocks
@@ -92,18 +119,23 @@ class TranslationEngine:
                     timeout_seconds=120.0,
                 )
             )
-            tb_blocks = [TranslationBlock.from_dict(b) if isinstance(b, dict) else b for b in blocks]
+            tb_blocks = [TranslationBlock.from_dict(b) if isinstance(b, dict) else b for b in active_blocks]
             res_tb = prov.translate_text_blocks(
                 tb_blocks,
                 source_lang=self.source_lang,
                 target_lang=self.target_lang,
                 progress_callback=progress_callback,
             )
-            for orig_b, aligned_b in zip(blocks, res_tb):
+            for orig_b, aligned_b in zip(active_blocks, res_tb):
                 if isinstance(orig_b, dict):
                     orig_b["translated_text"] = aligned_b.translated_text
+                    if aligned_b.type:
+                        orig_b["type"] = aligned_b.type
                 else:
                     orig_b.translated_text = aligned_b.translated_text
+                    if aligned_b.type:
+                        orig_b.type = aligned_b.type
+            _clear_ignored_onomatopoeia()
             return blocks
 
         if progress_callback:
@@ -114,7 +146,7 @@ class TranslationEngine:
         # Build payload with narrative index and original text anchor
         items_payload = [
             {"index": idx + 1, "id": b.get("id"), "original_text": normalize_domain_slang(b.get("original_text", ""))}
-            for idx, b in enumerate(blocks)
+            for idx, b in enumerate(active_blocks)
         ]
         user_message = (
             f"Target Language: {self.target_lang}\n"
@@ -164,11 +196,11 @@ class TranslationEngine:
             # Robust multi-tier alignment to blocks
             tb_blocks = [
                 TranslationBlock.from_dict(b) if isinstance(b, dict) else b
-                for b in blocks
+                for b in active_blocks
             ]
             aligned_tb = align_translations_to_blocks(parsed_list, tb_blocks)
 
-            for orig_b, aligned_b in zip(blocks, aligned_tb):
+            for orig_b, aligned_b in zip(active_blocks, aligned_tb):
                 clean_text = re.sub(r'<\|im_end\|>|<\|im_start\|>|</s>|<\|endoftext\|>', '', str(aligned_b.translated_text)).strip()
                 clean_text = clean_translation_syntax(clean_text, str(orig_b.get("original_text", "")))
                 if isinstance(orig_b, dict):
@@ -180,15 +212,17 @@ class TranslationEngine:
                     if aligned_b.type:
                         orig_b.type = aligned_b.type
 
+            _clear_ignored_onomatopoeia()
+
             if progress_callback:
-                progress_callback(100, f"成功完成 {len(blocks)} 个对话气泡翻译")
+                progress_callback(100, f"成功完成 {len(active_blocks)} 个对话气泡翻译")
 
             return blocks
 
         except Exception as e:
             print(f"[-] Translation request failed: {e}")
             # Fallback so pipeline doesn't break
-            for b in blocks:
+            for b in active_blocks:
                 if not b.get("translated_text"):
                     b["translated_text"] = f"[翻译错误: {e}]"
             raise e

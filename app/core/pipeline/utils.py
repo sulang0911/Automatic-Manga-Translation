@@ -213,3 +213,158 @@ def build_ocr_engine_kwargs(
         "vlm_conf_threshold": float(ocr_cfg.get("vlm_conf_threshold", cfg.get("ocr_vlm_conf_threshold", 0.72))),
         "vlm_llm_config": vlm_llm_obj,
     }
+
+
+def _block_get(block: Any, key: str, default: Any = None) -> Any:
+    if isinstance(block, dict):
+        return block.get(key, default)
+    return getattr(block, key, default)
+
+
+def extract_onomatopoeia_mode(config: Any, default: str = "normal") -> str:
+    """Extracts normalized onomatopoeia processing mode ('normal' | 'transparent' | 'ignore') from any config shape."""
+    raw = None
+    if config is None:
+        return default
+    if isinstance(config, dict):
+        style_cfg = config.get("style")
+        if isinstance(style_cfg, dict) and style_cfg.get("onomatopoeia_mode") is not None:
+            raw = style_cfg.get("onomatopoeia_mode")
+        elif config.get("onomatopoeia_mode") is not None:
+            raw = config.get("onomatopoeia_mode")
+    else:
+        if hasattr(config, "onomatopoeia_mode"):
+            raw = getattr(config, "onomatopoeia_mode", None)
+        elif hasattr(config, "style"):
+            raw = getattr(config.style, "onomatopoeia_mode", None)
+    val = str(raw or default).strip().lower()
+    return val if val in ("normal", "transparent", "ignore") else default
+
+
+def is_block_ignored_onomatopoeia(block: Any, onomatopoeia_mode: str = "normal") -> bool:
+    """Returns True when a block is an onomatopoeia that should be skipped/preserved verbatim."""
+    if (onomatopoeia_mode or "normal").strip().lower() != "ignore":
+        return False
+    btype = str(_block_get(block, "type", "") or "").strip().lower()
+    force_erase = bool(_block_get(block, "force_erase", False))
+    return btype == "onomatopoeia" and not force_erase
+
+
+def partition_render_blocks(
+    blocks: Optional[List[Any]],
+    onomatopoeia_mode: str = "normal",
+) -> Tuple[List[Any], List[Any]]:
+    """Splits blocks into (active_render_blocks, ignored_onomatopoeia_blocks)."""
+    active: List[Any] = []
+    ignored: List[Any] = []
+    for b in (blocks or []):
+        if is_block_ignored_onomatopoeia(b, onomatopoeia_mode):
+            ignored.append(b)
+        else:
+            active.append(b)
+    return active, ignored
+
+
+def prepare_render_base(
+    base_img: Optional[np.ndarray],
+    original_img: Optional[np.ndarray],
+    active_blocks: List[Any],
+    ignored_blocks: List[Any],
+) -> Optional[np.ndarray]:
+    """Restores original pixels onto a copy of erased base_img for ignored onomatopoeia blocks."""
+    if base_img is None or not ignored_blocks or original_img is None or base_img is original_img:
+        return base_img
+    from app.core.inpaint.restore_helper import restore_block_pixels
+    render_base = base_img.copy()
+    for ig_b in ignored_blocks:
+        render_base = restore_block_pixels(
+            original_img=original_img,
+            erased_img=render_base,
+            deleted_block=ig_b,
+            remaining_blocks=active_blocks,
+            padding=4,
+        )
+    return render_base
+
+
+_EN_DIALOGUE_FUNCTION_WORDS = frozenset({
+    "I", "YOU", "ME", "HE", "SHE", "WE", "THEY", "US", "HIM", "HER",
+    "MY", "YOUR", "OUR", "HIS", "THEIR", "ITS", "IT", "IS", "ARE", "WAS",
+    "WERE", "AM", "BE", "DO", "DOES", "DID", "CAN", "COULD", "WILL", "WOULD",
+    "SHOULD", "HAVE", "HAS", "HAD", "THE", "AN", "THIS", "THAT", "THESE",
+    "THOSE", "WHAT", "WHO", "WHY", "HOW", "WHERE", "WHEN", "NOT", "FOR",
+    "WITH", "FROM", "INTO",
+})
+
+
+def is_likely_dialogue_prose(text: str) -> bool:
+    """
+    Returns True when recognized text exhibits unmistakable dialogue/narration structure
+    (speaker tags, quotes, sentence punctuation, multi-word prose, or CJK sentence text)
+    so OCR aspect heuristics or LLM fallback never misclassify spoken subtitles as SFX.
+    """
+    s = (text or "").strip()
+    if not s:
+        return False
+
+    for ln in s.splitlines():
+        if SPEAKER_LINE_RE.match(ln.strip()):
+            return True
+
+    if any(q in s for q in ('"', "“", "”", "「", "」", "『", "』")):
+        return True
+
+    no_ellipsis = re.sub(r"\.{2,}|…+", "", s)
+    if any(ch in no_ellipsis for ch in (",", ";", ":", "。", "、", "，", "；", "：")):
+        return True
+    if re.search(r"[A-Za-z0-9\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]{2,}\s*\.", no_ellipsis):
+        return True
+
+    latin_words = re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?", s)
+    if latin_words:
+        if any("'" in w for w in latin_words):
+            return True
+        has_lower = any(any(c.islower() for c in w) for w in latin_words)
+        alnum_tokens = re.findall(r"[A-Za-z0-9']+", s)
+        if len(alnum_tokens) >= 2 and has_lower:
+            return True
+        if len(latin_words) == 1 and has_lower and len(latin_words[0]) >= 8 and not re.search(r"(.)\1\1", latin_words[0], re.I):
+            return True
+        upper_words = [w.upper() for w in latin_words]
+        distinct_upper = set(upper_words)
+        if len(distinct_upper) >= 3:
+            return True
+        if len(distinct_upper) >= 2 and any(w in _EN_DIALOGUE_FUNCTION_WORDS for w in distinct_upper):
+            return True
+
+    hanzi = re.findall(r"[\u4e00-\u9fff]", s)
+    hira = re.findall(r"[\u3040-\u309f]", s)
+    kata = re.findall(r"[\u30a0-\u30ff]", s)
+    if len(set(hanzi)) >= 2 and hira:
+        return True
+    if len(set(hanzi)) >= 5 or (len(hanzi) >= 6 and len(set(hanzi)) >= 4):
+        return True
+    if len(hira) >= 7 and len(set(hira)) >= 5 and len(hira) > len(kata):
+        return True
+
+    hangul = re.findall(r"[\uac00-\ud7af]", s)
+    if hangul:
+        hangul_tokens = [tok for tok in re.split(r"\s+", s) if re.search(r"[\uac00-\ud7af]", tok)]
+        if len(set(hangul_tokens)) >= 2 or (len(hangul) >= 7 and len(set(hangul)) >= 5):
+            return True
+
+    return False
+
+
+def heal_mislabeled_onomatopoeia_blocks(blocks: Optional[List[Any]]) -> List[Any]:
+    """Repairs untranslated cached dialogue prose blocks that were wrongly saved as 'onomatopoeia'."""
+    for b in (blocks or []):
+        btype = str(_block_get(b, "type", "") or "").strip().lower()
+        trans = str(_block_get(b, "translated_text", "") or "").strip()
+        orig = str(_block_get(b, "original_text", "") or "")
+        if btype == "onomatopoeia" and not trans and is_likely_dialogue_prose(orig):
+            if isinstance(b, dict):
+                b["type"] = "bubble"
+            else:
+                b.type = "bubble"
+    return blocks or []

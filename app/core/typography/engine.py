@@ -554,7 +554,8 @@ class TypographyEngine:
             if not text or not text.strip():
                 continue
 
-            if block.type == "onomatopoeia" and cfg.onomatopoeia_mode == OnomatopoeiaMode.IGNORE.value:
+            from app.core.pipeline.utils import is_block_ignored_onomatopoeia
+            if is_block_ignored_onomatopoeia(block, cfg.onomatopoeia_mode):
                 continue
 
             x, y, w, h = block.to_pixel_rect(w_img, h_img)

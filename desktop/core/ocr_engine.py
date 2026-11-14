@@ -11,14 +11,14 @@ import cv2
 from typing import List, Dict, Any, Optional, Tuple
 
 try:
-    from app.core.ocr.base import merge_adjacent_boxes, calculate_polygon_angle
+    from app.core.ocr.base import merge_adjacent_boxes, calculate_polygon_angle, classify_ocr_block_type
     from app.core.ocr.reading_order import sort_reading_order
     from app.core.models import TranslationBlock, ReadingOrderMode, TextDirection
 except ImportError:
     _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     if _root not in sys.path:
         sys.path.insert(0, _root)
-    from app.core.ocr.base import merge_adjacent_boxes, calculate_polygon_angle
+    from app.core.ocr.base import merge_adjacent_boxes, calculate_polygon_angle, classify_ocr_block_type
     from app.core.ocr.reading_order import sort_reading_order
     from app.core.models import TranslationBlock, ReadingOrderMode, TextDirection
 
@@ -1415,24 +1415,11 @@ class OCREngine:
                 detected_text_color = "#FFFFFF" if bg_lum < 128 else "#000000"
                 detected_line_colors = [detected_text_color]
 
-            # Determine type (bubble vs onomatopoeia) based on aspect ratio & background
-            is_bubble = True
-            aspect = (xmax - xmin) / max(1, (ymax - ymin))
-            if aspect > 4.0 or aspect < 0.15:
-                is_uniform_banner = False
-                if crop.size > 0:
-                    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-                    h_c, w_c = gray.shape[:2]
-                    if h_c >= 4 and w_c >= 4:
-                        border_pixels = np.concatenate([gray[0, :], gray[-1, :], gray[:, 0], gray[:, -1]])
-                        border_std = float(np.std(border_pixels))
-                        conf = float(box.get("conf", 1.0))
-                        text_str = str(box.get("text", "")).strip()
-                        med_lum = float(np.median(border_pixels))
-                        if border_std < 25.0 or med_lum > 220 or med_lum < 35 or conf >= 0.20 or len(text_str) >= 2:
-                            is_uniform_banner = True
-                if not is_uniform_banner:
-                    is_bubble = False
+            # Determine type (bubble vs onomatopoeia) using text semantics + aspect ratio & background
+            detected_type = classify_ocr_block_type(
+                crop, str(box.get("text", "") or ""), xmin, ymin, xmax, ymax
+            )
+            is_bubble = (detected_type == "bubble")
 
             orig_txt = str(box.get("text", "") or "")
             has_kana = any('\u3040' <= c <= '\u30ff' for c in orig_txt)

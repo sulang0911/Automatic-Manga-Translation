@@ -20,7 +20,8 @@ from app.core.ocr.base import (
     BaseOCREngine,
     is_solid_color_page,
     merge_adjacent_boxes,
-    calculate_polygon_angle
+    calculate_polygon_angle,
+    classify_ocr_block_type,
 )
 from app.core.ocr.reading_order import sort_reading_order
 from app.core.hardware import is_legacy_pascal_or_maxwell_gpu
@@ -274,23 +275,7 @@ class PaddleOCREngine(BaseOCREngine):
             text_hex = analyze_text_color(crop, (bg_b, bg_g, bg_r))
             line_cols = extract_line_text_colors(crop, (bg_b, bg_g, bg_r))
 
-            aspect = (xmax - xmin) / max(1, (ymax - ymin))
-            is_bubble = True
-            if aspect > 4.0 or aspect < 0.15:
-                is_uniform_banner = False
-                if crop.size > 0:
-                    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-                    h_c, w_c = gray.shape[:2]
-                    if h_c >= 4 and w_c >= 4:
-                        border_pixels = np.concatenate([gray[0, :], gray[-1, :], gray[:, 0], gray[:, -1]])
-                        border_std = float(np.std(border_pixels))
-                        conf = float(b.get("conf", 1.0))
-                        text_str = str(b.get("text", "")).strip()
-                        med_lum = float(np.median(border_pixels))
-                        if border_std < 25.0 or med_lum > 220 or med_lum < 35 or conf >= 0.20 or len(text_str) >= 2:
-                            is_uniform_banner = True
-                if not is_uniform_banner:
-                    is_bubble = False
+            detected_type = classify_ocr_block_type(crop, str(b["text"] or ""), xmin, ymin, xmax, ymax)
             is_vertical = (ymax - ymin) > (xmax - xmin) * 1.15
 
             block = TranslationBlock.from_pixel_box(
@@ -306,7 +291,7 @@ class PaddleOCREngine(BaseOCREngine):
                 line_colors=line_cols,
                 confidence=b["conf"],
                 line_count=b.get("line_count", 1),
-                type=BlockType.BUBBLE.value if is_bubble else BlockType.ONOMATOPOEIA.value,
+                type=detected_type,
                 direction=TextDirection.VERTICAL.value if is_vertical else TextDirection.HORIZONTAL.value,
                 polygon=b.get("polygon"),
                 angle=float(b.get("angle", 0.0) or 0.0)

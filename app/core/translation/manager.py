@@ -128,7 +128,8 @@ class TranslationManager:
         mode: str = "text",
         source_lang: str = "自动识别",
         target_lang: str = "简体中文",
-        progress_callback: Optional[Callable[[int, str], None]] = None
+        progress_callback: Optional[Callable[[int, str], None]] = None,
+        onomatopoeia_mode: str = "normal",
     ) -> List[Any]:
         """Unified translation entry point with format conversion and fallback handling."""
         provider = self.get_active_provider()
@@ -176,14 +177,23 @@ class TranslationManager:
             except Exception:
                 pass
 
-        # Separate blocks with actual text from empty/whitespace blocks
-        active_blocks = [b for b in tb_blocks if b.original_text and b.original_text.strip()]
+        # Separate blocks with actual text (and non-ignored onomatopoeia) from skipped blocks
+        from app.core.pipeline.utils import is_block_ignored_onomatopoeia
+        active_blocks: List[TranslationBlock] = []
         for b in tb_blocks:
-            if not (b.original_text and b.original_text.strip()):
+            if not (b.original_text and b.original_text.strip()) or is_block_ignored_onomatopoeia(b, onomatopoeia_mode):
                 b.translated_text = ""
+            else:
+                active_blocks.append(b)
+
+        def _finalize_blocks(result_blocks: List[TranslationBlock]) -> List[Any]:
+            for rb in result_blocks:
+                if is_block_ignored_onomatopoeia(rb, onomatopoeia_mode):
+                    rb.translated_text = ""
+            return [b.to_dict() for b in result_blocks] if is_dict_input else result_blocks
 
         if not active_blocks and mode != "vision":
-            return [b.to_dict() for b in tb_blocks] if is_dict_input else tb_blocks
+            return _finalize_blocks(tb_blocks)
 
         # Local demonstration mode when API key is empty
         if not provider.config.api_key and provider.config.provider_name != "custom":
@@ -192,7 +202,7 @@ class TranslationManager:
             for b in active_blocks:
                 if not b.translated_text:
                     b.translated_text = f"【译】{b.original_text}"
-            return [b.to_dict() for b in tb_blocks] if is_dict_input else tb_blocks
+            return _finalize_blocks(tb_blocks)
 
         # Vision mode fallback if requested and supported
         if mode == "vision" and provider.supports_vision() and image is not None:
@@ -202,7 +212,7 @@ class TranslationManager:
                 buf.tobytes(), target_lang=target_lang, source_lang=source_lang,
                 progress_callback=progress_callback
             )
-            return [b.to_dict() for b in translated_tb] if is_dict_input else translated_tb
+            return _finalize_blocks(translated_tb)
 
         # Standard text translation mode (with automatic chunking for large page sets)
         CHUNK_SIZE = 25
@@ -260,7 +270,7 @@ class TranslationManager:
                 progress_callback=progress_callback
             )
 
-        return [b.to_dict() for b in tb_blocks] if is_dict_input else tb_blocks
+        return _finalize_blocks(tb_blocks)
 
     # Chapter Glossary & Terminology Continuity
     def set_glossary(self, glossary: Dict[str, str]):
