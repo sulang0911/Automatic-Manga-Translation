@@ -784,6 +784,7 @@ class InspectorPanel(QFrame):
             block.get("font_size_override") is not None or
             block.get("font_bold_override") is not None or
             block.get("stroke_mode_override") is not None or
+            block.get("stroke_width_override") is not None or
             block.get("text_color_override") is not None or
             block.get("angle_override") is not None
         )

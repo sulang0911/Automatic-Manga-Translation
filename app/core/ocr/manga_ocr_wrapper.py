@@ -120,10 +120,9 @@ class MangaOCRRecognizer:
         if pil_img.width < 4 or pil_img.height < 4:
             return ""
 
-        # Rotate upright if slanted
+        # Rotate upright if slanted (OpenCV positive CW-downward angle needs CCW +angle to level)
         if abs(angle) >= 15.0:
-            # Rotate in the counter-angle direction with white background expansion
-            pil_img = pil_img.rotate(-angle, resample=Image.Resampling.BICUBIC, expand=True, fillcolor=(255, 255, 255))
+            pil_img = pil_img.rotate(angle, resample=Image.Resampling.BICUBIC, expand=True, fillcolor=(255, 255, 255))
 
         self._ensure_loaded()
         try:

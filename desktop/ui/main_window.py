@@ -290,63 +290,6 @@ class MainWindow(QMainWindow):
 
             self._re_render_current_page()
 
-    def _re_render_current_page(self):
-        """Performs live typography re-render onto canvas."""
-        if not self.current_image_data:
-            return
-        blocks = self.current_image_data.get("blocks", [])
-        base_img = self.current_image_data.get("erased_img")
-        if base_img is None:
-            base_img = getattr(self.canvas_view, "original_cv", None)
-        if base_img is None:
-            return
-
-        path = self.current_image_data.get("path")
-
-        if not blocks:
-            rendered = base_img.copy()
-            self.current_image_data["translated_img"] = rendered
-            self.canvas_view.translated_cv = rendered
-            self.canvas_view.update_translated_image(rendered, erased_cv=base_img)
-            if path:
-                try:
-                    from app.core.cache.cache_manager import get_cache_manager
-                    get_cache_manager().save_page_cache(
-                        path,
-                        blocks=[],
-                        erased_img=base_img,
-                        rendered_img=rendered
-                    )
-                except Exception:
-                    pass
-            return
-
-        try:
-            from app.core.typography.engine import TypographyEngine
-            from app.core.models import TranslationBlock
-            model_blocks = [
-                b if isinstance(b, TranslationBlock) else TranslationBlock.from_dict(b)
-                for b in blocks
-            ]
-            engine = TypographyEngine()
-            rendered = engine.render_page(base_img, model_blocks)
-            self.current_image_data["translated_img"] = rendered
-            self.canvas_view.translated_cv = rendered
-            self.canvas_view.update_translated_image(rendered, erased_cv=base_img)
-            if path:
-                try:
-                    from app.core.cache.cache_manager import get_cache_manager
-                    get_cache_manager().save_page_cache(
-                        path,
-                        blocks=model_blocks,
-                        erased_img=base_img,
-                        rendered_img=rendered
-                    )
-                except Exception:
-                    pass
-        except Exception as e:
-            print(f"[-] Legacy re-render error: {e}")
-
     def _run_full_pipeline(self):
         if not self.current_image_data:
             self.toast.show_message("请先在左侧选择或添加漫画图片", "warning")

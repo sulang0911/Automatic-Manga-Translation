@@ -138,6 +138,8 @@ class AppConfig:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> AppConfig:
         cfg = cls()
+        if not isinstance(data, dict):
+            return cfg
         if "theme" in data:
             cfg.theme = data["theme"]
         if "source_lang" in data:
@@ -157,32 +159,36 @@ class AppConfig:
         if "glossary" in data:
             cfg.glossary = data["glossary"]
 
-        if "llm" in data and isinstance(data["llm"], dict):
-            cfg.llm = LLMConfig(**data["llm"])
-        # Support flat keys fallback if llm sub-dict was omitted or partial
-        if "provider" in data and ("llm" not in data or "provider" not in data.get("llm", {})):
+        llm_raw = data.get("llm")
+        llm_dict = llm_raw if isinstance(llm_raw, dict) else {}
+        if llm_dict:
+            llm_kwargs = {k: v for k, v in llm_dict.items() if k in LLMConfig.__dataclass_fields__}
+            cfg.llm = LLMConfig(**llm_kwargs)
+        # Support flat keys fallback if llm sub-dict was omitted, null, or partial
+        if "provider" in data and "provider" not in llm_dict:
             cfg.llm.provider = data["provider"]
-        if "api_key" in data and ("llm" not in data or "api_key" not in data.get("llm", {})):
+        if "api_key" in data and "api_key" not in llm_dict:
             cfg.llm.api_key = data["api_key"]
-        if "model" in data and ("llm" not in data or "model" not in data.get("llm", {})):
+        if "model" in data and "model" not in llm_dict:
             cfg.llm.model = data["model"]
-        if "custom_endpoint" in data and ("llm" not in data or "endpoint" not in data.get("llm", {})):
+        if "custom_endpoint" in data and "endpoint" not in llm_dict:
             cfg.llm.endpoint = data["custom_endpoint"]
-        if "system_prompt" in data and ("llm" not in data or "system_prompt" not in data.get("llm", {})):
+        if "system_prompt" in data and "system_prompt" not in llm_dict:
             cfg.llm.system_prompt = data["system_prompt"]
         cfg.llm.system_prompt = normalize_system_prompt(cfg.llm.system_prompt)
-        if "temperature" in data and ("llm" not in data or "temperature" not in data.get("llm", {})):
+        if "temperature" in data and "temperature" not in llm_dict:
             try:
                 cfg.llm.temperature = float(data["temperature"])
             except Exception:
                 pass
 
-        if "ocr" in data and isinstance(data["ocr"], dict):
-            ocr_kwargs = {k: v for k, v in data["ocr"].items() if k in OCRConfig.__annotations__}
+        if isinstance(data.get("ocr"), dict):
+            ocr_kwargs = {k: v for k, v in data["ocr"].items() if k in OCRConfig.__dataclass_fields__}
             cfg.ocr = OCRConfig(**ocr_kwargs)
-        if "inpaint" in data and isinstance(data["inpaint"], dict):
-            cfg.inpaint = InpaintConfig(**data["inpaint"])
-        if "style" in data and isinstance(data["style"], dict):
+        if isinstance(data.get("inpaint"), dict):
+            inpaint_kwargs = {k: v for k, v in data["inpaint"].items() if k in InpaintConfig.__dataclass_fields__}
+            cfg.inpaint = InpaintConfig(**inpaint_kwargs)
+        if isinstance(data.get("style"), dict):
             cfg.style = StyleConfig.from_dict(data["style"])
         return cfg
 

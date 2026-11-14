@@ -104,9 +104,11 @@ class OpenCVInpainter(BaseInpainter):
             if progress_callback:
                 progress_callback(int((idx / total_blocks) * 45), f"分析背景区域 ({idx+1}/{total_blocks})...")
 
-            b_type = getattr(block, "type", "") if not isinstance(block, dict) else block.get("type", "")
-            b_force = getattr(block, "force_erase", False) if not isinstance(block, dict) else block.get("force_erase", False)
-            has_trans = bool(getattr(block, "translated_text", "") if not isinstance(block, dict) else block.get("translated_text", ""))
+            if isinstance(block, dict):
+                block = TranslationBlock.from_dict(block)
+            b_type = getattr(block, "type", "")
+            b_force = getattr(block, "force_erase", False)
+            has_trans = bool(getattr(block, "translated_text", ""))
             if isinstance(style_config, dict):
                 onoma_mode = style_config.get("onomatopoeia_mode", "normal")
             elif style_config:

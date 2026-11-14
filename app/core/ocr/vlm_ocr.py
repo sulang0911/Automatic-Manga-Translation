@@ -84,38 +84,48 @@ def recognize_crop_with_vlm(
         )
 
         if p_cfg.provider_name.lower() == "gemini":
-            helper = GeminiProvider(p_cfg)
-            if helper._is_custom_proxy():
-                # Proxies configured under gemini may expose Gemini native or OpenAI endpoint
-                url = f"{helper.endpoint}/v1beta/models/{helper.model}:generateContent"
-                headers = {"Content-Type": "application/json", "Authorization": f"Bearer {p_cfg.api_key}"}
-            else:
-                url = f"{helper.endpoint}/v1beta/models/{helper.model}:generateContent?key={p_cfg.api_key}"
-                headers = {"Content-Type": "application/json"}
-                if p_cfg.api_key:
-                    headers["x-goog-api-key"] = p_cfg.api_key
-
-            body = {
-                "contents": [{
-                    "role": "user",
-                    "parts": [{"text": prompt}, {"inlineData": {"mimeType": "image/jpeg", "data": b64}}]
-                }],
-                "generationConfig": {"temperature": 0.0},
-            }
-            px = helper.resolve_proxies()
-            resp = requests.post(
-                url, headers=headers, json=body, timeout=timeout_seconds,
-                **({} if px is None else {"proxies": px})
+            raw_ep_lower = p_cfg.endpoint.strip().rstrip("/").lower()
+            is_openai_compat_proxy = (
+                "/antigravity" not in raw_ep_lower
+                and (raw_ep_lower.endswith("/v1") or raw_ep_lower.endswith("/chat/completions"))
             )
-            if resp.status_code != 200:
-                logger.warning("VLM OCR Gemini HTTP %s: %s", resp.status_code, resp.text[:200])
-                return "", 0.0
-            raw = extract_gemini_text_from_candidates(resp.json().get("candidates", []))
-            cleaned = _clean_vlm_response(raw)
-            return (cleaned, 0.92) if cleaned else ("", 0.0)
+            if not is_openai_compat_proxy:
+                helper = GeminiProvider(p_cfg)
+                if helper._is_custom_proxy():
+                    url = f"{helper.endpoint}/v1beta/models/{helper.model}:generateContent"
+                    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {p_cfg.api_key}"}
+                else:
+                    url = f"{helper.endpoint}/v1beta/models/{helper.model}:generateContent?key={p_cfg.api_key}"
+                    headers = {"Content-Type": "application/json"}
+                    if p_cfg.api_key:
+                        headers["x-goog-api-key"] = p_cfg.api_key
 
-        helper = OpenAIProvider(p_cfg)
-        url = f"{helper.endpoint}/chat/completions"
+                body = {
+                    "contents": [{
+                        "role": "user",
+                        "parts": [{"text": prompt}, {"inlineData": {"mimeType": "image/jpeg", "data": b64}}]
+                    }],
+                    "generationConfig": {"temperature": 0.0},
+                }
+                px = helper.resolve_proxies()
+                resp = requests.post(
+                    url, headers=headers, json=body, timeout=timeout_seconds,
+                    **({} if px is None else {"proxies": px})
+                )
+                if resp.status_code != 200:
+                    logger.warning("VLM OCR Gemini HTTP %s: %s", resp.status_code, resp.text[:200])
+                    return "", 0.0
+                raw = extract_gemini_text_from_candidates(resp.json().get("candidates", []))
+                cleaned = _clean_vlm_response(raw)
+                return (cleaned, 0.92) if cleaned else ("", 0.0)
+
+        if p_cfg.provider_name.lower() == "custom":
+            from app.core.translation.custom_provider import CustomOpenAIProvider
+            helper = CustomOpenAIProvider(p_cfg)
+            url = helper.endpoint
+        else:
+            helper = OpenAIProvider(p_cfg)
+            url = f"{helper.endpoint}/chat/completions"
         headers = {"Content-Type": "application/json"}
         if p_cfg.api_key:
             headers["Authorization"] = f"Bearer {p_cfg.api_key}"

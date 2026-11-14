@@ -7,6 +7,7 @@ import os
 import sys
 import re
 import math
+import hashlib
 import logging
 import threading
 from typing import List, Dict, Any, Optional, Tuple, Callable
@@ -380,6 +381,15 @@ class TypographyEngine:
         return font
 
     @staticmethod
+    def _parse_hex_rgb(hex_str: Optional[str], default: Tuple[int, int, int] = (0, 0, 0)) -> Tuple[int, int, int]:
+        if isinstance(hex_str, str) and len(hex_str) >= 7 and hex_str.startswith("#"):
+            try:
+                return int(hex_str[1:3], 16), int(hex_str[3:5], 16), int(hex_str[5:7], 16)
+            except ValueError:
+                pass
+        return default
+
+    @staticmethod
     def _resolve_color_hex(
         cand_hex: str,
         bg_lum: float,
@@ -393,9 +403,7 @@ class TypographyEngine:
             return cfg.custom_text_color
 
         cand_hex = cand_hex or "#000000"
-        cr = int(cand_hex[1:3], 16) if len(cand_hex) >= 7 else 0
-        cg = int(cand_hex[3:5], 16) if len(cand_hex) >= 7 else 0
-        cb = int(cand_hex[5:7], 16) if len(cand_hex) >= 7 else 0
+        cr, cg, cb = TypographyEngine._parse_hex_rgb(cand_hex)
         cand_lum = 0.299 * cr + 0.587 * cg + 0.114 * cb
         max_c = max(cr, cg, cb)
         min_c = min(cr, cg, cb)
@@ -457,6 +465,77 @@ class TypographyEngine:
                 result[spk] = family_hexes[spk][top_fam].most_common(1)[0][0]
         return result
 
+    def _resolve_paragraph_colors(
+        self,
+        paragraphs: List[str],
+        block: TranslationBlock,
+        cfg: StyleConfig,
+        speaker_color_map: Dict[str, str],
+        bg_lum: float,
+        is_dark_bg_block: bool,
+        text_color_hex: str,
+        raw_line_colors: List[str],
+        turns: List[str],
+        use_multiline_colors: bool,
+    ) -> List[str]:
+        if not use_multiline_colors:
+            return [text_color_hex] * len(paragraphs)
+
+        dialogue_indices = [pi for pi, p in enumerate(paragraphs) if not _is_stage_direction_para(p)]
+        diag_idx_to_turn: Dict[int, str] = {}
+        if len(turns) == len(paragraphs):
+            for pi in range(len(paragraphs)):
+                diag_idx_to_turn[pi] = turns[pi]
+        elif len(turns) == len(dialogue_indices) and dialogue_indices:
+            for ti, pi in enumerate(dialogue_indices):
+                diag_idx_to_turn[pi] = turns[ti]
+
+        para_hexes: List[str] = []
+        for p_idx, para in enumerate(paragraphs):
+            if _is_stage_direction_para(para):
+                para_hexes.append("#FFFFFF" if bg_lum < 170.0 else "#000000")
+                continue
+            spk = _extract_speaker_tag(para)
+            cand_p_hex = None
+            if spk and spk in speaker_color_map:
+                cand_p_hex = speaker_color_map[spk]
+            elif p_idx in diag_idx_to_turn:
+                cand_p_hex = diag_idx_to_turn[p_idx]
+            elif raw_line_colors:
+                r_idx = min(
+                    len(raw_line_colors) - 1,
+                    int(round(p_idx * (len(raw_line_colors) - 1) / max(1, len(paragraphs) - 1)))
+                )
+                cand_p_hex = raw_line_colors[r_idx]
+            para_hexes.append(
+                self._resolve_color_hex(
+                    cand_p_hex, bg_lum, is_dark_bg_block, cfg, text_color_override=None
+                ) if cand_p_hex else text_color_hex
+            )
+        return para_hexes
+
+    def _distribute_single_para_turn_colors(
+        self,
+        unit_count: int,
+        raw_line_colors: List[str],
+        bg_lum: float,
+        is_dark_bg_block: bool,
+        cfg: StyleConfig,
+    ) -> List[str]:
+        return [
+            self._resolve_color_hex(
+                raw_line_colors[min(
+                    len(raw_line_colors) - 1,
+                    int(round(ui * (len(raw_line_colors) - 1) / max(1, unit_count - 1)))
+                )],
+                bg_lum,
+                is_dark_bg_block,
+                cfg,
+                text_color_override=None,
+            )
+            for ui in range(unit_count)
+        ]
+
     def render_translations(
         self,
         base_image: np.ndarray,
@@ -496,7 +575,7 @@ class TypographyEngine:
         if erased_image is None or erased_image.size == 0 or not blocks:
             return erased_image.copy() if erased_image is not None else np.zeros((1, 1, 3), dtype=np.uint8)
 
-        cfg = style_config or StyleConfig()
+        cfg = StyleConfig.from_dict(style_config) if isinstance(style_config, dict) else (style_config or StyleConfig())
         h_img, w_img = erased_image.shape[:2]
 
         qr_regions = []
@@ -511,14 +590,11 @@ class TypographyEngine:
                         has_qr_candidate = True
                         break
             if has_qr_candidate:
-                mid_y, mid_x = h_img // 2, w_img // 2
-                img_sig = (
-                    h_img, w_img,
-                    int(erased_image.ctypes.data),
-                    int(erased_image[0, 0, 0]),
-                    int(erased_image[mid_y, mid_x, 0]),
-                    int(erased_image[-1, -1, -1]),
-                )
+                img_digest = hashlib.blake2b(
+                    np.ascontiguousarray(erased_image).view(np.uint8),
+                    digest_size=16,
+                ).digest()
+                img_sig = (h_img, w_img, img_digest)
                 with TypographyEngine._QR_CACHE_LOCK:
                     cached_qr = list(TypographyEngine._LAST_QR_REGIONS) if TypographyEngine._LAST_QR_SIG == img_sig else None
                 if cached_qr is not None:
@@ -610,14 +686,24 @@ class TypographyEngine:
                 if L < 4 or H < 4:
                     L, H = float(w), float(h)
             elif is_rotated:
-                rad = math.radians(abs(effective_angle))
+                abs_a = abs(effective_angle) % 180.0
+                if abs_a > 90.0:
+                    abs_a = 180.0 - abs_a
+                rad = math.radians(abs_a)
                 cos_a, sin_a = math.cos(rad), math.sin(rad)
-                denom = max(0.1, cos_a * cos_a - sin_a * sin_a)
-                if abs(denom) > 0.15:
-                    L = max(10.0, (w * cos_a - h * sin_a) / denom)
-                    H = max(10.0, (h * cos_a - w * sin_a) / denom)
+                raw_denom = cos_a * cos_a - sin_a * sin_a
+                diag = math.sqrt(w * w + h * h)
+                if abs(raw_denom) > 0.25:
+                    l_est = (w * cos_a - h * sin_a) / raw_denom
+                    h_est = (h * cos_a - w * sin_a) / raw_denom
+                    if l_est >= 10.0 and h_est >= 10.0:
+                        L = min(diag, l_est)
+                        H = min(diag, h_est)
+                    else:
+                        L = max(10.0, diag * 0.85)
+                        H = max(10.0, float(min(w, h)))
                 else:
-                    L = max(10.0, math.sqrt(w * w + h * h) * 0.85)
+                    L = max(10.0, diag * 0.85)
                     H = max(10.0, float(min(w, h)))
             else:
                 L, H = float(w), float(h)
@@ -770,9 +856,7 @@ class TypographyEngine:
                 text_color_override=block.text_color_override
             )
 
-            r = int(text_color_hex[1:3], 16) if len(text_color_hex) >= 7 else 0
-            g = int(text_color_hex[3:5], 16) if len(text_color_hex) >= 7 else 0
-            b = int(text_color_hex[5:7], 16) if len(text_color_hex) >= 7 else 0
+            r, g, b = self._parse_hex_rgb(text_color_hex)
             fill_alpha = 175 if (block.type == "onomatopoeia" and cfg.onomatopoeia_mode == OnomatopoeiaMode.TRANSPARENT.value) else 255
             fill_rgba = (r, g, b, fill_alpha)
 
@@ -793,9 +877,7 @@ class TypographyEngine:
                     )
                 elif stroke_mode == StrokeMode.MANUAL.value:
                     stroke_hex = block.stroke_color_override or cfg.stroke_color
-                    sr = int(stroke_hex[1:3], 16) if len(stroke_hex) >= 7 else 255
-                    sg = int(stroke_hex[3:5], 16) if len(stroke_hex) >= 7 else 255
-                    sb = int(stroke_hex[5:7], 16) if len(stroke_hex) >= 7 else 255
+                    sr, sg, sb = self._parse_hex_rgb(stroke_hex, (255, 255, 255))
                     eff_sw = min(float(sw_param), max(1.6, round(font_size * 0.145, 2))) if auto_sw else float(sw_param)
                     return StrokeStyle(color_rgba=(sr, sg, sb, 217), width=eff_sw)
                 return None
@@ -817,6 +899,14 @@ class TypographyEngine:
                 rel_x, rel_y = float(x), float(y)
                 draw_box_w, draw_box_h = float(w), float(h)
 
+            raw_line_colors = getattr(block, "line_colors", None) or []
+            turns = collapse_color_turns(raw_line_colors) if raw_line_colors else []
+            use_multiline_colors = (
+                not block.text_color_override
+                and cfg.text_color_mode != TextColorMode.CUSTOM.value
+                and (len(turns) > 1 or bool(speaker_color_map))
+            )
+
             if is_vertical:
                 cols, tot_w, tot_h = self.vertical_layout.compute_layout(
                     text=render_text,
@@ -826,7 +916,28 @@ class TypographyEngine:
                     box_w=draw_box_w,
                     box_h=draw_box_h
                 )
-                for col in cols:
+                col_hex_list: List[str] = []
+                if use_multiline_colors:
+                    v_paragraphs = [p for p in render_text.split("\n") if p.strip()] or [render_text]
+                    para_hexes = self._resolve_paragraph_colors(
+                        v_paragraphs, block, cfg, speaker_color_map,
+                        bg_lum, is_dark_bg_block, text_color_hex,
+                        raw_line_colors, turns, use_multiline_colors,
+                    )
+                    if len(v_paragraphs) == 1 and len(cols) > 1 and len(turns) > 1:
+                        col_hex_list = self._distribute_single_para_turn_colors(
+                            len(cols), raw_line_colors, bg_lum, is_dark_bg_block, cfg
+                        )
+                    else:
+                        for p, p_hex in zip(v_paragraphs, para_hexes):
+                            p_cols = self.vertical_layout.wrap_vertical_columns(p, draw_box_h, font_size)
+                            col_hex_list.extend([p_hex] * len(p_cols))
+
+                for col_idx, col in enumerate(cols):
+                    c_hex = col_hex_list[col_idx] if col_idx < len(col_hex_list) else text_color_hex
+                    cr, cg, cb = self._parse_hex_rgb(c_hex, (r, g, b))
+                    c_fill_rgba = (cr, cg, cb, fill_alpha)
+                    c_stroke = stroke if (cr, cg, cb) == (r, g, b) else _make_stroke((cr, cg, cb))
                     for glyph in col.glyphs:
                         gx = glyph.x + glyph.offset_x - font_size * 0.45
                         gy = glyph.y + glyph.offset_y - font_size * 0.50
@@ -836,8 +947,8 @@ class TypographyEngine:
                             x=gx,
                             y=gy,
                             font=font,
-                            fill_rgba=fill_rgba,
-                            stroke=stroke,
+                            fill_rgba=c_fill_rgba,
+                            stroke=c_stroke,
                             shadow=shadow,
                             is_bold=is_bold
                         )
@@ -848,67 +959,26 @@ class TypographyEngine:
                 avail_h = max(4.0, draw_box_h - 2 * py)
 
                 # Resolve per-paragraph / per-line colors when in ORIGINAL color mode without block override
-                raw_line_colors = getattr(block, "line_colors", None) or []
-                turns = collapse_color_turns(raw_line_colors) if raw_line_colors else []
-                use_multiline_colors = (
-                    not block.text_color_override
-                    and cfg.text_color_mode != TextColorMode.CUSTOM.value
-                    and (len(turns) > 1 or bool(speaker_color_map))
+                paragraphs = [p for p in render_text.split("\n") if p] or [render_text]
+                para_hexes = self._resolve_paragraph_colors(
+                    paragraphs, block, cfg, speaker_color_map,
+                    bg_lum, is_dark_bg_block, text_color_hex,
+                    raw_line_colors, turns, use_multiline_colors,
                 )
-
-                paragraphs = [p for p in render_text.split("\n") if p]
-                if not paragraphs:
-                    paragraphs = [render_text]
-                dialogue_indices = [pi for pi, p in enumerate(paragraphs) if not _is_stage_direction_para(p)]
-                diag_idx_to_turn: Dict[int, str] = {}
-                if len(turns) == len(paragraphs):
-                    for pi in range(len(paragraphs)):
-                        diag_idx_to_turn[pi] = turns[pi]
-                elif len(turns) == len(dialogue_indices) and dialogue_indices:
-                    for ti, pi in enumerate(dialogue_indices):
-                        diag_idx_to_turn[pi] = turns[ti]
 
                 lines: List[str] = []
                 line_hex_list: List[str] = []
 
-                for p_idx, para in enumerate(paragraphs):
-                    wrapped_p = self.line_breaker.wrap_text(para, avail_w, font_size, measurer)
-                    para_hex = text_color_hex
-                    if use_multiline_colors:
-                        if _is_stage_direction_para(para):
-                            para_hex = "#FFFFFF" if bg_lum < 170.0 else "#000000"
-                        else:
-                            spk = _extract_speaker_tag(para)
-                            cand_p_hex = None
-                            if spk and spk in speaker_color_map:
-                                cand_p_hex = speaker_color_map[spk]
-                            elif p_idx in diag_idx_to_turn:
-                                cand_p_hex = diag_idx_to_turn[p_idx]
-                            elif raw_line_colors:
-                                r_idx = min(
-                                    len(raw_line_colors) - 1,
-                                    int(round(p_idx * (len(raw_line_colors) - 1) / max(1, len(paragraphs) - 1)))
-                                )
-                                cand_p_hex = raw_line_colors[r_idx]
-                            if cand_p_hex:
-                                para_hex = self._resolve_color_hex(
-                                    cand_p_hex, bg_lum, is_dark_bg_block, cfg, text_color_override=None
-                                )
-
-                    for wl in wrapped_p:
+                for para, para_hex in zip(paragraphs, para_hexes):
+                    for wl in self.line_breaker.wrap_text(para, avail_w, font_size, measurer):
                         lines.append(wl)
                         line_hex_list.append(para_hex)
 
                 # If there was only 1 paragraph wrapped into multiple lines and raw_line_colors has multiple turns
                 if use_multiline_colors and len(paragraphs) == 1 and len(lines) > 1 and len(turns) > 1:
-                    for li in range(len(lines)):
-                        r_idx = min(
-                            len(raw_line_colors) - 1,
-                            int(round(li * (len(raw_line_colors) - 1) / max(1, len(lines) - 1)))
-                        )
-                        line_hex_list[li] = self._resolve_color_hex(
-                            raw_line_colors[r_idx], bg_lum, is_dark_bg_block, cfg, text_color_override=None
-                        )
+                    line_hex_list = self._distribute_single_para_turn_colors(
+                        len(lines), raw_line_colors, bg_lum, is_dark_bg_block, cfg
+                    )
 
                 eff_line_spacing = compute_smart_line_spacing(
                     len(lines),
@@ -933,11 +1003,9 @@ class TypographyEngine:
                     line_y = start_y + i * line_h
 
                     l_hex = line_hex_list[i] if i < len(line_hex_list) else text_color_hex
-                    lr = int(l_hex[1:3], 16) if len(l_hex) >= 7 else r
-                    lg = int(l_hex[3:5], 16) if len(l_hex) >= 7 else g
-                    lb = int(l_hex[5:7], 16) if len(l_hex) >= 7 else b
+                    lr, lg, lb = self._parse_hex_rgb(l_hex, (r, g, b))
                     l_fill_rgba = (lr, lg, lb, fill_alpha)
-                    l_stroke = _make_stroke((lr, lg, lb))
+                    l_stroke = stroke if (lr, lg, lb) == (r, g, b) else _make_stroke((lr, lg, lb))
 
                     StrokeRenderer.render_text_pil(
                         target_image=draw_target,

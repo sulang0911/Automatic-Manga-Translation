@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit,
     QPushButton, QFrame, QToolButton, QComboBox
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QEvent, pyqtSignal
 from PyQt6.QtGui import QCursor, QKeyEvent
 
 from app.ui.theme.icons import get_icon
@@ -139,6 +139,12 @@ class ContextualTypographyBar(QFrame):
         f_size = block_data.get("font_size_override") or style.get("font_size") or 14
         self.lbl_size.setText(str(int(round(float(f_size)))))
 
+        font_family = block_data.get("font_family_override") or style.get("font_family") or "默认字体"
+        self.font_combo.blockSignals(True)
+        idx = self.font_combo.findText(str(font_family))
+        self.font_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.font_combo.blockSignals(False)
+
     def _on_toggle_orientation(self):
         if not self.block_data:
             return
@@ -253,6 +259,7 @@ class InPlaceBubbleEditor(QFrame):
         self.text_edit = QTextEdit(self)
         self.text_edit.setFixedHeight(68)
         self.text_edit.setPlaceholderText("输入译文内容...")
+        self.text_edit.installEventFilter(self)
         layout.addWidget(self.text_edit)
 
         # Action Buttons Row
@@ -310,12 +317,23 @@ class InPlaceBubbleEditor(QFrame):
         self.hide()
         self.sig_closed.emit()
 
-    def keyPressEvent(self, event: QKeyEvent):
+    def _handle_shortcut_key(self, event: QKeyEvent) -> bool:
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             if event.modifiers() & Qt.KeyboardModifier.ControlModifier or not (event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
                 self._on_commit_and_next()
-                return
+                return True
         elif event.key() == Qt.Key.Key_Escape:
             self.close_editor()
+            return True
+        return False
+
+    def eventFilter(self, obj, event):
+        if obj is self.text_edit and event.type() == QEvent.Type.KeyPress:
+            if self._handle_shortcut_key(event):
+                return True
+        return super().eventFilter(obj, event)
+
+    def keyPressEvent(self, event: QKeyEvent):
+        if self._handle_shortcut_key(event):
             return
         super().keyPressEvent(event)

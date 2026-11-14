@@ -132,13 +132,13 @@ def sort_easyocr_fragments_2d(results: List[Any]) -> Tuple[str, float]:
 
 def rotate_crop_upright(crop: np.ndarray, angle: float) -> Tuple[np.ndarray, Optional[np.ndarray]]:
     """
-    Affine rotates crop upright by -angle so slanted text lines become horizontal.
+    Affine rotates crop upright to undo text line tilt angle (CW-downward positive).
     """
     if abs(angle) < 2.5 or crop is None or crop.size == 0:
         return crop, None
     h, w = crop.shape[:2]
     center = (w / 2.0, h / 2.0)
-    rot_mat = cv2.getRotationMatrix2D(center, -angle, 1.0)
+    rot_mat = cv2.getRotationMatrix2D(center, angle, 1.0)
     cos_val = abs(rot_mat[0, 0])
     sin_val = abs(rot_mat[0, 1])
     new_w = max(w, int(np.ceil((h * sin_val) + (w * cos_val))))
@@ -256,7 +256,9 @@ class EasyOCREngine(BaseOCREngine):
             qr_filter = QRCodeFilter()
             qr_regions = qr_filter.detect_regions(image)
             if qr_regions:
-                raw_boxes = qr_filter.filter_spurious_ocr_boxes(raw_boxes, qr_regions)
+                raw_boxes = qr_filter.filter_spurious_ocr_boxes(
+                    raw_boxes, qr_regions, w_img=w_img, h_img=h_img, is_normalized=False
+                )
         except Exception:
             qr_regions = None
 

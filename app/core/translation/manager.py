@@ -195,8 +195,14 @@ class TranslationManager:
         if not active_blocks and mode != "vision":
             return _finalize_blocks(tb_blocks)
 
-        # Local demonstration mode when API key is empty
-        if not provider.config.api_key and provider.config.provider_name != "custom":
+        # Local demonstration mode when API key is empty on non-local remote providers
+        ep_lower = (getattr(provider.config, "endpoint", "") or "").lower()
+        is_local_or_custom = (
+            getattr(provider.config, "provider_name", "") in ("custom", "antigravity")
+            or "127.0.0.1" in ep_lower
+            or "localhost" in ep_lower
+        )
+        if not provider.config.api_key and not is_local_or_custom:
             if progress_callback:
                 progress_callback(50, "未检测到 API Key，正在运行本地演示翻译模式...")
             for b in active_blocks:

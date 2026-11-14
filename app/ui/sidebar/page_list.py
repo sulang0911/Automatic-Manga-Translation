@@ -21,6 +21,7 @@ from app.ui.widgets.progress_pill import StatusDot
 from app.ui.widgets.thumbnail_loader import AsyncThumbnailManager
 from app.ui.theme.icons import get_icon
 from app.core.cache.cache_manager import get_cache_manager
+from app.core.models import StyleConfig
 
 _RE_DIGITS = re.compile(r'(\d+)')
 
@@ -278,7 +279,7 @@ class PageListWidget(QWidget):
     sig_batch_cache_cleared = pyqtSignal(list)
     sig_pages_removed = pyqtSignal(list)
     sig_count_changed = pyqtSignal(int)
-    sig_async_batch_ready = pyqtSignal(int, list, list, object)
+    sig_async_batch_ready = pyqtSignal(int, list, list, object, bool)
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -557,7 +558,11 @@ class PageListWidget(QWidget):
                 "root_dir": entry["root_dir"],
                 "status": status,
                 "status_text": status_text,
-                "style": c_status.get("page_style"),
+                "style": (
+                    StyleConfig.from_dict(c_status["page_style"])
+                    if isinstance(c_status.get("page_style"), dict)
+                    else c_status.get("page_style")
+                ),
             })
 
         return prepared_items, extracted_temp_dirs
@@ -566,6 +571,7 @@ class PageListWidget(QWidget):
         self,
         prepared_items: List[Dict[str, Any]],
         extracted_temp_dirs: List[str],
+        auto_select_first: bool = True,
     ) -> int:
         """Inserts pre-scanned items into the QListWidget on the GUI thread."""
         self._temp_archive_dirs.extend(extracted_temp_dirs)
@@ -601,7 +607,7 @@ class PageListWidget(QWidget):
 
         self._update_count()
 
-        if self.list_widget.count() > 0 and self.list_widget.currentRow() < 0:
+        if auto_select_first and self.list_widget.count() > 0 and self.list_widget.currentRow() < 0:
             self.list_widget.setCurrentRow(0)
 
         return len(new_items)
@@ -622,6 +628,7 @@ class PageListWidget(QWidget):
         self,
         paths: List[str],
         on_finished: Optional[Callable[[int], None]] = None,
+        auto_select_first: bool = True,
     ) -> None:
         """
         Runs directory scanning, zip/cbz extraction, and batched cache indexing
@@ -640,7 +647,7 @@ class PageListWidget(QWidget):
             except Exception:
                 prepared, temp_dirs = [], []
             try:
-                self.sig_async_batch_ready.emit(gen, prepared, temp_dirs, on_finished)
+                self.sig_async_batch_ready.emit(gen, prepared, temp_dirs, on_finished, auto_select_first)
             except RuntimeError:
                 pass
 
@@ -652,6 +659,7 @@ class PageListWidget(QWidget):
         prepared_items: List[Dict[str, Any]],
         extracted_temp_dirs: List[str],
         on_finished: Any,
+        auto_select_first: bool = True,
     ) -> None:
         if gen != self._import_gen:
             import shutil
@@ -659,7 +667,9 @@ class PageListWidget(QWidget):
                 if d and os.path.exists(d):
                     shutil.rmtree(d, ignore_errors=True)
             return
-        added_count = self._insert_prepared_items(prepared_items, extracted_temp_dirs)
+        added_count = self._insert_prepared_items(
+            prepared_items, extracted_temp_dirs, auto_select_first=auto_select_first
+        )
         if callable(on_finished):
             on_finished(added_count)
 

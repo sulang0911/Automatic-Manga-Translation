@@ -57,6 +57,7 @@ class PaddleOCREngine(BaseOCREngine):
             os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
             import paddle
+            from paddleocr import PaddleOCR
             try:
                 paddle.set_flags({"FLAGS_use_onednn": False})
                 paddle.set_num_threads(1)
@@ -106,8 +107,10 @@ class PaddleOCREngine(BaseOCREngine):
 
     def is_available(self) -> bool:
         try:
-            import paddleocr
             import paddle
+            from paddleocr import PaddleOCRocr
+            import paddle
+            from paddleocr import PaddleOCR
             return True
         except ImportError:
             return False
@@ -130,6 +133,7 @@ class PaddleOCREngine(BaseOCREngine):
             return []
 
         h_img, w_img = image.shape[:2]
+        target_lang = lang or self.lang
 
         try:
             if progress_callback:
@@ -251,7 +255,9 @@ class PaddleOCREngine(BaseOCREngine):
             qr_filter = QRCodeFilter()
             qr_regions = qr_filter.detect_regions(image)
             if qr_regions:
-                raw_boxes = qr_filter.filter_spurious_ocr_boxes(raw_boxes, qr_regions)
+                raw_boxes = qr_filter.filter_spurious_ocr_boxes(
+                    raw_boxes, qr_regions, w_img=w_img, h_img=h_img, is_normalized=False
+                )
         except Exception:
             qr_regions = None
 

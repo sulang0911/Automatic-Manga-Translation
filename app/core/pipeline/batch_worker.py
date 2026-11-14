@@ -155,12 +155,14 @@ class BatchWorker(QThread):
 
         if rendered_to_export is not None:
             compressed = MangaExporter.is_export_compressed(self.config)
-            MangaExporter.export_hierarchical_image(
+            ok = MangaExporter.export_hierarchical_image(
                 rendered_to_export,
                 export_path,
                 source_path=img_path,
                 compressed=compressed,
             )
+            if ok is False:
+                raise RuntimeError(f"导出图像失败: {export_path}")
         blocks_cnt = len(full_c.get("blocks", []))
         del rendered_to_export, full_c
         return blocks_cnt
@@ -196,6 +198,7 @@ class BatchWorker(QThread):
         source_lang = self.config.get("source_lang", "自动识别")
         target_lang = self.config.get("target_lang", "简体中文")
         typo_eng = TypographyEngine()
+        auto_save = self.config.get("auto_save_cache", True) if isinstance(self.config, dict) else getattr(self.config, "auto_save_cache", True)
 
         _engines: Dict[str, Any] = {"ocr": None, "inpaint": None, "trans": None}
 
@@ -409,6 +412,13 @@ class BatchWorker(QThread):
                         else:
                             reuse_ocr_cache = True
 
+                eff_render_cfg = item.get("style") or cached_page_style or self.config
+                onoma_mode = extract_onomatopoeia_mode(eff_render_cfg)
+                prev_ignored = [
+                    is_block_ignored_onomatopoeia(b, onoma_mode)
+                    for b in cached_blocks
+                ] if reuse_ocr_cache and cached_blocks else []
+
                 if reuse_ocr_cache:
                     self.sig_batch_progress.emit(idx + 1, total, filename, 25, "正在读取已识别文本缓存...")
                     blocks = heal_mislabeled_onomatopoeia_blocks(cached_blocks)
@@ -416,12 +426,10 @@ class BatchWorker(QThread):
                 else:
                     self.sig_batch_progress.emit(idx + 1, total, filename, 30, "正在识别文字...")
                     blocks = _get_ocr_eng().detect_and_recognize(original_img)
-                    cache_mgr.save_page_cache(img_path, blocks=blocks)
+                    if auto_save:
+                        cache_mgr.save_page_cache(img_path, blocks=blocks)
                     # Release OCR GPU activation buffers before downstream stages
                     cleanup_gpu_memory(trim_ram=False)
-
-                eff_render_cfg = item.get("style") or cached_page_style or self.config
-                onoma_mode = extract_onomatopoeia_mode(eff_render_cfg)
 
                 # 4. Translate Stage (before Inpaint so LLM-classified onomatopoeia stays un-erased when ignored)
                 if self.force_retranslate or self.retranslate_from_cache:
@@ -453,11 +461,18 @@ class BatchWorker(QThread):
                         target_lang=target_lang,
                         onomatopoeia_mode=onoma_mode,
                     )
-                    cache_mgr.save_page_cache(img_path, blocks=blocks)
+                    if auto_save:
+                        cache_mgr.save_page_cache(img_path, blocks=blocks)
+
+                # Re-inpaint if any previously ignored onomatopoeia block became active (healed/translated)
+                newly_activated = bool(prev_ignored) and len(prev_ignored) == len(blocks) and any(
+                    was_ign and not is_block_ignored_onomatopoeia(b, onoma_mode)
+                    for was_ign, b in zip(prev_ignored, blocks)
+                )
 
                 # 5. Inpaint Stage (Check cache first)
                 erased_already_saved = False
-                if cache_status["erased"]:
+                if cache_status["erased"] and not newly_activated:
                     self.sig_batch_progress.emit(idx + 1, total, filename, 70, "正在载入已消除底图缓存...")
                     erased_already_saved = True
                     erased_img = cache_mgr.load_page_cache(img_path, load_images=True, load_rendered=False)["erased_img"]
@@ -470,7 +485,8 @@ class BatchWorker(QThread):
                         feather_radius=self.config.get("feather_radius", 4),
                         onomatopoeia_mode=onoma_mode
                     )
-                    cache_mgr.save_page_cache(img_path, erased_img=erased_img, blocks=blocks)
+                    if auto_save:
+                        cache_mgr.save_page_cache(img_path, erased_img=erased_img, blocks=blocks)
                     erased_already_saved = True
 
                 cleanup_gpu_memory(trim_ram=False)
@@ -489,19 +505,22 @@ class BatchWorker(QThread):
 
                 if export_path and translated_img is not None:
                     compressed = MangaExporter.is_export_compressed(self.config)
-                    MangaExporter.export_hierarchical_image(
+                    ok = MangaExporter.export_hierarchical_image(
                         translated_img,
                         export_path,
                         source_path=img_path,
                         compressed=compressed
                     )
+                    if ok is False:
+                        raise RuntimeError(f"导出图像失败: {export_path}")
 
-                cache_mgr.save_page_cache(
-                    img_path,
-                    erased_img=None if erased_already_saved else erased_img,
-                    blocks=blocks,
-                    rendered_img=translated_img
-                )
+                if auto_save:
+                    cache_mgr.save_page_cache(
+                        img_path,
+                        erased_img=None if erased_already_saved else erased_img,
+                        blocks=blocks,
+                        rendered_img=translated_img
+                    )
 
                 self.sig_batch_progress.emit(idx + 1, total, filename, 100, "完成并已存盘")
                 self.sig_item_completed.emit(img_id, {

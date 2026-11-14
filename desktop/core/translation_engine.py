@@ -244,8 +244,16 @@ class TranslationEngine:
                 for k in ["translations", "data", "results", "dialogues", "items"]:
                     if k in data and isinstance(data[k], list):
                         return data[k]
-                # If dictionary mapping id -> text
-                return [{"id": k, "translated_text": v} for k, v in data.items()]
+                if "translated_text" in data or "translation" in data:
+                    return [data]
+                # Dictionary mapping id -> text or {translated_text: ...}
+                mapped = []
+                for k, v in data.items():
+                    if isinstance(v, dict):
+                        mapped.append({"id": k, **v})
+                    else:
+                        mapped.append({"id": k, "translated_text": "" if v is None else str(v)})
+                return mapped
         except Exception:
             pass
 

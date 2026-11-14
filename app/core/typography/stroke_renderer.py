@@ -114,7 +114,37 @@ class StrokeRenderer:
             return
 
         font_size = getattr(font, "size", 20)
-        bold_extra = int(round(font_size * 0.035)) if (is_bold and font_size >= 30) else 0
+        bold_extra = max(1, int(round(font_size * 0.035))) if is_bold else 0
+
+        stroke_w = int(round(stroke.width)) if stroke else 0
+        if stroke_w > 0 and font_size < 16:
+            stroke_w = min(stroke_w, max(1, int(round(font_size * 0.15))))
+        stroke_fill = stroke.color_rgba if stroke else None
+
+        def _compute_roi_box(ox: float, oy: float, pad: int) -> Tuple[int, int, int, int]:
+            try:
+                bbox = font.getbbox(text)
+                bx0 = int(math.floor(ox + min(0, bbox[0]))) - pad
+                by0 = int(math.floor(oy + min(0, bbox[1]))) - pad
+                bx1 = int(math.ceil(ox + bbox[2])) + pad
+                by1 = int(math.ceil(oy + bbox[3])) + pad
+            except Exception:
+                tw = int(math.ceil(len(text) * font_size * 1.2))
+                th = int(math.ceil(font_size * 1.5))
+                bx0 = int(math.floor(ox)) - pad
+                by0 = int(math.floor(oy)) - pad
+                bx1 = int(math.ceil(ox + tw)) + pad
+                by1 = int(math.ceil(oy + th)) + pad
+            img_w, img_h = target_image.size
+            return max(0, bx0), max(0, by0), min(img_w, bx1), min(img_h, by1)
+
+        def _composite_roi(roi_rgba: Image.Image, rx0: int, ry0: int, rx1: int, ry1: int) -> None:
+            if target_image.mode == "RGBA":
+                target_image.alpha_composite(roi_rgba, dest=(rx0, ry0))
+            else:
+                target_roi = target_image.crop((rx0, ry0, rx1, ry1)).convert("RGBA")
+                target_roi.alpha_composite(roi_rgba)
+                target_image.paste(target_roi.convert(target_image.mode), (rx0, ry0))
 
         # 1. ROI-bounded Drop Shadow Layer
         if shadow and shadow.enabled:
@@ -122,33 +152,10 @@ class StrokeRenderer:
             sx = x + shadow.offset_x
             sy = y + shadow.offset_y
             blur_pad = int(math.ceil(shadow.blur_radius * 3.0)) + shadow_stroke_w + 6
-
-            try:
-                bbox = font.getbbox(text)
-                tw = max(1, int(math.ceil(bbox[2] - bbox[0])))
-                th = max(1, int(math.ceil(bbox[3] - bbox[1])))
-                bx0 = int(math.floor(sx + min(0, bbox[0]))) - blur_pad
-                by0 = int(math.floor(sy + min(0, bbox[1]))) - blur_pad
-                bx1 = int(math.ceil(sx + bbox[2])) + blur_pad
-                by1 = int(math.ceil(sy + bbox[3])) + blur_pad
-            except Exception:
-                tw = int(math.ceil(len(text) * font_size * 1.2))
-                th = int(math.ceil(font_size * 1.5))
-                bx0 = int(math.floor(sx)) - blur_pad
-                by0 = int(math.floor(sy)) - blur_pad
-                bx1 = int(math.ceil(sx + tw)) + blur_pad
-                by1 = int(math.ceil(sy + th)) + blur_pad
-
-            img_w, img_h = target_image.size
-            rx0 = max(0, bx0)
-            ry0 = max(0, by0)
-            rx1 = min(img_w, bx1)
-            ry1 = min(img_h, by1)
+            rx0, ry0, rx1, ry1 = _compute_roi_box(sx, sy, blur_pad)
 
             if rx1 > rx0 and ry1 > ry0:
-                roi_w = rx1 - rx0
-                roi_h = ry1 - ry0
-                shadow_roi = Image.new("RGBA", (roi_w, roi_h), (0, 0, 0, 0))
+                shadow_roi = Image.new("RGBA", (rx1 - rx0, ry1 - ry0), (0, 0, 0, 0))
                 shadow_draw = ImageDraw.Draw(shadow_roi)
                 shadow_draw.text(
                     (sx - rx0, sy - ry0),
@@ -159,28 +166,23 @@ class StrokeRenderer:
                     stroke_fill=shadow.color_rgba if shadow_stroke_w > 0 else None
                 )
                 blurred_roi = shadow_roi.filter(ImageFilter.GaussianBlur(shadow.blur_radius))
-                target_image.alpha_composite(blurred_roi, dest=(rx0, ry0))
+                _composite_roi(blurred_roi, rx0, ry0, rx1, ry1)
                 del shadow_roi, blurred_roi
 
         # 2. Text with stroke & fill
-        draw = ImageDraw.Draw(target_image)
-        stroke_w = int(round(stroke.width)) if stroke else 0
-        if stroke_w > 0 and font_size < 16:
-            stroke_w = min(stroke_w, max(1, int(round(font_size * 0.15))))
-        stroke_fill = stroke.color_rgba if stroke else None
-
-        if is_bold:
-            if stroke_w > 0:
-                draw.text(
-                    (x, y),
-                    text,
-                    font=font,
-                    fill=stroke_fill,
-                    stroke_width=stroke_w + bold_extra,
-                    stroke_fill=stroke_fill
-                )
-                draw.text(
-                    (x, y),
+        def _draw_glyph(drw: ImageDraw.ImageDraw, dx: float, dy: float) -> None:
+            if is_bold:
+                if stroke_w > 0:
+                    drw.text(
+                        (dx, dy),
+                        text,
+                        font=font,
+                        fill=stroke_fill,
+                        stroke_width=stroke_w + bold_extra,
+                        stroke_fill=stroke_fill
+                    )
+                drw.text(
+                    (dx, dy),
                     text,
                     font=font,
                     fill=fill_rgba,
@@ -188,23 +190,27 @@ class StrokeRenderer:
                     stroke_fill=fill_rgba
                 )
             else:
-                draw.text(
-                    (x, y),
+                drw.text(
+                    (dx, dy),
                     text,
                     font=font,
                     fill=fill_rgba,
-                    stroke_width=bold_extra,
-                    stroke_fill=fill_rgba
+                    stroke_width=stroke_w,
+                    stroke_fill=stroke_fill
                 )
+
+        needs_composite = (fill_rgba[3] < 255) or (
+            stroke_w > 0 and stroke_fill is not None and stroke_fill[3] < 255
+        )
+        if needs_composite:
+            rx0, ry0, rx1, ry1 = _compute_roi_box(x, y, stroke_w + bold_extra + 6)
+            if rx1 > rx0 and ry1 > ry0:
+                text_roi = Image.new("RGBA", (rx1 - rx0, ry1 - ry0), (0, 0, 0, 0))
+                _draw_glyph(ImageDraw.Draw(text_roi), x - rx0, y - ry0)
+                _composite_roi(text_roi, rx0, ry0, rx1, ry1)
+                del text_roi
         else:
-            draw.text(
-                (x, y),
-                text,
-                font=font,
-                fill=fill_rgba,
-                stroke_width=stroke_w,
-                stroke_fill=stroke_fill
-            )
+            _draw_glyph(ImageDraw.Draw(target_image), x, y)
 
     # --------------------------------------------------------------------------
     # PyQt6 / QPainter Vector Drawing Pipeline

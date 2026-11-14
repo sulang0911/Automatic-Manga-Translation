@@ -40,11 +40,17 @@ def safe_cv2_imread(path: str) -> Optional[np.ndarray]:
         return None
 
 
-def safe_cv2_imwrite(path: str, img: np.ndarray, ext: Optional[str] = None, quality: int = 95) -> bool:
+def safe_cv2_imwrite(
+    path: str,
+    img: np.ndarray,
+    ext: Optional[str] = None,
+    quality: int = 95,
+    fallback_png: bool = True,
+) -> bool:
     """
     Safely writes an image using OpenCV, supporting Windows Unicode and non-ASCII paths.
     If ext is not specified, infers extension from the target path (defaults to .webp).
-    Uses WebP with quality 95 by default; falls back to PNG if WebP encoding fails.
+    Uses WebP with quality 95 by default; optionally falls back to PNG if encoding fails.
     """
     if img is None or img.size == 0:
         return False
@@ -62,7 +68,7 @@ def safe_cv2_imwrite(path: str, img: np.ndarray, ext: Optional[str] = None, qual
         else:
             params = []
         ok, buf = cv2.imencode(ext, img, params)
-        if not ok and ext.lower() != ".png":
+        if not ok and fallback_png and ext.lower() != ".png":
             # Fallback to PNG
             ext = ".png"
             path = os.path.splitext(path)[0] + ".png"
@@ -101,6 +107,7 @@ class MangaCacheManager:
         self._cache_format = normalize_cache_format(cache_format)
         self._translated_memo: Dict[str, Tuple[float, int, bool]] = {}
         self._blocks_memo: Dict[str, Tuple[float, int, List[Dict[str, Any]]]] = {}
+        self._memo_lock = threading.Lock()
         self._write_lock = threading.Lock()
         self._write_cond = threading.Condition(self._write_lock)
         self._pending_writes: Dict[str, Dict[str, Any]] = {}
@@ -312,9 +319,10 @@ class MangaCacheManager:
         """Checks whether a blocks.json file contains non-empty translated text, memoized by (mtime, size)."""
         try:
             st = os.stat(b_path)
-            memo = self._translated_memo.get(b_path)
-            if memo is not None and memo[0] == st.st_mtime and memo[1] == st.st_size:
-                return memo[2]
+            with self._memo_lock:
+                memo = self._translated_memo.get(b_path)
+                if memo is not None and memo[0] == st.st_mtime and memo[1] == st.st_size:
+                    return memo[2]
             with open(b_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             blocks_list = data if isinstance(data, list) else data.get("blocks", [])
@@ -322,13 +330,14 @@ class MangaCacheManager:
                 res = False
             else:
                 res = any(bool(b.get("translated_text", "").strip()) for b in blocks_list if isinstance(b, dict))
-            if len(self._translated_memo) >= 1000:
-                self._translated_memo.clear()
-            self._translated_memo[b_path] = (st.st_mtime, st.st_size, res)
-            if isinstance(blocks_list, list):
-                if len(self._blocks_memo) >= 500:
-                    self._blocks_memo.clear()
-                self._blocks_memo[b_path] = (st.st_mtime, st.st_size, blocks_list)
+            with self._memo_lock:
+                if len(self._translated_memo) >= 1000:
+                    self._translated_memo.clear()
+                self._translated_memo[b_path] = (st.st_mtime, st.st_size, res)
+                if isinstance(blocks_list, list):
+                    if len(self._blocks_memo) >= 500:
+                        self._blocks_memo.clear()
+                    self._blocks_memo[b_path] = (st.st_mtime, st.st_size, blocks_list)
             return res
         except Exception:
             return False
@@ -413,7 +422,7 @@ class MangaCacheManager:
             return None
         fmt = self._cache_format
         target_path = paths[f"{kind}_{fmt}"]
-        if not safe_cv2_imwrite(target_path, img, ext=f".{fmt}", quality=95):
+        if not safe_cv2_imwrite(target_path, img, ext=f".{fmt}", quality=95, fallback_png=False):
             target_path = paths[f"{kind}_png"]
             if not safe_cv2_imwrite(target_path, img, ext=".png"):
                 return None
@@ -450,11 +459,13 @@ class MangaCacheManager:
             try:
                 st = os.stat(paths["blocks_json"])
                 has_tr = any(bool(b.get("translated_text", "").strip()) for b in serialized_blocks if isinstance(b, dict))
-                self._translated_memo[paths["blocks_json"]] = (st.st_mtime, st.st_size, has_tr)
-                self._blocks_memo[paths["blocks_json"]] = (st.st_mtime, st.st_size, serialized_blocks)
+                with self._memo_lock:
+                    self._translated_memo[paths["blocks_json"]] = (st.st_mtime, st.st_size, has_tr)
+                    self._blocks_memo[paths["blocks_json"]] = (st.st_mtime, st.st_size, serialized_blocks)
             except Exception:
-                self._translated_memo.pop(paths["blocks_json"], None)
-                self._blocks_memo.pop(paths["blocks_json"], None)
+                with self._memo_lock:
+                    self._translated_memo.pop(paths["blocks_json"], None)
+                    self._blocks_memo.pop(paths["blocks_json"], None)
 
         # 3. Save rendered composite
         saved_rendered = self._save_cache_image("rendered", rendered_img, paths)
@@ -492,10 +503,22 @@ class MangaCacheManager:
         """
         key = self._norm_key(image_path)
         with self._write_cond:
-            self._pending_writes.pop(key, None)
+            pending = self._pending_writes.pop(key, None)
         self.flush_path(image_path)
         serialized_blocks = self._serialize_blocks(blocks) if blocks is not None else None
         style_dict = self._serialize_style(page_style) if page_style is not None else None
+        if pending is not None:
+            if erased_img is None:
+                erased_img = pending.get("erased_img")
+            if serialized_blocks is None:
+                serialized_blocks = pending.get("blocks")
+            if rendered_img is None:
+                rendered_img = pending.get("rendered_img")
+            if not clear_page_style and style_dict is None:
+                if pending.get("clear_page_style"):
+                    clear_page_style = True
+                else:
+                    style_dict = pending.get("page_style")
         return self._persist_payload(
             image_path,
             erased_img=erased_img,
@@ -591,16 +614,18 @@ class MangaCacheManager:
         if os.path.exists(b_path):
             try:
                 st = os.stat(b_path)
-                memo_b = self._blocks_memo.get(b_path)
+                with self._memo_lock:
+                    memo_b = self._blocks_memo.get(b_path)
                 if memo_b is not None and memo_b[0] == st.st_mtime and memo_b[1] == st.st_size:
                     raw_blocks = memo_b[2]
                 else:
                     with open(b_path, "r", encoding="utf-8") as f:
                         raw_blocks = json.load(f)
                     if isinstance(raw_blocks, list):
-                        if len(self._blocks_memo) >= 500:
-                            self._blocks_memo.clear()
-                        self._blocks_memo[b_path] = (st.st_mtime, st.st_size, raw_blocks)
+                        with self._memo_lock:
+                            if len(self._blocks_memo) >= 500:
+                                self._blocks_memo.clear()
+                            self._blocks_memo[b_path] = (st.st_mtime, st.st_size, raw_blocks)
                 if isinstance(raw_blocks, list):
                     res["blocks"] = [
                         TranslationBlock.from_dict(b) if isinstance(b, dict) else b
@@ -636,34 +661,25 @@ class MangaCacheManager:
             self._pending_writes.pop(key, None)
         self.flush_path(image_path)
         paths = self.get_cache_paths(image_path)
-        self._translated_memo.pop(paths["blocks_json"], None)
-        self._blocks_memo.pop(paths["blocks_json"], None)
-        for key, p in paths.items():
-            if key != "dir" and os.path.exists(p):
+        with self._memo_lock:
+            self._translated_memo.pop(paths["blocks_json"], None)
+            self._blocks_memo.pop(paths["blocks_json"], None)
+        for pkey, p in paths.items():
+            if pkey != "dir" and os.path.exists(p):
                 try:
                     os.remove(p)
                 except Exception as e:
                     logger.warning(f"Failed to remove cache file {p}: {e}")
 
-        # Also thoroughly scan and remove any remaining variant files for this image
-        cache_dir = self.get_cache_dir(image_path, create=False)
-        if os.path.isdir(cache_dir):
-            base_name = os.path.splitext(os.path.basename(image_path))[0]
-            try:
-                for fname in os.listdir(cache_dir):
-                    if fname.startswith(f"{base_name}."):
-                        full_p = os.path.join(cache_dir, fname)
-                        if os.path.isfile(full_p):
-                            try:
-                                os.remove(full_p)
-                            except Exception as e:
-                                logger.warning(f"Failed to remove cache file {full_p}: {e}")
-            except Exception as e:
-                logger.warning(f"Error listing cache dir {cache_dir}: {e}")
-
     def clear_all_cache(self, directory_path: str) -> None:
         """Removes the entire .amt_cache directory under the given folder."""
         cache_dir = os.path.join(directory_path, CACHE_DIR_NAME)
+        norm_cdir = self._norm_key(cache_dir) + os.sep
+        with self._memo_lock:
+            for k in [k for k in self._translated_memo if self._norm_key(k).startswith(norm_cdir)]:
+                self._translated_memo.pop(k, None)
+            for k in [k for k in self._blocks_memo if self._norm_key(k).startswith(norm_cdir)]:
+                self._blocks_memo.pop(k, None)
         if os.path.exists(cache_dir):
             import shutil
             try:
@@ -673,10 +689,9 @@ class MangaCacheManager:
 
     def clear_caches_for_items(self, items_or_paths: List[Any]) -> None:
         """
-        Removes all software-generated cache files and .amt_cache folders
-        associated with the given list of items or file paths.
+        Removes software-generated cache files for the given items or file paths,
+        deleting empty .amt_cache folders afterward without wiping sibling items' caches.
         """
-        import shutil
         cache_dirs = set()
         paths = []
         for it in items_or_paths:
@@ -686,23 +701,18 @@ class MangaCacheManager:
                 p = str(it)
             if p:
                 paths.append(p)
-                key = self._norm_key(p)
-                with self._write_cond:
-                    self._pending_writes.pop(key, None)
-                cdir = self.get_cache_dir(p, create=False)
-                cache_dirs.add(cdir)
-        for p in paths:
-            self.flush_path(p)
-
-        for cdir in cache_dirs:
-            if os.path.exists(cdir):
-                try:
-                    shutil.rmtree(cdir, ignore_errors=True)
-                except Exception as e:
-                    logger.warning(f"Failed to delete cache dir {cdir}: {e}")
+                cache_dirs.add(self.get_cache_dir(p, create=False))
 
         for p in paths:
             self.clear_cache(p)
+
+        for cdir in cache_dirs:
+            if os.path.isdir(cdir):
+                try:
+                    if not os.listdir(cdir):
+                        os.rmdir(cdir)
+                except OSError as e:
+                    logger.warning(f"Failed to remove empty cache dir {cdir}: {e}")
 
 
 _GLOBAL_CACHE_MGR: Optional[MangaCacheManager] = None

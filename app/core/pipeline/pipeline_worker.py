@@ -76,6 +76,7 @@ class PipelineWorker(QThread):
 
             cache_mgr = get_cache_manager()
             cache_status = cache_mgr.has_cache(self.image_path)
+            auto_save = self.config.get("auto_save_cache", True) if isinstance(self.config, dict) else getattr(self.config, "auto_save_cache", True)
 
             # 1. OCR Stage
             if blocks is None or self.mode in ["full", "ocr_only"]:
@@ -121,7 +122,8 @@ class PipelineWorker(QThread):
                         self.sig_progress.emit(int(15 + pct * 0.25), msg)
 
                     blocks = ocr_eng.detect_and_recognize(original_img, progress_callback=ocr_cb)
-                    cache_mgr.save_page_cache(self.image_path, blocks=blocks)
+                    if auto_save:
+                        cache_mgr.save_page_cache(self.image_path, blocks=blocks)
                     cleanup_gpu_memory(trim_ram=False)
                     # Since OCR produced fresh blocks, force Stage 2 to re-inpaint cleanly
                     erased_img = None
@@ -212,7 +214,8 @@ class PipelineWorker(QThread):
                     progress_callback=trans_cb,
                     onomatopoeia_mode=onoma_mode,
                 )
-                cache_mgr.save_page_cache(self.image_path, blocks=blocks)
+                if auto_save:
+                    cache_mgr.save_page_cache(self.image_path, blocks=blocks)
                 self.sig_step_done.emit("translate", blocks)
 
             # 3. Inpainting Stage
@@ -241,8 +244,9 @@ class PipelineWorker(QThread):
                     manual_mask=self.manual_mask,
                     onomatopoeia_mode=onoma_mode
                 )
-                cache_mgr.save_page_cache(self.image_path, erased_img=erased_img, blocks=blocks)
-                erased_saved = True
+                if auto_save:
+                    cache_mgr.save_page_cache(self.image_path, erased_img=erased_img, blocks=blocks)
+                    erased_saved = True
                 cleanup_gpu_memory(trim_ram=False)
                 self.sig_step_done.emit("inpaint", erased_img)
 
@@ -264,12 +268,13 @@ class PipelineWorker(QThread):
             render_blocks, ignored_blocks = partition_render_blocks(blocks, onoma_mode)
             render_base = prepare_render_base(base_bg, original_img, render_blocks, ignored_blocks)
             translated_img = typo_eng.render_translations(render_base, render_blocks, self.config)
-            cache_mgr.save_page_cache(
-                self.image_path,
-                erased_img=None if erased_saved else erased_img,
-                blocks=blocks,
-                rendered_img=translated_img
-            )
+            if auto_save:
+                cache_mgr.save_page_cache(
+                    self.image_path,
+                    erased_img=None if erased_saved else erased_img,
+                    blocks=blocks,
+                    rendered_img=translated_img
+                )
             self.sig_step_done.emit("render", translated_img)
 
             self.sig_progress.emit(100, "处理完成并已存入缓存！")

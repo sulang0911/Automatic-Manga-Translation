@@ -7,7 +7,7 @@ hover states, coordinate normalization, and Apple HIG visual styling.
 from typing import Optional, Dict, Any
 from PyQt6.QtWidgets import QGraphicsRectItem, QGraphicsItem, QWidget, QStyleOptionGraphicsItem
 from PyQt6.QtCore import Qt, QRectF, QPointF, pyqtSignal, QObject
-from PyQt6.QtGui import QPen, QBrush, QColor, QPainter, QFont
+from PyQt6.QtGui import QPen, QBrush, QColor, QPainter, QFont, QTransform
 
 HANDLE_NONE = 0
 HANDLE_TOP_LEFT = 1
@@ -219,41 +219,42 @@ class BubbleItem(QGraphicsRectItem):
             delta = sp_event - self._drag_start_pos
             r = self._drag_start_rect
             sp = self._drag_start_scene_pos
+            rot = self.rotation()
+            local_delta = QTransform().rotate(-rot).map(delta) if abs(rot) > 1e-3 else delta
 
-            new_x = sp.x()
-            new_y = sp.y()
-            new_w = r.width()
-            new_h = r.height()
+            dw = 0.0
+            dh = 0.0
+            cx_sign = 0.0
+            cy_sign = 0.0
+            if self._active_handle in (HANDLE_BOTTOM_RIGHT, HANDLE_TOP_RIGHT, HANDLE_RIGHT_MID):
+                dw = max(min_dim, r.width() + local_delta.x()) - r.width()
+                cx_sign = 0.5
+            elif self._active_handle in (HANDLE_BOTTOM_LEFT, HANDLE_TOP_LEFT, HANDLE_LEFT_MID):
+                dw = max(min_dim, r.width() - local_delta.x()) - r.width()
+                cx_sign = -0.5
 
-            if self._active_handle == HANDLE_BOTTOM_RIGHT:
-                new_w = max(min_dim, r.width() + delta.x())
-                new_h = max(min_dim, r.height() + delta.y())
-            elif self._active_handle == HANDLE_BOTTOM_LEFT:
-                new_w = max(min_dim, r.width() - delta.x())
-                new_h = max(min_dim, r.height() + delta.y())
-                new_x = sp.x() + (r.width() - new_w)
-            elif self._active_handle == HANDLE_TOP_RIGHT:
-                new_w = max(min_dim, r.width() + delta.x())
-                new_h = max(min_dim, r.height() - delta.y())
-                new_y = sp.y() + (r.height() - new_h)
-            elif self._active_handle == HANDLE_TOP_LEFT:
-                new_w = max(min_dim, r.width() - delta.x())
-                new_h = max(min_dim, r.height() - delta.y())
-                new_x = sp.x() + (r.width() - new_w)
-                new_y = sp.y() + (r.height() - new_h)
-            elif self._active_handle == HANDLE_RIGHT_MID:
-                new_w = max(min_dim, r.width() + delta.x())
-            elif self._active_handle == HANDLE_LEFT_MID:
-                new_w = max(min_dim, r.width() - delta.x())
-                new_x = sp.x() + (r.width() - new_w)
-            elif self._active_handle == HANDLE_BOTTOM_MID:
-                new_h = max(min_dim, r.height() + delta.y())
-            elif self._active_handle == HANDLE_TOP_MID:
-                new_h = max(min_dim, r.height() - delta.y())
-                new_y = sp.y() + (r.height() - new_h)
+            if self._active_handle in (HANDLE_BOTTOM_RIGHT, HANDLE_BOTTOM_LEFT, HANDLE_BOTTOM_MID):
+                dh = max(min_dim, r.height() + local_delta.y()) - r.height()
+                cy_sign = 0.5
+            elif self._active_handle in (HANDLE_TOP_RIGHT, HANDLE_TOP_LEFT, HANDLE_TOP_MID):
+                dh = max(min_dim, r.height() - local_delta.y()) - r.height()
+                cy_sign = -0.5
 
-            self.setPos(new_x, new_y)
-            self.setRect(0, 0, new_w, new_h)
+            new_w = r.width() + dw
+            new_h = r.height() + dh
+            local_shift = QPointF(dw * cx_sign, dh * cy_sign)
+            scene_shift = QTransform().rotate(rot).map(local_shift) if abs(rot) > 1e-3 else local_shift
+            new_x = sp.x() + (r.width() - new_w) * 0.5 + scene_shift.x()
+            new_y = sp.y() + (r.height() - new_h) * 0.5 + scene_shift.y()
+
+            self._suppress_item_change = True
+            try:
+                self.setRect(0, 0, new_w, new_h)
+                if abs(rot) > 1e-3:
+                    self.setTransformOriginPoint(new_w * 0.5, new_h * 0.5)
+                self.setPos(new_x, new_y)
+            finally:
+                self._suppress_item_change = False
             self._sync_block_coords()
             self.signals.changed.emit(self.block_data)
             event.accept()
@@ -266,7 +267,11 @@ class BubbleItem(QGraphicsRectItem):
             sp = self._drag_start_scene_pos
             new_x = max(0.0, min(float(self.img_w - self.rect().width()), sp.x() + delta.x()))
             new_y = max(0.0, min(float(self.img_h - self.rect().height()), sp.y() + delta.y()))
-            self.setPos(new_x, new_y)
+            self._suppress_item_change = True
+            try:
+                self.setPos(new_x, new_y)
+            finally:
+                self._suppress_item_change = False
             self._sync_block_coords()
             self.signals.changed.emit(self.block_data)
             event.accept()
@@ -299,13 +304,16 @@ class BubbleItem(QGraphicsRectItem):
         self.block_data["ymin"] = round(max(0.0, min(100.0, (p.y() / self.img_h) * 100.0)), 2)
         self.block_data["xmax"] = round(max(0.0, min(100.0, ((p.x() + r.width()) / self.img_w) * 100.0)), 2)
         self.block_data["ymax"] = round(max(0.0, min(100.0, ((p.y() + r.height()) / self.img_h) * 100.0)), 2)
-        if getattr(self, "_is_moving_body", False) or getattr(self, "_active_handle", HANDLE_NONE) != HANDLE_NONE:
+        if getattr(self, "_has_actually_moved", False):
             if self.block_data.get("polygon") and not self.block_data.get("_orig_polygon"):
                 self.block_data["_orig_polygon"] = list(self.block_data["polygon"])
             self.block_data["polygon"] = None
 
     def itemChange(self, change: QGraphicsItem.GraphicsItemChange, value: Any) -> Any:
-        if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
+        if (
+            change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged
+            and not getattr(self, "_suppress_item_change", False)
+        ):
             self._sync_block_coords()
             self.signals.changed.emit(self.block_data)
         return super().itemChange(change, value)

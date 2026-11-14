@@ -147,7 +147,8 @@ class BlockOcrTranslateWorker(QThread):
                         temperature=temperature,
                         timeout_seconds=timeout,
                         max_retries=max_retries,
-                        system_prompt=system_prompt
+                        system_prompt=system_prompt,
+                        proxy_url=llm_cfg.get("proxy_url", self.config.get("proxy_url", "")),
                     )
                 )
 

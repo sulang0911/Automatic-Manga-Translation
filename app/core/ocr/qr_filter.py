@@ -263,7 +263,8 @@ class QRCodeFilter:
         boxes: List[Dict[str, Any]],
         qr_regions: List[QRRegion],
         w_img: Optional[int] = None,
-        h_img: Optional[int] = None
+        h_img: Optional[int] = None,
+        is_normalized: Optional[bool] = None,
     ) -> List[Dict[str, Any]]:
         """
         Filters out spurious OCR text boxes whose center or >60% area falls inside detected QR regions.
@@ -272,14 +273,19 @@ class QRCodeFilter:
         if not qr_regions or not boxes:
             return boxes
 
+        if is_normalized is None:
+            is_normalized = all(
+                max(b.get("xmin", 0), b.get("xmax", 0)) <= 100.0
+                and max(b.get("ymin", 0), b.get("ymax", 0)) <= 100.0
+                for b in boxes
+            )
+
         filtered: List[Dict[str, Any]] = []
         for b in boxes:
             bx1 = min(b.get("xmin", 0), b.get("xmax", 0))
             by1 = min(b.get("ymin", 0), b.get("ymax", 0))
             bx2 = max(b.get("xmin", 0), b.get("xmax", 0))
             by2 = max(b.get("ymin", 0), b.get("ymax", 0))
-
-            is_normalized = (bx2 <= 100.0 and by2 <= 100.0)
 
             is_inside_qr = False
             for reg in qr_regions:

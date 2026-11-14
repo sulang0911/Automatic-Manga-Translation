@@ -132,6 +132,19 @@ def parse_llm_json_response(raw_text: str) -> Any:
     except json.JSONDecodeError:
         pass
 
+    # Pass 3b: Decode first valid JSON value when trailing commentary contains brackets/braces
+    decoder = json.JSONDecoder()
+    for pos in sorted(p for p in (text.find('['), text.find('{')) if p != -1):
+        prefix = text[:pos]
+        if prefix.count('[') > prefix.count(']') or prefix.count('{') > prefix.count('}'):
+            continue
+        try:
+            obj, _ = decoder.raw_decode(text, pos)
+            if isinstance(obj, (list, dict)):
+                return obj
+        except json.JSONDecodeError:
+            pass
+
     # Pass 4: Locate outer container
     first_bracket = text.find('[')
     first_brace = text.find('{')
@@ -403,7 +416,9 @@ def align_translations_to_blocks(parsed_data: Any, blocks: List[TranslationBlock
             if key in parsed_data and isinstance(parsed_data[key], list):
                 return align_translations_to_blocks(parsed_data[key], blocks)
         for val in parsed_data.values():
-            if isinstance(val, list) and val and isinstance(val[0], dict) and ("id" in val[0] or "translated_text" in val[0]):
+            if isinstance(val, list) and val and isinstance(val[0], dict) and any(
+                k in val[0] for k in ("id", "translated_text", "translation")
+            ):
                 return align_translations_to_blocks(val, blocks)
         # Direct single-block dict: {"id": "...", "translated_text": "..."}
         if isinstance(parsed_data.get("translated_text"), str) or isinstance(parsed_data.get("translation"), str):

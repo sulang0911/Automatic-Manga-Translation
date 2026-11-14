@@ -50,7 +50,7 @@ def _decode_scaled_qimage(path: str, target_width: int, target_height: int) -> Q
 
 class ThumbnailSignals(QObject):
     """Signals for background thumbnail workers."""
-    loaded = pyqtSignal(str, QImage)
+    loaded = pyqtSignal(str, int, int, QImage)
 
 
 class ThumbnailWorker(QRunnable):
@@ -82,7 +82,7 @@ class ThumbnailWorker(QRunnable):
                 return
             if not scaled.isNull():
                 try:
-                    self.signals.loaded.emit(self.path, scaled)
+                    self.signals.loaded.emit(self.path, self.target_width, self.target_height, scaled)
                 except RuntimeError:
                     pass
         except Exception:
@@ -103,9 +103,9 @@ class AsyncThumbnailManager:
         self._pool.setMaxThreadCount(min(4, max(2, os.cpu_count() or 2)))
         self.signals = ThumbnailSignals()
         self.signals.loaded.connect(self._on_thumbnail_loaded)
-        self._cache: "OrderedDict[str, QPixmap]" = OrderedDict()
+        self._cache: "OrderedDict[Tuple[str, Tuple[int, int]], QPixmap]" = OrderedDict()
         self._max_cache = 400
-        self._pending_callbacks: Dict[str, List[Callable[[QPixmap], None]]] = {}
+        self._pending_callbacks: Dict[Tuple[str, Tuple[int, int]], List[Callable[[QPixmap], None]]] = {}
         self._priority_seq: int = 0
         self._generation: int = 0
 
@@ -122,33 +122,45 @@ class AsyncThumbnailManager:
             cls._instance = AsyncThumbnailManager()
         return cls._instance
 
-    def get_cached(self, path: str) -> Optional[QPixmap]:
+    def get_cached(self, path: str, target_size: Optional[Tuple[int, int]] = None) -> Optional[QPixmap]:
         """Returns cached QPixmap if already decoded (updating LRU order), else None."""
-        pix = self._cache.get(path)
+        if target_size is None:
+            for key in list(self._cache.keys()):
+                if key[0] == path:
+                    pix = self._cache[key]
+                    self._cache.move_to_end(key)
+                    return pix
+            return None
+        key = (path, (int(target_size[0]), int(target_size[1])))
+        pix = self._cache.get(key)
         if pix is not None:
-            self._cache.move_to_end(path)
+            self._cache.move_to_end(key)
         return pix
 
     def invalidate(self, path: str):
-        """Removes a specific path from thumbnail cache to force reload."""
-        self._cache.pop(path, None)
-        self._pending_callbacks.pop(path, None)
+        """Removes all cached sizes for a specific path to force reload."""
+        for k in [k for k in self._cache if k[0] == path]:
+            self._cache.pop(k, None)
+        for k in [k for k in self._pending_callbacks if k[0] == path]:
+            self._pending_callbacks.pop(k, None)
 
-    def _put_cache(self, path: str, pix: QPixmap):
-        if path in self._cache:
-            self._cache.move_to_end(path)
-        self._cache[path] = pix
+    def _put_cache(self, path: str, target_size: Tuple[int, int], pix: QPixmap):
+        key = (path, (int(target_size[0]), int(target_size[1])))
+        if key in self._cache:
+            self._cache.move_to_end(key)
+        self._cache[key] = pix
         while len(self._cache) > self._max_cache:
             self._cache.popitem(last=False)
 
-    def _on_thumbnail_loaded(self, path: str, qimg: QImage):
+    def _on_thumbnail_loaded(self, path: str, target_w: int, target_h: int, qimg: QImage):
+        key = (path, (target_w, target_h))
         if qimg.isNull():
-            self._pending_callbacks.pop(path, None)
+            self._pending_callbacks.pop(key, None)
             return
         pix = QPixmap.fromImage(qimg)
-        self._put_cache(path, pix)
+        self._put_cache(path, (target_w, target_h), pix)
 
-        callbacks = self._pending_callbacks.pop(path, [])
+        callbacks = self._pending_callbacks.pop(key, [])
         for cb in callbacks:
             try:
                 cb(pix)
@@ -171,7 +183,8 @@ class AsyncThumbnailManager:
         if not path:
             return
 
-        cached = self.get_cached(path)
+        norm_size = (int(target_size[0]), int(target_size[1]))
+        cached = self.get_cached(path, norm_size)
         if cached is not None:
             callback(cached)
             return
@@ -179,20 +192,21 @@ class AsyncThumbnailManager:
         if sync:
             if not os.path.exists(path):
                 return
-            scaled = _decode_scaled_qimage(path, target_size[0], target_size[1])
+            scaled = _decode_scaled_qimage(path, norm_size[0], norm_size[1])
             if not scaled.isNull():
                 pix = QPixmap.fromImage(scaled)
-                self._put_cache(path, pix)
+                self._put_cache(path, norm_size, pix)
                 callback(pix)
             return
 
-        if path in self._pending_callbacks:
-            self._pending_callbacks[path].append(callback)
+        key = (path, norm_size)
+        if key in self._pending_callbacks:
+            self._pending_callbacks[key].append(callback)
         else:
-            self._pending_callbacks[path] = [callback]
+            self._pending_callbacks[key] = [callback]
             expected_gen = self._generation
-            is_stale = lambda: (expected_gen != self._generation) or (path not in self._pending_callbacks)
-            worker = ThumbnailWorker(path, target_size[0], target_size[1], self.signals, is_stale_fn=is_stale)
+            is_stale = lambda k=key: (expected_gen != self._generation) or (k not in self._pending_callbacks)
+            worker = ThumbnailWorker(path, norm_size[0], norm_size[1], self.signals, is_stale_fn=is_stale)
             if priority is None:
                 self._priority_seq = (self._priority_seq + 1) % 1000000
                 eff_priority = self._priority_seq

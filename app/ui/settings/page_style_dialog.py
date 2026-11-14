@@ -7,6 +7,7 @@ Clicking 'Apply' re-renders only the current page without altering global settin
 import os
 from typing import Optional, Dict, Any
 from copy import deepcopy
+from dataclasses import replace
 
 from PyQt6.QtWidgets import (
     QApplication, QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -63,6 +64,9 @@ class PageStyleDialog(QDialog):
     ):
         super().__init__(parent)
         self.item_data = item_data
+        global_style = StyleConfig.from_dict(global_style) if isinstance(global_style, dict) else (global_style or StyleConfig())
+        if isinstance(current_page_style, dict):
+            current_page_style = StyleConfig.from_dict(current_page_style)
         self.global_style = global_style
         self.page_style = deepcopy(current_page_style) if current_page_style else deepcopy(global_style)
         self.has_custom_override = current_page_style is not None
@@ -427,7 +431,8 @@ class PageStyleDialog(QDialog):
             self.applied_style = None
         else:
             _, real_font = FONT_CHOICES[self.font_combo.currentIndex()]
-            self.applied_style = StyleConfig(
+            self.applied_style = replace(
+                self.page_style,
                 font_family=real_font,
                 font_bold=self.bold_cb.isChecked(),
                 font_italic=self.italic_cb.isChecked(),
@@ -440,10 +445,7 @@ class PageStyleDialog(QDialog):
                 auto_stroke_width=self.auto_stroke_w_cb.isChecked(),
                 stroke_color=getattr(self.page_style, 'stroke_color', '#FFFFFF'),
                 bg_color_mode=self.bg_mode_combo.currentData(),
-                line_spacing=getattr(self.page_style, 'line_spacing', 1.30),
-                auto_line_spacing=getattr(self.page_style, 'auto_line_spacing', True),
                 onomatopoeia_mode=self.onoma_mode_combo.currentData() or OnomatopoeiaMode.NORMAL.value,
-                reading_direction=getattr(self.page_style, 'reading_direction', 'manga_rtl'),
             )
         self.sig_applied.emit(self.applied_style)
         self.accept()

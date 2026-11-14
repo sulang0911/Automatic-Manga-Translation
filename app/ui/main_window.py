@@ -201,22 +201,22 @@ class MainWindow(QMainWindow):
     and side-by-side or split-slider visual inspection.
     """
 
-    def __init__(self, theme: str = "dark", parent: Optional[QWidget] = None):
+    def __init__(self, theme: Optional[str] = None, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setWindowTitle("🌌 AetherLens — 漫画智能翻译工作台 (PyQt6)")
         self.resize(1380, 880)
         self.setMinimumSize(1000, 650)
         self.setAcceptDrops(True)
 
-        self._current_theme = theme
-        tokens = get_tokens(theme)
+        self.config = AppConfig.load("desktop_config.json")
+        effective_theme = theme or getattr(self.config, "theme", "dark") or "dark"
+        self._current_theme = effective_theme
+        tokens = get_tokens(effective_theme)
         sheet = build_stylesheet(tokens)
         app_inst = QApplication.instance()
         if app_inst and app_inst.styleSheet() != sheet:
             app_inst.setStyleSheet(sheet)
         self.setStyleSheet(sheet)
-
-        self.config = AppConfig.load("desktop_config.json")
         get_cache_manager().set_cache_format(getattr(self.config, "cache_format", "bmp"))
         self.typo_engine = TypographyEngine()
         self.undo_manager = UndoManager(max_depth=10, max_bitmap_snapshots=4)
@@ -1468,10 +1468,23 @@ class MainWindow(QMainWindow):
         erased_img = result["erased_img"]
         translated_img = result["translated_img"]
 
-        if self.current_image_data:
-            self.current_image_data["blocks"] = all_blocks
-            self.current_image_data["erased_img"] = erased_img
-            self.current_image_data["translated_img"] = translated_img
+        active_sender = sender if sender is not None else self.block_worker
+        sender_path = getattr(active_sender, "image_path", None) if active_sender is not None else None
+        if sender_path and hasattr(self.page_list, "items_data"):
+            for item in self.page_list.items_data:
+                if item.get("path") == sender_path:
+                    item["blocks"] = all_blocks
+                    item["erased_img"] = erased_img
+                    item["translated_img"] = translated_img
+                    break
+
+        if self.current_image_data is None or (sender_path and self.current_image_data.get("path") != sender_path):
+            self.progress_bar.hide()
+            return
+
+        self.current_image_data["blocks"] = all_blocks
+        self.current_image_data["erased_img"] = erased_img
+        self.current_image_data["translated_img"] = translated_img
 
         self.canvas_view.set_data(
             original_cv=self.canvas_view.original_cv,
@@ -2037,6 +2050,7 @@ class MainWindow(QMainWindow):
             return
         self._push_undo_snapshot("清除页面缓存")
         path = self.current_image_data.get("path", "")
+        filename = os.path.basename(path) if path else "当前页"
         page_id = self.current_image_data.get("id", "")
         if path:
             from app.core.cache.cache_manager import get_cache_manager
@@ -2128,7 +2142,7 @@ class MainWindow(QMainWindow):
             if self.config.theme != theme_name:
                 self.config.theme = theme_name
                 try:
-                    self.config.save()
+                    self.config.save("desktop_config.json")
                 except Exception:
                     pass
         tokens = get_tokens(theme_name)
@@ -2235,8 +2249,6 @@ class MainWindow(QMainWindow):
             # Interactive deferred mode:
             # 1. Immediately re-render current canvas page
             if self.current_image_data.get("blocks"):
-                if not self.current_image_data.get("style"):
-                    self.current_image_data["style"] = self.config.style
                 self._re_render_current_page()
 
             # 2. Invalidate stale rendered caches for background pages (extremely fast, < 5ms)
@@ -2477,21 +2489,21 @@ class MainWindow(QMainWindow):
         sender = self.sender()
         if sender is not None and sender is not self.active_worker:
             return
+        active_sender = sender if sender is not None else self.active_worker
+        sender_path = getattr(active_sender, "image_path", None) if active_sender is not None else None
+        if self.current_image_data is None or (sender_path and self.current_image_data.get("path") != sender_path):
+            return
         if step_name == "ocr":
-            if self.current_image_data is not None:
-                self.current_image_data["blocks"] = result_data
+            self.current_image_data["blocks"] = result_data
             self.inspector_panel.set_blocks(result_data)
         elif step_name == "inpaint":
-            if self.current_image_data is not None:
-                self.current_image_data["erased_img"] = result_data
+            self.current_image_data["erased_img"] = result_data
             self.canvas_view.erased_cv = result_data
         elif step_name == "translate":
-            if self.current_image_data is not None:
-                self.current_image_data["blocks"] = result_data
+            self.current_image_data["blocks"] = result_data
             self.inspector_panel.set_blocks(result_data)
         elif step_name == "render":
-            if self.current_image_data is not None:
-                self.current_image_data["translated_img"] = result_data
+            self.current_image_data["translated_img"] = result_data
             self.canvas_view.translated_cv = result_data
 
     def _on_pipeline_finished(self, result: Dict[str, Any]):
@@ -3119,10 +3131,14 @@ class MainWindow(QMainWindow):
                             if it.get("path") == active_path:
                                 target_idx = idx
                                 break
-                    self.page_list.list_widget.setCurrentRow(target_idx)
-                    self._on_page_selected(self.page_list.items_data[target_idx])
+                    if self.page_list.list_widget.currentRow() != target_idx:
+                        self.page_list.list_widget.setCurrentRow(target_idx)
+                    else:
+                        self._on_page_selected(self.page_list.items_data[target_idx])
 
-            self.page_list.add_paths_async(valid_paths, on_finished=_on_session_restored)
+            self.page_list.add_paths_async(
+                valid_paths, on_finished=_on_session_restored, auto_select_first=False
+            )
         except Exception:
             pass
 

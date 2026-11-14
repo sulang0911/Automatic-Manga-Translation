@@ -29,7 +29,7 @@ class CustomOpenAIProvider(BaseTranslationProvider):
         ep = endpoint.strip().rstrip('/')
         if ep.endswith("/chat/completions"):
             ep = ep[:-len("/chat/completions")].rstrip('/')
-        if not re.search(r'/v\d+$', ep):
+        if not re.search(r'/v\d+(?:alpha|beta)?(?:/openai)?$', ep):
             ep = f"{ep}/v1"
         return f"{ep}/chat/completions"
 

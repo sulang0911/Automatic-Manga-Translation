@@ -31,7 +31,11 @@ def get_background_color_rgb(crop: np.ndarray) -> Tuple[int, int, int]:
     if len(border_arr) == 0:
         return (255, 255, 255)
 
-    median_bgr = np.median(border_arr, axis=0).astype(int)
+    median_val = np.median(border_arr, axis=0)
+    if np.ndim(median_val) == 0:
+        v = int(median_val)
+        return (v, v, v)
+    median_bgr = median_val.astype(int)
     b, g, r = int(median_bgr[0]), int(median_bgr[1]), int(median_bgr[2])
     return (r, g, b)
 
@@ -564,7 +568,7 @@ def refresh_blocks_text_colors(original_img: Optional[np.ndarray], blocks: Optio
         is_legacy_cyan = cur_tc.upper() == "#3CE8F5"
         is_default_bw_with_chroma = (
             cur_tc.upper() in ("#000000", "#FFFFFF")
-            and _classify_color_family(dom_col) not in ("black", "white")
+            and _classify_color_family(dom_col) not in ("light", "dark", "achromatic")
         )
         should_update_tc = (not cur_tc) or is_legacy_cyan or has_multi_chroma or is_default_bw_with_chroma
         if should_update_tc or not cur_lc:
