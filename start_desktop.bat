@@ -21,6 +21,7 @@ set PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
 set OPENCV_OPENCL_RUNTIME=disabled
 set FLAGS_fraction_of_gpu_memory_to_use=0.5
 set FLAGS_eager_delete_tensor_gb=0.0
+set HF_HUB_DISABLE_SYMLINKS_WARNING=1
 
 :: Check Python
 where python >nul 2>nul

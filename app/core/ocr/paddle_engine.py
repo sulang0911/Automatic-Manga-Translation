@@ -35,12 +35,14 @@ class PaddleOCREngine(BaseOCREngine):
         lang: str = "japan",
         force_cpu: bool = False,
         fallback_to_easyocr: bool = True,
-        use_manga_ocr: bool = False
+        use_manga_ocr: bool = False,
+        ocr_version: str = "PP-OCRv5"
     ):
         self.lang = lang
         self.force_cpu = force_cpu
         self.fallback_to_easyocr = fallback_to_easyocr
         self.use_manga_ocr = use_manga_ocr
+        self.ocr_version = ocr_version or "PP-OCRv5"
         self._ocr = None
         self._manga_ocr = None
         self._is_old_gpu = is_legacy_pascal_or_maxwell_gpu()
@@ -68,9 +70,10 @@ class PaddleOCREngine(BaseOCREngine):
             device_str = "gpu" if has_paddle_cuda else "cpu"
 
             # PaddleOCR 3.7.0 parameters:
+            req_ver = self.ocr_version if self.ocr_version in ("PP-OCRv5", "PP-OCRv3") else "PP-OCRv5"
             kwargs: Dict[str, Any] = {
                 "lang": self.lang,
-                "ocr_version": "PP-OCRv3",  # 默认使用轻量级 Mobile 模型 (~150MB)，防止内存耗尽导致系统假死或崩溃
+                "ocr_version": req_ver,
                 "device": device_str,
                 "cpu_threads": 1,
                 "use_textline_orientation": True,
@@ -79,10 +82,18 @@ class PaddleOCREngine(BaseOCREngine):
                 "use_doc_unwarping": False
             }
 
-            logger.info(f"Initializing PaddleOCR (device={device_str}, kwargs={kwargs})...")
+            logger.info(f"Initializing PaddleOCR (device={device_str}, ocr_version={req_ver})...")
             try:
                 self._ocr = PaddleOCR(**kwargs)
             except Exception as e:
+                if req_ver != "PP-OCRv3":
+                    logger.warning(f"PaddleOCR {req_ver} init failed: {e}. Retrying PP-OCRv3...")
+                    kwargs["ocr_version"] = "PP-OCRv3"
+                    try:
+                        self._ocr = PaddleOCR(**kwargs)
+                        return self._ocr
+                    except Exception as e_v3:
+                        e = e_v3
                 if device_str == "gpu":
                     logger.warning(f"PaddleOCR GPU init failed: {e}. Retrying with CPU mode...")
                     kwargs["device"] = "cpu"

@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QApplication, QWidget, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QTextEdit, QComboBox, QSlider, QCheckBox, QListView,
     QStackedWidget, QListWidget, QListWidgetItem, QGroupBox, QFileDialog, QScrollArea, QFrame,
-    QColorDialog
+    QColorDialog, QDoubleSpinBox
 )
 from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal
 from PyQt6.QtGui import QColor
@@ -25,6 +25,18 @@ def _configure_combo_popup(combo: QComboBox) -> None:
     view = QListView(combo)
     view.setUniformItemSizes(True)
     combo.setView(view)
+
+
+def _build_data_combo(items, current_value: str) -> QComboBox:
+    """Creates a themed QComboBox populated with (label, value) pairs and selects current_value."""
+    combo = QComboBox()
+    _configure_combo_popup(combo)
+    for label, val in items:
+        combo.addItem(label, val)
+    idx = combo.findData(current_value)
+    if idx >= 0:
+        combo.setCurrentIndex(idx)
+    return combo
 
 
 def _contrast_text_color(hex_color: str) -> str:
@@ -335,7 +347,7 @@ class SettingsDialog(QDialog):
             self.ocr_engine_combo.setCurrentText(current_eng)
         box_layout.addWidget(self.ocr_engine_combo)
 
-        hint_label = QLabel("💡 提示：纯 PyTorch 模式结合了专为漫画气泡训练的 CTD 检测器与高精日文 Manga-OCR，对白包含英文时自动无缝识别，且不占用 PaddlePaddle 额外显存。")
+        hint_label = QLabel("💡 提示：纯 PyTorch 模式结合了 CTD 漫画检测器与分语种高精度识别（日文 Manga-OCR / 英文 PP-OCRv6 / 中文 PP-OCRv5 Server），全 CUDA 加速且无需额外 Paddle GPU 环境。")
         hint_label.setWordWrap(True)
         hint_label.setStyleSheet("color: #8E8E93; font-size: 11px; padding: 2px 0px;")
         box_layout.addWidget(hint_label)
@@ -381,6 +393,58 @@ class SettingsDialog(QDialog):
         ens_layout.addWidget(rec_tip)
 
         layout.addWidget(ens_group)
+
+        # Per-Language SOTA Recognizers & VLM Fallback
+        rec_group = QGroupBox("分语种精准识别与 VLM 兜底 (Per-Language Recognizers)")
+        rec_layout = QVBoxLayout(rec_group)
+        rec_layout.setContentsMargins(12, 10, 12, 12)
+        rec_layout.setSpacing(8)
+
+        rec_layout.addWidget(QLabel("英文识别器 (English Recognizer):"))
+        self.en_rec_combo = _build_data_combo([
+            ("PP-OCRv6 Medium (PyTorch CUDA，英文对话/CG推荐)", "ppocr_v6"),
+            ("PP-OCRv5 Server (PyTorch CUDA)", "ppocr_v5_server"),
+            ("EasyOCR (旧版兼容)", "easyocr"),
+        ], getattr(self.config.ocr, "en_recognizer", "ppocr_v6"))
+        rec_layout.addWidget(self.en_rec_combo)
+
+        rec_layout.addWidget(QLabel("中文识别器 (Chinese Recognizer):"))
+        self.zh_rec_combo = _build_data_combo([
+            ("PP-OCRv5 Server (PyTorch CUDA，简繁中推荐)", "ppocr_v5_server"),
+            ("PP-OCRv6 Medium (PyTorch CUDA，中英混排佳)", "ppocr_v6"),
+            ("EasyOCR (旧版兼容)", "easyocr"),
+        ], getattr(self.config.ocr, "zh_recognizer", "ppocr_v5_server"))
+        rec_layout.addWidget(self.zh_rec_combo)
+
+        rec_layout.addWidget(QLabel("日文识别器 (Japanese Recognizer):"))
+        self.ja_rec_combo = _build_data_combo([
+            ("Manga-OCR (日漫竖排/注音/艺术字强烈推荐)", "manga_ocr"),
+            ("PP-OCRv5 Server (PyTorch CUDA)", "ppocr_v5_server"),
+            ("EasyOCR (旧版兼容)", "easyocr"),
+        ], getattr(self.config.ocr, "ja_recognizer", "manga_ocr"))
+        rec_layout.addWidget(self.ja_rec_combo)
+
+        rec_layout.addWidget(QLabel("PaddleOCR 后端版本 (仅选用 Paddle 引擎时生效):"))
+        self.paddle_ver_combo = _build_data_combo([
+            ("PP-OCRv5 (高精度，不兼容语种自动回退 v3)", "PP-OCRv5"),
+            ("PP-OCRv3 (经典轻量 Mobile)", "PP-OCRv3"),
+        ], getattr(self.config.ocr, "paddle_ocr_version", "PP-OCRv5"))
+        rec_layout.addWidget(self.paddle_ver_combo)
+
+        vlm_row = QHBoxLayout()
+        self.vlm_fallback_cb = QCheckBox("启用 VLM 多模态低置信度二次兜底识字 (使用上方已配视觉模型)")
+        self.vlm_fallback_cb.setChecked(getattr(self.config.ocr, "vlm_fallback", False))
+        vlm_row.addWidget(self.vlm_fallback_cb, 1)
+        vlm_row.addWidget(QLabel("触发阈值:"))
+        self.vlm_thresh_spin = QDoubleSpinBox()
+        self.vlm_thresh_spin.setRange(0.30, 0.95)
+        self.vlm_thresh_spin.setSingleStep(0.05)
+        self.vlm_thresh_spin.setDecimals(2)
+        self.vlm_thresh_spin.setValue(float(getattr(self.config.ocr, "vlm_conf_threshold", 0.72)))
+        vlm_row.addWidget(self.vlm_thresh_spin)
+        rec_layout.addLayout(vlm_row)
+
+        layout.addWidget(rec_group)
         layout.addStretch()
 
         scroll.setWidget(widget)
@@ -830,6 +894,12 @@ class SettingsDialog(QDialog):
         self.config.ocr.ensemble_detection = self.ensemble_det_cb.isChecked()
         self.config.ocr.ensemble_recognition = self.ensemble_rec_cb.isChecked()
         self.config.ocr.recognize_onomatopoeia = self.recog_onoma_cb.isChecked()
+        self.config.ocr.en_recognizer = self.en_rec_combo.currentData() or "ppocr_v6"
+        self.config.ocr.zh_recognizer = self.zh_rec_combo.currentData() or "ppocr_v5_server"
+        self.config.ocr.ja_recognizer = self.ja_rec_combo.currentData() or "manga_ocr"
+        self.config.ocr.paddle_ocr_version = self.paddle_ver_combo.currentData() or "PP-OCRv5"
+        self.config.ocr.vlm_fallback = self.vlm_fallback_cb.isChecked()
+        self.config.ocr.vlm_conf_threshold = round(float(self.vlm_thresh_spin.value()), 2)
         self.config.source_lang = self.source_lang_combo.currentText()
         from app.core.pipeline.utils import source_lang_to_ocr_lang
         self.config.ocr.lang = source_lang_to_ocr_lang(self.config.source_lang)

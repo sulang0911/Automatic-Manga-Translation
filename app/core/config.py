@@ -12,6 +12,16 @@ from app.core.models import StyleConfig
 
 logger = logging.getLogger(__name__)
 
+# Absolute root of the active installation (ensures demo/ stays isolated from parent repo CWD)
+APP_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def resolve_app_path(filepath: str) -> str:
+    """Resolves bare config/session filenames (e.g. 'desktop_config.json') against APP_ROOT."""
+    if filepath and not os.path.isabs(filepath) and not os.path.dirname(filepath):
+        return os.path.join(APP_ROOT, filepath)
+    return filepath
+
 
 LEGACY_DEFAULT_SYSTEM_PROMPT = (
     "你是一个专业且中立的成人漫画（R18/青年志）本地化翻译引擎。你的唯一任务是忠实、通顺、原汁原味地将输入内容翻译为目标语言（默认简体中文）。\n\n"
@@ -62,6 +72,13 @@ class OCRConfig:
     ensemble_detection: bool = True
     ensemble_recognition: bool = True
     recognize_onomatopoeia: bool = False
+    rec_mode: str = "smart"  # "smart" (per-language best), "easyocr", "paddle_v5", "manga_ocr"
+    en_recognizer: str = "ppocr_v6"  # "ppocr_v6" | "ppocr_v5_server" | "easyocr"
+    zh_recognizer: str = "ppocr_v5_server"  # "ppocr_v5_server" | "ppocr_v6" | "easyocr"
+    ja_recognizer: str = "manga_ocr"  # "manga_ocr" | "ppocr_v5_server" | "easyocr"
+    paddle_ocr_version: str = "PP-OCRv5"  # "PP-OCRv5" | "PP-OCRv3"
+    vlm_fallback: bool = False
+    vlm_conf_threshold: float = 0.72
 
 
 @dataclass
@@ -159,6 +176,7 @@ class AppConfig:
         return cfg
 
     def save(self, filepath: str) -> None:
+        filepath = resolve_app_path(filepath)
         try:
             os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
             with open(filepath, "w", encoding="utf-8") as f:
@@ -169,6 +187,7 @@ class AppConfig:
 
     @classmethod
     def load(cls, filepath: str) -> AppConfig:
+        filepath = resolve_app_path(filepath)
         if not os.path.exists(filepath):
             logger.info(f"Configuration file {filepath} not found; using defaults.")
             return cls()

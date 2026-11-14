@@ -19,7 +19,7 @@
 ## ✨ 核心特性
 
 ### 1. 🔍 多引擎协同 OCR 与防粘连分割
-- **逐框语种路由**：内嵌 **Comic Text Detector (CTD)**、**Manga-OCR**、**RapidOCR (PP-OCRv4)** 与 **EasyOCR**，支持日文竖排、英文横排及日英混合漫画的逐框自适应识别。
+- **分语种高精度识别路由**：内嵌 **Comic Text Detector (CTD)** 检测与纯 PyTorch CUDA 分语种识别体系（日文 **Manga-OCR** / 英文 **PP-OCRv6** / 简繁中文 **PP-OCRv5 Server** / 韩文 **PP-OCRv5**），可选开启 **VLM 多模态低置信度兜底** 与 **PaddleOCR (v5/v3) / EasyOCR**。
 - **多气泡防粘连算法**：采用连通域气泡标记与质心射线暗边界检测（Ray-Casting Barrier），精准分离紧邻对话气泡与斜体旁白注记，拒绝跨框误合并。
 - **二维码与非文本免疫**：自动检测并保护画面中的二维码与装饰图形，防止误识别与误擦除。
 
@@ -50,7 +50,7 @@
 ```mermaid
 flowchart LR
     A["📂 图像 / 文件夹 / ZIP 导入"] --> B["🎯 气泡检测与防粘连分割\n(CTD / 连通域 / 射线屏障)"]
-    B --> C["🔍 逐框语种识别与 OCR\n(Manga-OCR / EasyOCR / RapidOCR)"]
+    B --> C["🔍 分语种高精度识别\n(Manga-OCR / PP-OCRv6 / PP-OCRv5 / VLM)"]
     C --> D["🧹 原文抹除与背景修复\n(Simple-LaMa / OpenCV / 纯色填充)"]
     C --> E["🤖 语境链 AI 翻译 + 词典替换\n(DeepSeek / OpenAI / Gemini)"]
     D --> F["📝 自适应排版与描边渲染\n(Auto-Fit / 对比度描边 / 旋转贴合)"]

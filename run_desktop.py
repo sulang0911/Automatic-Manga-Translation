@@ -2,7 +2,13 @@
 import os
 import sys
 
+# Prioritize this workspace directory (so running from parent/other CWD isolates imports & config)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+
 # Enforce single-thread execution and low-memory safety across all BLAS/OpenMP/PyTorch/CUDA backends
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"

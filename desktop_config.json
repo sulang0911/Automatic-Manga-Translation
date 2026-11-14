@@ -26,7 +26,14 @@
     "confidence_threshold": 0.25,
     "ensemble_detection": true,
     "ensemble_recognition": true,
-    "recognize_onomatopoeia": false
+    "recognize_onomatopoeia": false,
+    "rec_mode": "smart",
+    "en_recognizer": "ppocr_v6",
+    "zh_recognizer": "ppocr_v5_server",
+    "ja_recognizer": "manga_ocr",
+    "paddle_ocr_version": "PP-OCRv5",
+    "vlm_fallback": false,
+    "vlm_conf_threshold": 0.72
   },
   "inpaint": {
     "engine": "lama",

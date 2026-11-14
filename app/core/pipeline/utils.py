@@ -171,3 +171,45 @@ def post_process_translation_blocks(blocks: List[Any]) -> List[Any]:
             if trans:
                 setattr(b, "translated_text", clean_translation_syntax(trans, orig))
     return blocks
+
+
+def build_ocr_engine_kwargs(
+    config: Optional[Dict[str, Any]],
+    lang: str,
+    is_manual: bool,
+    source_lang: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Builds unified OCREngine initialization keyword arguments from app config dict."""
+    cfg = config if isinstance(config, dict) else {}
+    ocr_cfg = cfg.get("ocr", {}) if isinstance(cfg.get("ocr"), dict) else {}
+    llm_cfg = cfg.get("llm", {}) if isinstance(cfg.get("llm"), dict) else {}
+
+    vlm_fallback = bool(ocr_cfg.get("vlm_fallback", cfg.get("ocr_vlm_fallback", False)))
+    vlm_llm_obj = None
+    if vlm_fallback:
+        from types import SimpleNamespace
+        vlm_llm_obj = SimpleNamespace(
+            provider=llm_cfg.get("provider", cfg.get("provider", "openai")),
+            api_key=llm_cfg.get("api_key", cfg.get("api_key", "")),
+            model=llm_cfg.get("model", cfg.get("model", "")),
+            endpoint=llm_cfg.get("endpoint", cfg.get("custom_endpoint", "")),
+            proxy_url=llm_cfg.get("proxy_url", cfg.get("proxy_url", "")),
+        )
+
+    return {
+        "engine_type": ocr_cfg.get("engine", cfg.get("ocr_engine", "ctd")),
+        "use_gpu": not ocr_cfg.get("force_cpu", False) if "force_cpu" in ocr_cfg else cfg.get("use_gpu", True),
+        "lang": lang,
+        "enable_ensemble_detection": ocr_cfg.get("ensemble_detection", cfg.get("ocr_ensemble_detection", False)),
+        "enable_ensemble_recognition": ocr_cfg.get("ensemble_recognition", cfg.get("ocr_ensemble_recognition", False)),
+        "is_manual": is_manual,
+        "source_lang": source_lang,
+        "rec_mode": ocr_cfg.get("rec_mode", cfg.get("ocr_rec_mode", "smart")),
+        "en_recognizer": ocr_cfg.get("en_recognizer", cfg.get("ocr_en_recognizer", "ppocr_v6")),
+        "zh_recognizer": ocr_cfg.get("zh_recognizer", cfg.get("ocr_zh_recognizer", "ppocr_v5_server")),
+        "ja_recognizer": ocr_cfg.get("ja_recognizer", cfg.get("ocr_ja_recognizer", "manga_ocr")),
+        "paddle_ocr_version": ocr_cfg.get("paddle_ocr_version", cfg.get("ocr_paddle_version", "PP-OCRv5")),
+        "vlm_fallback": vlm_fallback,
+        "vlm_conf_threshold": float(ocr_cfg.get("vlm_conf_threshold", cfg.get("ocr_vlm_conf_threshold", 0.72))),
+        "vlm_llm_config": vlm_llm_obj,
+    }

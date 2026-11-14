@@ -15,6 +15,9 @@ _LAZY_EXPORTS: Dict[str, Tuple[str, str]] = {
     "MangaOCRRecognizer": ("app.core.ocr.manga_ocr_wrapper", "MangaOCRRecognizer"),
     "get_manga_ocr": ("app.core.ocr.manga_ocr_wrapper", "get_manga_ocr"),
     "ComicTextDetectorEngine": ("app.core.ocr.ctd_engine", "ComicTextDetectorEngine"),
+    "TransformersOCRRecognizer": ("app.core.ocr.transformers_rec_wrapper", "TransformersOCRRecognizer"),
+    "get_transformers_ocr": ("app.core.ocr.transformers_rec_wrapper", "get_transformers_ocr"),
+    "recognize_crop_with_vlm": ("app.core.ocr.vlm_ocr", "recognize_crop_with_vlm"),
 }
 
 __all__ = list(_LAZY_EXPORTS.keys())

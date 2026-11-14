@@ -84,20 +84,14 @@ class BlockOcrTranslateWorker(QThread):
                 return
 
             ocr_cfg = self.config.get("ocr", {}) if isinstance(self.config.get("ocr"), dict) else {}
-            from app.core.pipeline.utils import normalize_source_lang, is_auto_source_lang, source_lang_to_ocr_lang
+            from app.core.pipeline.utils import normalize_source_lang, is_auto_source_lang, source_lang_to_ocr_lang, build_ocr_engine_kwargs
             effective_source = self.config.get("source_lang") or ocr_cfg.get("lang") or self.config.get("ocr_lang")
             ocr_lang = source_lang_to_ocr_lang(effective_source)
             is_manual = not is_auto_source_lang(effective_source)
 
-            ocr_eng = OCREngine(
-                engine_type=ocr_cfg.get("engine", self.config.get("ocr_engine", "ctd")),
-                use_gpu=not ocr_cfg.get("force_cpu", False) if "force_cpu" in ocr_cfg else self.config.get("use_gpu", True),
-                lang=ocr_lang,
-                enable_ensemble_detection=ocr_cfg.get("ensemble_detection", self.config.get("ocr_ensemble_detection", False)),
-                enable_ensemble_recognition=ocr_cfg.get("ensemble_recognition", self.config.get("ocr_ensemble_recognition", False)),
-                is_manual=is_manual,
-                source_lang=effective_source,
-            )
+            ocr_eng = OCREngine(**build_ocr_engine_kwargs(
+                self.config, lang=ocr_lang, is_manual=is_manual, source_lang=effective_source
+            ))
 
             rec_text, tight_box = self._run_context_ocr(
                 ocr_eng, xmin_px, ymin_px, xmax_px, ymax_px, w_img, h_img

@@ -22,6 +22,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "ocr_lang": "japan",  # "japan" | "ch" | "en" | "korean"
     "ocr_ensemble_detection": True,  # Dual-model detection fusion (CTD + General detector)
     "ocr_ensemble_recognition": True,  # Dual-model recognition ensemble (Manga-OCR + General recognizer)
+    "ocr_rec_mode": "smart",  # "smart" | "easyocr" | "paddle_v5" | "manga_ocr"
+    "ocr_en_recognizer": "ppocr_v6",  # "ppocr_v6" | "ppocr_v5_server" | "easyocr"
+    "ocr_zh_recognizer": "ppocr_v5_server",  # "ppocr_v5_server" | "ppocr_v6" | "easyocr"
+    "ocr_ja_recognizer": "manga_ocr",  # "manga_ocr" | "ppocr_v5_server" | "easyocr"
+    "ocr_paddle_version": "PP-OCRv5",  # "PP-OCRv5" | "PP-OCRv3"
+    "ocr_vlm_fallback": False,
+    "ocr_vlm_conf_threshold": 0.72,
 
     # Inpaint Settings
     "inpaint_engine": "auto",  # "auto" | "lama" | "opencv_telea" | "opencv_ns"

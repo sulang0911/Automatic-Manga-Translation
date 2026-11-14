@@ -3024,8 +3024,9 @@ class MainWindow(QMainWindow):
                 if it.get("path") and os.path.exists(it.get("path"))
                 and not any(it.get("path", "").startswith(td) for td in getattr(self.page_list, "_temp_archive_dirs", []))
             ]
+            from app.core.config import resolve_app_path
             active_path = self.current_image_data.get("path") if self.current_image_data else None
-            session_file = os.path.join(os.path.dirname(os.path.abspath("desktop_config.json")), ".amt_last_session.json")
+            session_file = resolve_app_path(".amt_last_session.json")
             with open(session_file, "w", encoding="utf-8") as f:
                 json.dump({"paths": paths, "active_path": active_path}, f, ensure_ascii=False, indent=2)
         except Exception:
@@ -3035,7 +3036,8 @@ class MainWindow(QMainWindow):
         """Restores the last opened image list, active page, and cached modifications on software startup."""
         try:
             import json
-            session_file = os.path.join(os.path.dirname(os.path.abspath("desktop_config.json")), ".amt_last_session.json")
+            from app.core.config import resolve_app_path
+            session_file = resolve_app_path(".amt_last_session.json")
             if not os.path.exists(session_file):
                 return
             with open(session_file, "r", encoding="utf-8") as f:
