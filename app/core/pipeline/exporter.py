@@ -6,7 +6,7 @@ and chapter ZIP bundling conforming to F-EXP-02, F-EXP-03, and F-EXP-04.
 """
 import os
 import zipfile
-from typing import List, Optional
+from typing import Any, List, Optional, Tuple
 import cv2
 import numpy as np
 from PIL import Image
@@ -19,16 +19,48 @@ class MangaExporter:
     Export manager handling single page multi-format output and chapter compilation.
     """
 
+    _EXT_TO_FMT = {
+        ".jpg": "JPEG",
+        ".jpeg": "JPEG",
+        ".webp": "WEBP",
+        ".bmp": "BMP",
+    }
+
+    @classmethod
+    def resolve_export_format(cls, path: str, compressed: bool = False) -> Tuple[str, str]:
+        """Maps an image path extension to (normalized_ext, export_fmt); forces WebP when compressed=True."""
+        if compressed:
+            return ".webp", "WEBP"
+        ext = os.path.splitext(path)[1].lower()
+        fmt = cls._EXT_TO_FMT.get(ext, "PNG")
+        norm_ext = ext if ext in cls._EXT_TO_FMT else ".png"
+        return norm_ext, fmt
+
+    @staticmethod
+    def is_export_compressed(config: Any) -> bool:
+        """Extracts style.export_compressed from an AppConfig, StyleConfig, or dict."""
+        if hasattr(config, "style"):
+            return bool(getattr(config.style, "export_compressed", False))
+        if hasattr(config, "export_compressed"):
+            return bool(getattr(config, "export_compressed", False))
+        if isinstance(config, dict):
+            style_cfg = config.get("style", config)
+            if isinstance(style_cfg, dict):
+                return bool(style_cfg.get("export_compressed", False))
+            return bool(getattr(style_cfg, "export_compressed", False))
+        return False
+
     @staticmethod
     def compute_export_path(
         image_path: str,
         export_dir: str,
         rel_path: Optional[str] = None,
-        root_dir: Optional[str] = None
+        root_dir: Optional[str] = None,
+        compressed: bool = False,
     ) -> str:
         """
         Computes the target export destination path, strictly preserving the relative
-        subfolder directory hierarchy 1:1 and original filename.
+        subfolder directory hierarchy 1:1 and original filename (or `.webp` when compressed=True).
 
         Guarantees that the export destination is separate from the original source
         directory and source file to prevent overwriting or source folder contamination.
@@ -84,6 +116,14 @@ class MangaExporter:
                     f"Export destination folder must be independent and separate from the source folder."
                 )
 
+        if compressed:
+            target_path = os.path.splitext(target_path)[0] + ".webp"
+            if os.path.normcase(os.path.realpath(target_path)) == norm_img:
+                raise ValueError(
+                    f"Export path '{target_path}' matches original source file! "
+                    f"Export destination folder must be independent and separate from the source folder."
+                )
+
         return target_path
 
     @classmethod
@@ -96,30 +136,25 @@ class MangaExporter:
         compressed: bool = False
     ) -> bool:
         """
-        Exports a single translated image to export_path preserving original dimensions and format.
+        Exports a single translated image to export_path preserving original dimensions and format
+        (fixed to WebP when compressed=True and fmt is omitted).
         Validates that source_path is not overwritten.
         """
         if image_bgr is None or image_bgr.size == 0:
             return False
 
         abs_export = os.path.normpath(os.path.abspath(export_path))
+        if not fmt:
+            norm_ext, fmt = cls.resolve_export_format(abs_export, compressed=compressed)
+            if compressed and os.path.splitext(abs_export)[1].lower() != norm_ext:
+                abs_export = os.path.splitext(abs_export)[0] + norm_ext
+
         if source_path:
             abs_src = os.path.normpath(os.path.abspath(source_path))
             if os.path.normcase(os.path.realpath(abs_export)) == os.path.normcase(os.path.realpath(abs_src)):
                 raise ValueError(f"Cannot overwrite original source image: {abs_src}")
 
         os.makedirs(os.path.dirname(abs_export), exist_ok=True)
-        if not fmt:
-            ext = os.path.splitext(abs_export)[1].lower()
-            if ext in [".jpg", ".jpeg"]:
-                fmt = "JPEG"
-            elif ext == ".webp":
-                fmt = "WEBP"
-            elif ext == ".bmp":
-                fmt = "BMP"
-            else:
-                fmt = "PNG"
-
         return cls.export_single_image(image_bgr, abs_export, fmt=fmt, compressed=compressed)
 
     @staticmethod
@@ -156,8 +191,8 @@ class MangaExporter:
             if not output_path.lower().endswith(".bmp"):
                 output_path += ext
         else:
-            # PNG
-            compression = 6 if compressed else 3
+            # PNG: fast lossless compression by default; higher compression when export_compressed=True
+            compression = 6 if compressed else 1
             encode_params = [int(cv2.IMWRITE_PNG_COMPRESSION), compression]
             ext = ".png"
             if not output_path.lower().endswith(".png"):

@@ -696,13 +696,33 @@ class SettingsDialog(QDialog):
         box_layout.setContentsMargins(12, 10, 12, 12)
         box_layout.setSpacing(12)
 
-        self.compress_cb = QCheckBox("导出时启用视觉无损压缩 (大幅缩减输出文件体积)")
+        self.compress_cb = QCheckBox("导出时启用视觉无损压缩 (固定导出为 WebP，大幅缩减输出体积)")
+        self.compress_cb.setToolTip(
+            "勾选后，批量导出与整话 ZIP 导出将统一固定为 WebP 格式（单页保存弹窗也将默认选中 WebP）；\n"
+            "若同时将缓存图像格式设为 WebP，已渲染页面导出可直接复制缓存，无需重复编解码。"
+        )
         self.compress_cb.setChecked(getattr(self.config.style, "export_compressed", False))
         box_layout.addWidget(self.compress_cb)
 
         self.auto_cache_cb = QCheckBox("自动保存中间结果到本地磁盘缓存 (.amt_cache)")
         self.auto_cache_cb.setChecked(getattr(self.config, "auto_save_cache", True))
         box_layout.addWidget(self.auto_cache_cb)
+
+        row_cache_fmt = QHBoxLayout()
+        row_cache_fmt.setSpacing(8)
+        row_cache_fmt.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        lbl_cache_fmt = QLabel("缓存图像格式:")
+        lbl_cache_fmt.setFixedWidth(96)
+        row_cache_fmt.addWidget(lbl_cache_fmt)
+        self.cache_format_combo = QComboBox()
+        self.cache_format_combo.setFixedHeight(30)
+        _configure_combo_popup(self.cache_format_combo)
+        self.cache_format_combo.addItem("极速无损 BMP (推荐，读写快约 40 倍，体积较大)", "bmp")
+        self.cache_format_combo.addItem("高压缩 WebP (极省硬盘空间，CPU 编码较慢)", "webp")
+        cur_fmt = str(getattr(self.config, "cache_format", "bmp") or "bmp").lower()
+        self.cache_format_combo.setCurrentIndex(1 if cur_fmt == "webp" else 0)
+        row_cache_fmt.addWidget(self.cache_format_combo, 1)
+        box_layout.addLayout(row_cache_fmt)
 
         layout.addWidget(box)
         layout.addStretch()
@@ -929,6 +949,10 @@ class SettingsDialog(QDialog):
         # Export & cache
         self.config.style.export_compressed = self.compress_cb.isChecked()
         self.config.auto_save_cache = self.auto_cache_cb.isChecked()
+        if hasattr(self, "cache_format_combo"):
+            self.config.cache_format = self.cache_format_combo.currentData() or "bmp"
+            from app.core.cache.cache_manager import get_cache_manager
+            get_cache_manager().set_cache_format(self.config.cache_format)
 
         # Save glossary
         if hasattr(self, 'glossary_table'):

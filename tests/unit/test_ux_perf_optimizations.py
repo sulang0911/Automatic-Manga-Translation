@@ -371,3 +371,245 @@ def test_p2_chapter_archive_export_worker_pdf_and_zip(qapp, tmp_path):
     assert zip_res and zip_res[0][0] is True
     with zipfile.ZipFile(out_zip, "r") as zf:
         assert len(zf.namelist()) == 2
+        assert all(not name.lower().endswith(".bmp") for name in zf.namelist())
+
+    # After invalidating rendered cache (e.g. global typography change), multi-threaded
+    # _ChapterArchiveExportWorker must rebuild in strict page order and still keep ZIP entries as PNG.
+    mgr.invalidate_rendered_cache(items[0]["path"])
+    mgr.invalidate_rendered_cache(items[1]["path"])
+
+    out_pdf_re = str(tmp_path / "out_re.pdf")
+    w_pdf_re = _ChapterArchiveExportWorker(items, {}, out_pdf_re, "pdf")
+    pdf_re_res = []
+    w_pdf_re.sig_finished.connect(lambda ok, msg: pdf_re_res.append((ok, msg)))
+    w_pdf_re.run()
+    assert pdf_re_res and pdf_re_res[0][0] is True
+    doc_re = pymupdf.open(out_pdf_re)
+    try:
+        assert doc_re.page_count == 2
+        assert round(doc_re[0].rect.height) < round(doc_re[1].rect.height)
+    finally:
+        doc_re.close()
+
+    # Clear again and test ZIP rebuild directly from BMP erased cache -> ZIP must contain PNG, never BMP
+    mgr.invalidate_rendered_cache(items[0]["path"])
+    mgr.invalidate_rendered_cache(items[1]["path"])
+    out_zip_re = str(tmp_path / "out_re.zip")
+    w_zip_re = _ChapterArchiveExportWorker(items, {}, out_zip_re, "zip")
+    zip_re_res = []
+    w_zip_re.sig_finished.connect(lambda ok, msg: zip_re_res.append((ok, msg)))
+    w_zip_re.run()
+    assert zip_re_res and zip_re_res[0][0] is True
+    with zipfile.ZipFile(out_zip_re, "r") as zf:
+        names = sorted(zf.namelist())
+        assert len(names) == 2
+        assert all(n.lower().endswith(".png") for n in names)
+
+
+def test_chapter_zip_preserves_source_image_formats(qapp, tmp_path):
+    """ZIP/CBZ chapter export preserves each page's original format like batch export."""
+    from app.ui.main_window import _ChapterArchiveExportWorker
+
+    mgr = MangaCacheManager()
+    orig_fmt = mgr.get_cache_format()
+    try:
+        mgr.set_cache_format("bmp")
+        exts = [".jpg", ".jpeg", ".webp", ".png", ".bmp"]
+        items = []
+        for idx, ext in enumerate(exts, start=1):
+            p = str(tmp_path / f"page_{idx}{ext}")
+            img = _make_sample_image(p, w=48, h=64)
+            blk = TranslationBlock(id=f"b{idx}", original_text="a", translated_text="译", xmin=6, ymin=6, xmax=28, ymax=28)
+            mgr.save_page_cache(p, erased_img=img, blocks=[blk], rendered_img=img)
+            items.append({"id": f"id_{idx}", "path": p, "status": "completed"})
+
+        # Inject a legacy .rendered.webp alongside page_1.jpg (simulating old cache) to verify
+        # ZIP still emits .jpg rather than leaking stale .webp extension.
+        mgr.invalidate_rendered_cache(items[0]["path"])
+        mgr.set_cache_format("webp")
+        mgr.save_page_cache(items[0]["path"], rendered_img=_make_sample_image(items[0]["path"], w=48, h=64))
+        mgr.set_cache_format("bmp")
+
+        out_zip = str(tmp_path / "mixed_cached.zip")
+        worker = _ChapterArchiveExportWorker(items, {}, out_zip, "zip")
+        res = []
+        worker.sig_finished.connect(lambda ok, msg: res.append((ok, msg)))
+        worker.run()
+        assert res and res[0][0] is True
+
+        expected_names = [f"{i:04d}_page_{i}{ext}" for i, ext in enumerate(exts, start=1)]
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            infos = {info.filename: info for info in zf.infolist()}
+            assert sorted(infos.keys()) == sorted(expected_names)
+            assert infos["0005_page_5.bmp"].compress_type == zipfile.ZIP_DEFLATED
+            for name in expected_names[:-1]:
+                assert infos[name].compress_type == zipfile.ZIP_STORED
+            for name in expected_names:
+                decoded = cv2.imdecode(np.frombuffer(zf.read(name), dtype=np.uint8), cv2.IMREAD_COLOR)
+                assert decoded is not None and decoded.shape[:2] == (64, 48)
+
+        # Invalidate rendered cache and rebuild from erased BMP:
+        # 1) export_compressed=False -> preserves original formats (.jpg/.jpeg/.webp/.png/.bmp)
+        for it in items:
+            mgr.invalidate_rendered_cache(it["path"])
+
+        out_zip_rebuilt = str(tmp_path / "mixed_rebuilt.zip")
+        worker_re = _ChapterArchiveExportWorker(
+            items, {"style": {"export_compressed": False}}, out_zip_rebuilt, "zip"
+        )
+        res_re = []
+        worker_re.sig_finished.connect(lambda ok, msg: res_re.append((ok, msg)))
+        worker_re.run()
+        assert res_re and res_re[0][0] is True
+
+        with zipfile.ZipFile(out_zip_rebuilt, "r") as zf:
+            assert sorted(zf.namelist()) == sorted(expected_names)
+            for name in expected_names:
+                decoded = cv2.imdecode(np.frombuffer(zf.read(name), dtype=np.uint8), cv2.IMREAD_COLOR)
+                assert decoded is not None and decoded.shape[:2] == (64, 48)
+
+        # 2) export_compressed=True -> fixed export format becomes .webp for every entry
+        expected_webp_names = [f"{i:04d}_page_{i}.webp" for i in range(1, len(exts) + 1)]
+        out_zip_comp = str(tmp_path / "mixed_compressed_webp.zip")
+        worker_comp = _ChapterArchiveExportWorker(
+            items, {"style": {"export_compressed": True}}, out_zip_comp, "zip"
+        )
+        res_comp = []
+        worker_comp.sig_finished.connect(lambda ok, msg: res_comp.append((ok, msg)))
+        worker_comp.run()
+        assert res_comp and res_comp[0][0] is True
+
+        with zipfile.ZipFile(out_zip_comp, "r") as zf:
+            infos = {info.filename: info for info in zf.infolist()}
+            assert sorted(infos.keys()) == sorted(expected_webp_names)
+            for name in expected_webp_names:
+                assert infos[name].compress_type == zipfile.ZIP_STORED
+                decoded = cv2.imdecode(np.frombuffer(zf.read(name), dtype=np.uint8), cv2.IMREAD_COLOR)
+                assert decoded is not None and decoded.shape[:2] == (64, 48)
+
+        assert MangaExporter.resolve_export_format("scan.tif") == (".png", "PNG")
+        assert MangaExporter.resolve_export_format("scan.jpg", compressed=True) == (".webp", "WEBP")
+        assert MangaExporter.resolve_export_format("scan.png", compressed=True) == (".webp", "WEBP")
+        assert MangaExporter.is_export_compressed({"style": {"export_compressed": True}}) is True
+        assert MangaExporter.is_export_compressed({}) is False
+    finally:
+        mgr.set_cache_format(orig_fmt)
+
+
+def test_compressed_mode_forces_webp_batch_export_and_reuses_webp_cache(tmp_path, monkeypatch):
+    """When export_compressed=True, batch export targets .webp and copies matching .rendered.webp without re-encoding."""
+    from app.core.pipeline.batch_worker import BatchWorker
+
+    mgr = MangaCacheManager()
+    orig_fmt = mgr.get_cache_format()
+    try:
+        mgr.set_cache_format("webp")
+        src_dir = tmp_path / "src"
+        sub_dir = src_dir / "ch1"
+        sub_dir.mkdir(parents=True)
+        out_dir = tmp_path / "out"
+
+        p1 = str(sub_dir / "01.png")
+        p2 = str(sub_dir / "02.jpg")
+        img1 = _make_sample_image(p1, w=40, h=50)
+        img2 = _make_sample_image(p2, w=40, h=50)
+        blk = TranslationBlock(id="b1", original_text="a", translated_text="译", xmin=4, ymin=4, xmax=20, ymax=20)
+        mgr.save_page_cache(p1, erased_img=img1, blocks=[blk], rendered_img=img1)
+        mgr.save_page_cache(p2, erased_img=img2, blocks=[blk], rendered_img=img2)
+
+        assert MangaExporter.compute_export_path(p1, str(out_dir), root_dir=str(src_dir), compressed=True) == os.path.normpath(
+            str(out_dir / "ch1" / "01.webp")
+        )
+        with pytest.raises(ValueError):
+            MangaExporter.compute_export_path(p1, str(sub_dir), rel_path="01.png", compressed=True)
+
+        # Verify zero re-encode when .rendered.webp cache hits in export_compressed=True mode
+        def _forbid_encode(*args, **kwargs):
+            raise AssertionError("export_hierarchical_image must not re-encode matching .rendered.webp cache")
+
+        monkeypatch.setattr(MangaExporter, "export_hierarchical_image", staticmethod(_forbid_encode))
+
+        items = [
+            {"id": "1", "path": p1, "status": "completed", "root_dir": str(src_dir)},
+            {"id": "2", "path": p2, "status": "completed", "root_dir": str(src_dir)},
+        ]
+        worker = BatchWorker(items, {"style": {"export_compressed": True}}, export_dir=str(out_dir), root_dir=str(src_dir))
+        finished = []
+        worker.sig_batch_finished.connect(lambda s, f: finished.append((s, f)))
+        worker.run()
+
+        assert finished == [(2, 0)]
+        assert os.path.exists(out_dir / "ch1" / "01.webp")
+        assert os.path.exists(out_dir / "ch1" / "02.webp")
+        assert not os.path.exists(out_dir / "ch1" / "01.png")
+        assert not os.path.exists(out_dir / "ch1" / "02.jpg")
+    finally:
+        mgr.set_cache_format(orig_fmt)
+
+
+def test_compressed_mode_encodes_webp_from_bmp_cache_and_single_page_dialog(qapp, tmp_path, monkeypatch):
+    """BMP cache with export_compressed=True exports .webp; single-page save defaults to WebP."""
+    from app.core.pipeline.batch_worker import BatchWorker
+
+    mgr = MangaCacheManager()
+    orig_fmt = mgr.get_cache_format()
+    try:
+        mgr.set_cache_format("bmp")
+        p = str(tmp_path / "scan.png")
+        img = _make_sample_image(p, w=40, h=50)
+        blk = TranslationBlock(id="b1", original_text="a", translated_text="译", xmin=4, ymin=4, xmax=20, ymax=20)
+        mgr.save_page_cache(p, erased_img=img, blocks=[blk], rendered_img=img)
+
+        out_dir = tmp_path / "out_bmp_to_webp"
+        worker = BatchWorker([{"id": "1", "path": p, "status": "completed"}], {"style": {"export_compressed": True}}, export_dir=str(out_dir))
+        res = []
+        worker.sig_batch_finished.connect(lambda s, f: res.append((s, f)))
+        worker.run()
+        assert res == [(1, 0)]
+        assert os.path.exists(out_dir / "scan.webp")
+        assert not os.path.exists(out_dir / "scan.png")
+
+        win = MainWindow()
+        try:
+            win.current_image_data = {"id": "1", "path": p, "blocks": [blk]}
+            win.canvas_view.translated_cv = img
+            seen = []
+            monkeypatch.setattr(
+                "PyQt6.QtWidgets.QFileDialog.getSaveFileName",
+                lambda _p, _t, name, filt: (seen.append((name, filt)) or ("", "")),
+            )
+            win.config.style.export_compressed = True
+            win._export_current_page()
+            win.config.style.export_compressed = False
+            win._export_current_page()
+            assert seen[0][0] == "manga_page_translated.webp"
+            assert seen[0][1].startswith("WebP Image (*.webp)")
+            assert seen[1][0] == "manga_page_translated.png"
+            assert seen[1][1].startswith("PNG Image (*.png)")
+        finally:
+            win.close()
+            win.deleteLater()
+            qapp.processEvents()
+    finally:
+        mgr.set_cache_format(orig_fmt)
+
+
+def test_settings_dialog_cache_format_combo(qapp, tmp_path, monkeypatch):
+    from app.core.config import AppConfig
+    from app.core.cache.cache_manager import get_cache_manager
+    from app.ui.settings.settings_dialog import SettingsDialog
+
+    cache_mgr = get_cache_manager()
+    orig_fmt = cache_mgr.get_cache_format()
+    try:
+        cfg = AppConfig()
+        orig_save = cfg.save
+        monkeypatch.setattr(cfg, "save", lambda _p: orig_save(str(tmp_path / "cfg.json")))
+        dlg = SettingsDialog(config=cfg)
+        assert dlg.cache_format_combo.currentData() == "bmp"
+        dlg.cache_format_combo.setCurrentIndex(1)  # webp
+        dlg._on_save()
+        assert cfg.cache_format == "webp"
+        assert cache_mgr.get_cache_format() == "webp"
+    finally:
+        cache_mgr.set_cache_format(orig_fmt)

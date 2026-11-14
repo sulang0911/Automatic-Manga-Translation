@@ -16,10 +16,12 @@ import cv2
 import numpy as np
 
 from app.core.models import TranslationBlock, StyleConfig
+from app.core.config import normalize_cache_format
 
 logger = logging.getLogger(__name__)
 
 CACHE_DIR_NAME = ".amt_cache"
+_CACHE_IMG_EXTS = ("bmp", "webp", "png")
 
 
 def safe_cv2_imread(path: str) -> Optional[np.ndarray]:
@@ -60,7 +62,7 @@ def safe_cv2_imwrite(path: str, img: np.ndarray, ext: Optional[str] = None, qual
         else:
             params = []
         ok, buf = cv2.imencode(ext, img, params)
-        if not ok and is_webp:
+        if not ok and ext.lower() != ".png":
             # Fallback to PNG
             ext = ".png"
             path = os.path.splitext(path)[0] + ".png"
@@ -94,8 +96,9 @@ class MangaCacheManager:
       - .amt_cache/page_001.rendered.webp (Final typography composite)
     """
 
-    def __init__(self, custom_cache_root: Optional[str] = None):
+    def __init__(self, custom_cache_root: Optional[str] = None, cache_format: str = "bmp"):
         self.custom_cache_root = custom_cache_root
+        self._cache_format = normalize_cache_format(cache_format)
         self._translated_memo: Dict[str, Tuple[float, int, bool]] = {}
         self._blocks_memo: Dict[str, Tuple[float, int, List[Dict[str, Any]]]] = {}
         self._write_lock = threading.Lock()
@@ -103,6 +106,15 @@ class MangaCacheManager:
         self._pending_writes: Dict[str, Dict[str, Any]] = {}
         self._in_flight_key: Optional[str] = None
         self._writer_thread: Optional[threading.Thread] = None
+
+    def set_cache_format(self, fmt: Optional[str]) -> str:
+        """Sets active intermediate image format ('bmp' for fast lossless I/O, 'webp' for compact storage)."""
+        self._cache_format = normalize_cache_format(fmt)
+        return self._cache_format
+
+    def get_cache_format(self) -> str:
+        """Returns active intermediate image cache format ('bmp' or 'webp')."""
+        return self._cache_format
 
     @staticmethod
     def _norm_key(image_path: str) -> str:
@@ -233,13 +245,45 @@ class MangaCacheManager:
         base_name = os.path.splitext(os.path.basename(image_path))[0]
         return {
             "dir": cache_dir,
+            "erased_bmp": os.path.join(cache_dir, f"{base_name}.erased.bmp"),
             "erased_webp": os.path.join(cache_dir, f"{base_name}.erased.webp"),
             "erased_png": os.path.join(cache_dir, f"{base_name}.erased.png"),
             "blocks_json": os.path.join(cache_dir, f"{base_name}.blocks.json"),
             "style_json": os.path.join(cache_dir, f"{base_name}.style.json"),
+            "rendered_bmp": os.path.join(cache_dir, f"{base_name}.rendered.bmp"),
             "rendered_webp": os.path.join(cache_dir, f"{base_name}.rendered.webp"),
             "rendered_png": os.path.join(cache_dir, f"{base_name}.rendered.png"),
         }
+
+    def _ordered_variant_keys(self, kind: str) -> Tuple[str, ...]:
+        preferred = self._cache_format
+        ordered = [preferred] + [ext for ext in _CACHE_IMG_EXTS if ext != preferred]
+        return tuple(f"{kind}_{ext}" for ext in ordered)
+
+    def resolve_cache_image_path(
+        self,
+        image_path: str,
+        kind: str,
+        paths: Optional[Dict[str, str]] = None,
+    ) -> Optional[str]:
+        """Returns the existing cache image file for `kind` ('erased' or 'rendered'), prioritizing active format."""
+        c_paths = paths if paths is not None else self.get_cache_paths(image_path, create_dir=False)
+        for key in self._ordered_variant_keys(kind):
+            cand = c_paths.get(key, "")
+            if cand and os.path.exists(cand):
+                return cand
+        return None
+
+    def invalidate_rendered_cache(self, image_path: str) -> None:
+        """Removes all rendered bitmap variants for `image_path` while preserving erased background and blocks."""
+        c_paths = self.get_cache_paths(image_path, create_dir=False)
+        for ext in _CACHE_IMG_EXTS:
+            cand = c_paths.get(f"rendered_{ext}", "")
+            if cand and os.path.exists(cand):
+                try:
+                    os.remove(cand)
+                except OSError:
+                    pass
 
     def has_cache(self, image_path: str) -> Dict[str, bool]:
         """
@@ -255,9 +299,9 @@ class MangaCacheManager:
                 "rendered": False,
             }
         paths = self.get_cache_paths(image_path, create_dir=False)
-        has_erased = os.path.exists(paths["erased_webp"]) or os.path.exists(paths["erased_png"])
+        has_erased = any(os.path.exists(paths[f"erased_{ext}"]) for ext in _CACHE_IMG_EXTS)
         has_blocks = os.path.exists(paths["blocks_json"])
-        has_rendered = os.path.exists(paths["rendered_webp"]) or os.path.exists(paths["rendered_png"])
+        has_rendered = any(os.path.exists(paths[f"rendered_{ext}"]) for ext in _CACHE_IMG_EXTS)
         return {
             "erased": has_erased,
             "blocks": has_blocks,
@@ -334,9 +378,9 @@ class MangaCacheManager:
                 dir_entries_cache[dir_norm] = files_in_dir
 
             base_name = os.path.splitext(os.path.basename(image_path))[0]
-            has_erased = f"{base_name}.erased.webp" in files_in_dir or f"{base_name}.erased.png" in files_in_dir
+            has_erased = any(f"{base_name}.erased.{ext}" in files_in_dir for ext in _CACHE_IMG_EXTS)
             has_blocks = f"{base_name}.blocks.json" in files_in_dir
-            has_rendered = f"{base_name}.rendered.webp" in files_in_dir or f"{base_name}.rendered.png" in files_in_dir
+            has_rendered = any(f"{base_name}.rendered.{ext}" in files_in_dir for ext in _CACHE_IMG_EXTS)
             has_style = f"{base_name}.style.json" in files_in_dir
 
             fully_translated = False
@@ -363,6 +407,25 @@ class MangaCacheManager:
             }
         return results
 
+    def _save_cache_image(self, kind: str, img: Optional[np.ndarray], paths: Dict[str, str]) -> Optional[str]:
+        """Persists a cache image in active format (fallback PNG) and removes stale alternate formats."""
+        if img is None or img.size == 0:
+            return None
+        fmt = self._cache_format
+        target_path = paths[f"{kind}_{fmt}"]
+        if not safe_cv2_imwrite(target_path, img, ext=f".{fmt}", quality=95):
+            target_path = paths[f"{kind}_png"]
+            if not safe_cv2_imwrite(target_path, img, ext=".png"):
+                return None
+        for ext in _CACHE_IMG_EXTS:
+            alt_path = paths.get(f"{kind}_{ext}")
+            if alt_path and alt_path != target_path and os.path.exists(alt_path):
+                try:
+                    os.remove(alt_path)
+                except OSError:
+                    pass
+        return target_path
+
     def _persist_payload(
         self,
         image_path: str,
@@ -376,14 +439,9 @@ class MangaCacheManager:
         saved: Dict[str, str] = {}
 
         # 1. Save erased background
-        if erased_img is not None and erased_img.size > 0:
-            target_erased = paths["erased_webp"]
-            if safe_cv2_imwrite(target_erased, erased_img, ext=".webp", quality=95):
-                saved["erased"] = target_erased
-            else:
-                target_erased = paths["erased_png"]
-                if safe_cv2_imwrite(target_erased, erased_img, ext=".png"):
-                    saved["erased"] = target_erased
+        saved_erased = self._save_cache_image("erased", erased_img, paths)
+        if saved_erased:
+            saved["erased"] = saved_erased
 
         # 2. Save blocks metadata & translations
         if serialized_blocks is not None:
@@ -399,14 +457,9 @@ class MangaCacheManager:
                 self._blocks_memo.pop(paths["blocks_json"], None)
 
         # 3. Save rendered composite
-        if rendered_img is not None and rendered_img.size > 0:
-            target_rendered = paths["rendered_webp"]
-            if safe_cv2_imwrite(target_rendered, rendered_img, ext=".webp", quality=95):
-                saved["rendered"] = target_rendered
-            else:
-                target_rendered = paths["rendered_png"]
-                if safe_cv2_imwrite(target_rendered, rendered_img, ext=".png"):
-                    saved["rendered"] = target_rendered
+        saved_rendered = self._save_cache_image("rendered", rendered_img, paths)
+        if saved_rendered:
+            saved["rendered"] = saved_rendered
 
         # 4. Save or clear per-page style configuration
         if clear_page_style:
@@ -559,16 +612,16 @@ class MangaCacheManager:
                 logger.warning(f"Error loading blocks cache for {image_path}: {e}")
 
         # 2. Erased Image
-        erased_p = paths["erased_webp"] if os.path.exists(paths["erased_webp"]) else paths["erased_png"]
-        if os.path.exists(erased_p):
+        erased_p = self.resolve_cache_image_path(image_path, "erased", paths=paths)
+        if erased_p:
             res["erased_path"] = erased_p
             res["has_cache"] = True
             if load_images and load_erased:
                 res["erased_img"] = safe_cv2_imread(erased_p)
 
         # 3. Rendered Image
-        rendered_p = paths["rendered_webp"] if os.path.exists(paths["rendered_webp"]) else paths["rendered_png"]
-        if os.path.exists(rendered_p):
+        rendered_p = self.resolve_cache_image_path(image_path, "rendered", paths=paths)
+        if rendered_p:
             res["rendered_path"] = rendered_p
             res["has_cache"] = True
             if load_images and load_rendered:

@@ -131,3 +131,50 @@ def test_cache_directory_pruning_on_folder_import(temp_workspace):
     # Must only contain the 1 raw image, NOT the cache images!
     assert len(widget.items_data) == 1
     assert widget.items_data[0]["path"] == os.path.abspath(raw_img)
+
+
+def test_bmp_default_lossless_and_legacy_webp_migration(temp_workspace):
+    from app.core.config import AppConfig
+    from app.ui.sidebar.page_list import is_ignored_cache_or_export
+
+    assert AppConfig().cache_format == "bmp"
+    assert AppConfig.from_dict({"cache_format": "webp"}).cache_format == "webp"
+    assert AppConfig.from_dict({"cache_format": "invalid"}).cache_format == "bmp"
+
+    img_path = os.path.join(temp_workspace, "sample_01.png")
+    with open(img_path, "wb") as f:
+        f.write(b"raw")
+
+    erased = np.zeros((120, 80, 3), dtype=np.uint8)
+    erased[20:40, 20:40] = [12, 34, 56]
+    rendered = np.zeros((120, 80, 3), dtype=np.uint8)
+    rendered[50:70, 30:50] = [201, 102, 77]
+
+    # 1. Legacy webp manager writes .webp
+    webp_mgr = MangaCacheManager(cache_format="webp")
+    saved_w = webp_mgr.save_page_cache(img_path, erased_img=erased, rendered_img=rendered)
+    assert saved_w["erased"].endswith(".erased.webp")
+    assert saved_w["rendered"].endswith(".rendered.webp")
+
+    # 2. Default bmp manager reads legacy webp cleanly and replaces stale webp when saving bmp
+    bmp_mgr = MangaCacheManager()
+    assert bmp_mgr.get_cache_format() == "bmp"
+    loaded_legacy = bmp_mgr.load_page_cache(img_path, load_images=True)
+    assert loaded_legacy["erased_img"] is not None
+    assert loaded_legacy["rendered_img"] is not None
+
+    saved_b = bmp_mgr.save_page_cache(img_path, erased_img=erased, rendered_img=rendered)
+    assert saved_b["erased"].endswith(".erased.bmp")
+    assert saved_b["rendered"].endswith(".rendered.bmp")
+    assert is_ignored_cache_or_export(saved_b["erased"]) is True
+    assert is_ignored_cache_or_export(saved_b["rendered"]) is True
+    assert not os.path.exists(saved_w["erased"])
+    assert not os.path.exists(saved_w["rendered"])
+
+    loaded_bmp = bmp_mgr.load_page_cache(img_path, load_images=True)
+    assert np.array_equal(loaded_bmp["erased_img"], erased)
+    assert np.array_equal(loaded_bmp["rendered_img"], rendered)
+
+    bmp_mgr.invalidate_rendered_cache(img_path)
+    assert not os.path.exists(saved_b["rendered"])
+    assert os.path.exists(saved_b["erased"])

@@ -14,6 +14,13 @@ logger = logging.getLogger(__name__)
 
 # Absolute root of the active installation (ensures demo/ stays isolated from parent repo CWD)
 APP_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+VALID_CACHE_FORMATS = ("bmp", "webp")
+
+
+def normalize_cache_format(fmt: Optional[str]) -> str:
+    """Normalizes configured disk cache format ('bmp' for speed, 'webp' for space)."""
+    val = (fmt or "").strip().lower()
+    return val if val in VALID_CACHE_FORMATS else "bmp"
 
 
 def resolve_app_path(filepath: str) -> str:
@@ -99,6 +106,7 @@ class AppConfig:
     source_lang: str = "自动识别"
     target_lang: str = "简体中文"
     cache_dir: str = "translation_cache"
+    cache_format: str = "bmp"
     export_dir: str = "exported_chapter"
     auto_save_cache: bool = True
     max_concurrent_workers: int = 1
@@ -120,6 +128,7 @@ class AppConfig:
             "inpaint": asdict(self.inpaint),
             "style": self.style.to_dict(),
             "cache_dir": self.cache_dir,
+            "cache_format": normalize_cache_format(self.cache_format),
             "export_dir": self.export_dir,
             "auto_save_cache": self.auto_save_cache,
             "max_concurrent_workers": self.max_concurrent_workers,
@@ -137,6 +146,8 @@ class AppConfig:
             cfg.target_lang = data["target_lang"]
         if "cache_dir" in data:
             cfg.cache_dir = data["cache_dir"]
+        if "cache_format" in data:
+            cfg.cache_format = normalize_cache_format(data["cache_format"])
         if "export_dir" in data:
             cfg.export_dir = data["export_dir"]
         if "auto_save_cache" in data:

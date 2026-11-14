@@ -63,7 +63,7 @@ def test_re_render_all_pages_zero_freeze_and_invalidation(qapp, sample_test_env)
 
         # Check rendered cache exists
         cache_paths = cache_mgr.get_cache_paths(p)
-        assert os.path.exists(cache_paths["rendered_webp"])
+        assert os.path.exists(cache_paths["rendered_bmp"])
 
         item = {
             "id": str(i),
@@ -101,9 +101,10 @@ def test_re_render_all_pages_zero_freeze_and_invalidation(qapp, sample_test_env)
     for item in items[1:]:
         assert item["translated_img"] is None
         paths = cache_mgr.get_cache_paths(item["path"])
+        assert not os.path.exists(paths["rendered_bmp"]), "Stale rendered_bmp should have been deleted"
         assert not os.path.exists(paths["rendered_webp"]), "Stale rendered_webp should have been deleted"
         # Erased & blocks must still be preserved!
-        assert os.path.exists(paths["erased_webp"])
+        assert os.path.exists(paths["erased_bmp"])
         assert os.path.exists(paths["blocks_json"])
 
     win.close()
@@ -141,7 +142,7 @@ def test_on_demand_rendering_on_page_select(qapp, sample_test_env):
 
     # Cache should now have the newly rendered image
     paths = cache_mgr.get_cache_paths(p)
-    assert os.path.exists(paths["rendered_webp"])
+    assert os.path.exists(paths["rendered_bmp"])
 
     win.close()
 
@@ -165,11 +166,11 @@ def test_batch_worker_deferred_typography_when_export_dir_none(sample_test_env):
 
     # Cached erased_img and blocks must exist
     cache_paths = cache_mgr.get_cache_paths(p)
-    assert os.path.exists(cache_paths["erased_webp"])
+    assert os.path.exists(cache_paths["erased_bmp"])
     assert os.path.exists(cache_paths["blocks_json"])
 
-    # Rendered webp MUST be pre-baked into cache so switching pages after batch translation is instant!
-    assert os.path.exists(cache_paths["rendered_webp"])
+    # Rendered cache MUST be pre-baked into cache so switching pages after batch translation is instant!
+    assert os.path.exists(cache_paths["rendered_bmp"])
 
 
 def test_batch_worker_on_the_fly_export_from_cache(sample_test_env):

@@ -438,15 +438,14 @@ def test_cached_erased_restores_sfx_on_rerender_and_archive_export(qapp, tmp_pat
     assert item["translated_img"] is not None
     assert np.array_equal(item["translated_img"][110:180, 110:180], img[110:180, 110:180])
 
-    # Clear rendered cache and verify _ChapterArchiveExportWorker restores SFX too
-    c_paths = cache_mgr.get_cache_paths(img_path, create_dir=False)
-    for k in ("rendered_webp", "rendered_png"):
-        if os.path.exists(c_paths[k]):
-            os.remove(c_paths[k])
+    # Clear rendered cache and verify _ChapterArchiveExportWorker restores SFX too (uncompressed PNG mode)
+    cache_mgr.invalidate_rendered_cache(img_path)
 
     zip_path = str(tmp_path / "out.cbz")
     item_zip = {"id": "p1", "path": img_path, "status": "completed", "style": StyleConfig(onomatopoeia_mode="ignore")}
-    exp_worker = _ChapterArchiveExportWorker([item_zip], win.config.to_dict(), zip_path, "cbz")
+    cfg_cbz = win.config.to_dict()
+    cfg_cbz["style"]["export_compressed"] = False
+    exp_worker = _ChapterArchiveExportWorker([item_zip], cfg_cbz, zip_path, "cbz")
     exp_worker.run()
     assert os.path.exists(zip_path)
     with zipfile.ZipFile(zip_path, "r") as zf:

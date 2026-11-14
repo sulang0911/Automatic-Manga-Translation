@@ -55,18 +55,21 @@ class BatchWorker(QThread):
         if not img_path:
             return None
         filename = os.path.basename(img_path)
+        compressed = MangaExporter.is_export_compressed(self.config)
         if item.get("rel_path") or item.get("root_dir") or self.root_dir:
             try:
                 return MangaExporter.compute_export_path(
                     image_path=img_path,
                     export_dir=self.export_dir,
                     rel_path=item.get("rel_path"),
-                    root_dir=item.get("root_dir") or self.root_dir
+                    root_dir=item.get("root_dir") or self.root_dir,
+                    compressed=compressed,
                 )
             except Exception:
                 pass
         name_without_ext = os.path.splitext(filename)[0]
-        return os.path.join(self.export_dir, f"{name_without_ext}_translated.png")
+        ext = ".webp" if compressed else ".png"
+        return os.path.join(self.export_dir, f"{name_without_ext}_translated{ext}")
 
     def run(self):
         lower_worker_priority()
@@ -165,13 +168,7 @@ class BatchWorker(QThread):
                 # Auto save if export_dir specified
                 export_path = self.resolve_export_path(item)
                 if export_path:
-                    compressed = False
-                    if hasattr(self.config, "style"):
-                        compressed = getattr(self.config.style, "export_compressed", False)
-                    elif isinstance(self.config, dict):
-                        style_cfg = self.config.get("style", {})
-                        if isinstance(style_cfg, dict):
-                            compressed = style_cfg.get("export_compressed", False)
+                    compressed = MangaExporter.is_export_compressed(self.config)
                     MangaExporter.export_hierarchical_image(
                         translated_img,
                         export_path,

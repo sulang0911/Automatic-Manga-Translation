@@ -87,7 +87,8 @@ class BatchWorker(QThread):
             image_path=img_path,
             export_dir=self.export_dir,
             rel_path=item.get("rel_path"),
-            root_dir=self.root_dir or item.get("root_dir")
+            root_dir=self.root_dir or item.get("root_dir"),
+            compressed=MangaExporter.is_export_compressed(self.config),
         )
 
     def _export_cached_item(
@@ -98,11 +99,38 @@ class BatchWorker(QThread):
         typo_eng: TypographyEngine,
     ) -> int:
         """Exports a single cached page (rendering on-the-fly if needed) and returns block count."""
+        import shutil
+
         img_path = item.get("path", "")
-        full_c = cache_mgr.load_page_cache(img_path, load_images=True)
+        cache_mgr.flush_path(img_path)
+        compressed = MangaExporter.is_export_compressed(self.config)
+        target_ext, _ = MangaExporter.resolve_export_format(export_path, compressed=compressed)
+        cached_rendered = cache_mgr.resolve_cache_image_path(img_path, "rendered")
+
+        if (
+            cached_rendered
+            and os.path.splitext(cached_rendered)[1].lower() == target_ext
+            and os.path.normcase(os.path.realpath(cached_rendered))
+            != os.path.normcase(os.path.realpath(export_path))
+        ):
+            os.makedirs(os.path.dirname(os.path.abspath(export_path)), exist_ok=True)
+            shutil.copy2(cached_rendered, export_path)
+            meta = cache_mgr.load_page_cache(img_path, load_images=False)
+            return len(meta.get("blocks", []))
+
+        has_rendered_disk = cached_rendered is not None
+        full_c = cache_mgr.load_page_cache(
+            img_path,
+            load_images=True,
+            load_erased=not has_rendered_disk,
+            load_rendered=has_rendered_disk,
+        )
         rendered_to_export = full_c.get("rendered_img")
         if rendered_to_export is None:
             base_bg = full_c.get("erased_img")
+            if base_bg is None:
+                base_bg = cache_mgr.load_page_cache(img_path, load_images=True, load_erased=True, load_rendered=False).get("erased_img")
+            has_erased_bg = base_bg is not None
             if base_bg is None:
                 base_bg = safe_cv2_imread(img_path)
             if base_bg is not None:
@@ -117,21 +145,16 @@ class BatchWorker(QThread):
                 eff_cfg = item.get("style") or full_c.get("page_style") or self.config
                 onoma_mode = extract_onomatopoeia_mode(eff_cfg)
                 render_blocks, ignored_blocks = partition_render_blocks(c_blocks, onoma_mode)
-                orig_for_restore = safe_cv2_imread(img_path) if (ignored_blocks and full_c.get("erased_img") is not None) else None
+                orig_for_restore = safe_cv2_imread(img_path) if (ignored_blocks and has_erased_bg) else None
                 render_base = prepare_render_base(base_bg, orig_for_restore, render_blocks, ignored_blocks)
                 rendered_to_export = typo_eng.render_translations(render_base, render_blocks, eff_cfg)
-                if rendered_to_export is not None:
+                auto_save = self.config.get("auto_save_cache", True) if isinstance(self.config, dict) else getattr(self.config, "auto_save_cache", True)
+                if rendered_to_export is not None and auto_save:
                     cache_mgr.save_page_cache(img_path, rendered_img=rendered_to_export)
             del base_bg
 
         if rendered_to_export is not None:
-            compressed = False
-            if hasattr(self.config, "style"):
-                compressed = getattr(self.config.style, "export_compressed", False)
-            elif isinstance(self.config, dict):
-                style_cfg = self.config.get("style", {})
-                if isinstance(style_cfg, dict):
-                    compressed = style_cfg.get("export_compressed", False)
+            compressed = MangaExporter.is_export_compressed(self.config)
             MangaExporter.export_hierarchical_image(
                 rendered_to_export,
                 export_path,
@@ -215,6 +238,9 @@ class BatchWorker(QThread):
         fail_count = 0
 
         cache_mgr = get_cache_manager()
+        cfg_cache_fmt = self.config.get("cache_format") if isinstance(self.config, dict) else getattr(self.config, "cache_format", None)
+        if cfg_cache_fmt:
+            cache_mgr.set_cache_format(cfg_cache_fmt)
 
         # When force_retranslate is True, clear software-generated cache before reprocessing
         if self.force_retranslate and self.queue_items:
@@ -243,7 +269,7 @@ class BatchWorker(QThread):
 
             if len(cache_export_tasks) >= 2:
                 import concurrent.futures
-                max_workers = min(3, max(2, os.cpu_count() or 2))
+                max_workers = min(6, max(2, os.cpu_count() or 2))
                 task_iter = iter(cache_export_tasks)
                 pending_futs: Dict[Any, Tuple[int, Dict[str, Any], str]] = {}
                 completed_export_n = 0
@@ -462,13 +488,7 @@ class BatchWorker(QThread):
                 del base_bg, render_base
 
                 if export_path and translated_img is not None:
-                    compressed = False
-                    if hasattr(self.config, "style"):
-                        compressed = getattr(self.config.style, "export_compressed", False)
-                    elif isinstance(self.config, dict):
-                        style_cfg = self.config.get("style", {})
-                        if isinstance(style_cfg, dict):
-                            compressed = style_cfg.get("export_compressed", False)
+                    compressed = MangaExporter.is_export_compressed(self.config)
                     MangaExporter.export_hierarchical_image(
                         translated_img,
                         export_path,

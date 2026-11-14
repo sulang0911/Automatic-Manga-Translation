@@ -5,7 +5,7 @@ Integrates Sidebar Navigation Rail, Chapter Queue, Canvas Viewport, and Action T
 """
 import os
 import copy
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 import numpy as np
 import cv2
 
@@ -65,67 +65,113 @@ class _ChapterArchiveExportWorker(QThread):
     def cancel(self):
         self._is_cancelled = True
 
+    def _prepare_page_for_archive(
+        self,
+        idx: int,
+        item: Dict[str, Any],
+        stage_dir: str,
+        cache_mgr,
+        typo_eng: TypographyEngine,
+    ) -> Tuple[int, Optional[str]]:
+        import shutil
+
+        if self._is_cancelled:
+            return idx, None
+        img_path = item.get("path", "")
+        if not img_path or not os.path.exists(img_path):
+            return idx, None
+        is_done = str(item.get("status", "")).lower() in ("completed", "done") or cache_mgr.is_fully_translated(img_path)
+        if not is_done:
+            return idx, None
+
+        stem = os.path.splitext(os.path.basename(img_path))[0]
+        is_pdf = (str(self.fmt).lower() == "pdf")
+        compressed = False if is_pdf else MangaExporter.is_export_compressed(self.config)
+        target_ext, target_fmt = (".jpg", "JPEG") if is_pdf else MangaExporter.resolve_export_format(img_path, compressed=compressed)
+        cached_rendered = cache_mgr.resolve_cache_image_path(img_path, "rendered")
+
+        if cached_rendered:
+            cache_ext = os.path.splitext(cached_rendered)[1].lower()
+            # PDF embeds any cached format directly; ZIP links cache directly when extension already matches target_ext.
+            if is_pdf or cache_ext == target_ext:
+                dst = os.path.join(stage_dir, f"{idx + 1:04d}_{stem}{cache_ext}")
+                try:
+                    os.link(cached_rendered, dst)
+                except OSError:
+                    shutil.copy2(cached_rendered, dst)
+                return idx, dst
+
+        rendered = None
+        if cached_rendered:
+            rendered = safe_cv2_imread(cached_rendered)
+        else:
+            full_c = cache_mgr.load_page_cache(img_path, load_images=True, load_erased=True, load_rendered=False)
+            base_bg = full_c.get("erased_img")
+            if base_bg is None:
+                base_bg = safe_cv2_imread(img_path)
+            if base_bg is not None:
+                c_blocks = full_c.get("blocks", [])
+                eff_cfg = item.get("style") or full_c.get("page_style") or self.config
+                onoma_mode = extract_onomatopoeia_mode(eff_cfg)
+                render_blocks, ignored_blocks = partition_render_blocks(c_blocks, onoma_mode)
+                orig_cv = safe_cv2_imread(img_path) if (ignored_blocks and full_c.get("erased_img") is not None) else None
+                render_base = prepare_render_base(base_bg, orig_cv, render_blocks, ignored_blocks)
+                rendered = typo_eng.render_translations(render_base, render_blocks, eff_cfg)
+            auto_save = self.config.get("auto_save_cache", True) if isinstance(self.config, dict) else getattr(self.config, "auto_save_cache", True)
+            if rendered is not None and auto_save:
+                cache_mgr.save_page_cache(img_path, rendered_img=rendered)
+            del full_c, base_bg
+
+        if rendered is None:
+            return idx, None
+
+        dst = os.path.join(stage_dir, f"{idx + 1:04d}_{stem}{target_ext}")
+        ok_w = MangaExporter.export_single_image(rendered, dst, fmt=target_fmt, compressed=compressed)
+        del rendered
+        return idx, (dst if ok_w else None)
+
     def run(self):
+        import concurrent.futures
         import shutil
         import tempfile
 
         stage_dir = tempfile.mkdtemp(prefix="amt_archive_exp_")
         cache_mgr = get_cache_manager()
+        cfg_cache_fmt = self.config.get("cache_format") if isinstance(self.config, dict) else getattr(self.config, "cache_format", None)
+        if cfg_cache_fmt:
+            cache_mgr.set_cache_format(cfg_cache_fmt)
         typo_eng = TypographyEngine()
         staged_paths: List[str] = []
         total = max(1, len(self.items))
         try:
-            for idx, item in enumerate(self.items):
-                if self._is_cancelled:
-                    self.sig_finished.emit(False, "整话导出已取消。")
-                    return
-                img_path = item.get("path", "")
-                if not img_path or not os.path.exists(img_path):
-                    continue
-                is_done = str(item.get("status", "")).lower() in ("completed", "done") or cache_mgr.is_fully_translated(img_path)
-                if not is_done:
-                    continue
+            max_workers = min(6, max(2, os.cpu_count() or 2))
+            staged_map: Dict[int, str] = {}
+            completed = 0
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=max_workers, thread_name_prefix="AMT-ArchiveExport"
+            ) as pool:
+                pending = {
+                    pool.submit(self._prepare_page_for_archive, idx, item, stage_dir, cache_mgr, typo_eng)
+                    for idx, item in enumerate(self.items)
+                }
+                while pending:
+                    if self._is_cancelled:
+                        for fut in pending:
+                            fut.cancel()
+                        self.sig_finished.emit(False, "整话导出已取消。")
+                        return
+                    done, pending = concurrent.futures.wait(
+                        pending, timeout=0.25, return_when=concurrent.futures.FIRST_COMPLETED
+                    )
+                    for fut in done:
+                        idx_r, dst_r = fut.result()
+                        completed += 1
+                        if dst_r:
+                            staged_map[idx_r] = dst_r
+                        pct = min(85, int((completed / total) * 85))
+                        self.sig_progress.emit(pct, f"正在收集页面 ({completed}/{total})...")
 
-                stem = os.path.splitext(os.path.basename(img_path))[0]
-                c_paths = cache_mgr.get_cache_paths(img_path, create_dir=False)
-                cached_rendered = None
-                for key in ("rendered_webp", "rendered_png"):
-                    cand = c_paths.get(key, "")
-                    if cand and os.path.exists(cand):
-                        cached_rendered = cand
-                        break
-
-                if cached_rendered:
-                    ext = os.path.splitext(cached_rendered)[1].lower()
-                    dst = os.path.join(stage_dir, f"{idx + 1:04d}_{stem}{ext}")
-                    try:
-                        os.link(cached_rendered, dst)
-                    except OSError:
-                        shutil.copy2(cached_rendered, dst)
-                    staged_paths.append(dst)
-                else:
-                    full_c = cache_mgr.load_page_cache(img_path, load_images=True)
-                    base_bg = full_c.get("erased_img")
-                    if base_bg is None:
-                        base_bg = safe_cv2_imread(img_path)
-                    rendered = None
-                    if base_bg is not None:
-                        c_blocks = full_c.get("blocks", [])
-                        eff_cfg = item.get("style") or full_c.get("page_style") or self.config
-                        onoma_mode = extract_onomatopoeia_mode(eff_cfg)
-                        render_blocks, ignored_blocks = partition_render_blocks(c_blocks, onoma_mode)
-                        orig_cv = safe_cv2_imread(img_path) if (ignored_blocks and full_c.get("erased_img") is not None) else None
-                        render_base = prepare_render_base(base_bg, orig_cv, render_blocks, ignored_blocks)
-                        rendered = typo_eng.render_translations(render_base, render_blocks, eff_cfg)
-                    if rendered is not None:
-                        cache_mgr.save_page_cache(img_path, rendered_img=rendered)
-                        dst = os.path.join(stage_dir, f"{idx + 1:04d}_{stem}.png")
-                        safe_cv2_imwrite(dst, rendered, ext=".png")
-                        staged_paths.append(dst)
-                    del full_c, base_bg, rendered
-
-                pct = min(85, int(((idx + 1) / total) * 85))
-                self.sig_progress.emit(pct, f"正在收集页面 ({idx + 1}/{total})...")
+            staged_paths = [staged_map[i] for i in sorted(staged_map)]
 
             if not staged_paths:
                 self.sig_finished.emit(False, "当前列表中暂无已翻译或已缓存的页面可导出！")
@@ -171,6 +217,7 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(sheet)
 
         self.config = AppConfig.load("desktop_config.json")
+        get_cache_manager().set_cache_format(getattr(self.config, "cache_format", "bmp"))
         self.typo_engine = TypographyEngine()
         self.undo_manager = UndoManager(max_depth=10, max_bitmap_snapshots=4)
         self._recent_memory_paths: List[str] = []
@@ -1786,8 +1833,7 @@ class MainWindow(QMainWindow):
                     for b in blocks
                 ]
                 cache_mgr = get_cache_manager()
-                c_paths = cache_mgr.get_cache_paths(path, create_dir=False)
-                has_eras = (not save_erased) and (os.path.exists(c_paths["erased_webp"]) or os.path.exists(c_paths["erased_png"]))
+                has_eras = (not save_erased) and (cache_mgr.resolve_cache_image_path(path, "erased") is not None)
                 save_fn = cache_mgr.save_page_cache_async if async_cache_save else cache_mgr.save_page_cache
                 save_fn(
                     path,
@@ -2202,14 +2248,7 @@ class MainWindow(QMainWindow):
 
                 if not item.get("style"):
                     item["translated_img"] = None
-                    paths = cache_mgr.get_cache_paths(path, create_dir=False)
-                    for r_key in ("rendered_webp", "rendered_png"):
-                        p = paths.get(r_key)
-                        if p and os.path.exists(p):
-                            try:
-                                os.remove(p)
-                            except OSError:
-                                pass
+                    cache_mgr.invalidate_rendered_cache(path)
 
             self.toast.show_message("全局文字设置已生效！当前页面已即时刷新，其余页面将在查看或导出时按需渲染。", "success")
             self.status_label.setText("全局文字设置已生效（按需排版模式，零等待）")
@@ -2742,11 +2781,19 @@ class MainWindow(QMainWindow):
             self.toast.show_message("当前页面尚未翻译，无法导出！", "warning")
             return
 
+        compressed = bool(getattr(self.config.style, "export_compressed", False))
+        if compressed:
+            default_name = "manga_page_translated.webp"
+            file_filter = "WebP Image (*.webp);;PDF Document (*.pdf);;PNG Image (*.png);;JPEG Image (*.jpg)"
+        else:
+            default_name = "manga_page_translated.png"
+            file_filter = "PNG Image (*.png);;JPEG Image (*.jpg);;WebP Image (*.webp);;PDF Document (*.pdf)"
+
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "导出当前已翻译页面",
-            "manga_page_translated.png",
-            "PNG Image (*.png);;JPEG Image (*.jpg);;WebP Image (*.webp);;PDF Document (*.pdf)"
+            default_name,
+            file_filter,
         )
         if not file_path:
             return
@@ -2755,12 +2802,12 @@ class MainWindow(QMainWindow):
         if ext == ".pdf":
             success = MangaExporter.export_single_image_pdf(self.canvas_view.translated_cv, file_path)
         else:
-            fmt = "JPEG" if ext in [".jpg", ".jpeg"] else ("WEBP" if ext == ".webp" else "PNG")
+            _, fmt = MangaExporter.resolve_export_format(file_path, compressed=False)
             success = MangaExporter.export_single_image(
                 self.canvas_view.translated_cv,
                 file_path,
                 fmt=fmt,
-                compressed=self.config.style.export_compressed
+                compressed=compressed
             )
 
         if success:
