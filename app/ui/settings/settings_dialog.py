@@ -332,7 +332,7 @@ class SettingsDialog(QDialog):
         box_layout.addWidget(QLabel("OCR 引擎后端:"))
         self.ocr_engine_combo = QComboBox()
         _configure_combo_popup(self.ocr_engine_combo)
-        self.ocr_engine_combo.addItem("Comic-Text-Detector + Manga-OCR (纯 PyTorch 漫画专属，强烈推荐)", "ctd")
+        self.ocr_engine_combo.addItem("Comic-Text-Detector + 分语种智能识别 (纯 PyTorch 漫画专属，强烈推荐)", "ctd")
         self.ocr_engine_combo.addItem("PaddleOCR 3.x (通用中/日/英，国漫推荐)", "paddle")
         self.ocr_engine_combo.addItem("PaddleOCR + Manga-OCR (解耦模式)", "paddle_manga")
         self.ocr_engine_combo.addItem("EasyOCR (英文/欧美漫推荐)", "easyocr")
@@ -347,7 +347,7 @@ class SettingsDialog(QDialog):
             self.ocr_engine_combo.setCurrentText(current_eng)
         box_layout.addWidget(self.ocr_engine_combo)
 
-        hint_label = QLabel("💡 提示：纯 PyTorch 模式结合了 CTD 漫画检测器与分语种高精度识别（日文 Manga-OCR / 英文 PP-OCRv6 / 中文 PP-OCRv5 Server），全 CUDA 加速且无需额外 Paddle GPU 环境。")
+        hint_label = QLabel("💡 提示：纯 PyTorch 模式结合了 CTD 漫画检测器与分语种高精度识别（日文 Manga-OCR / 英文 PP-OCRv6 / 中文 PP-OCRv5 Server / 韩文 PP-OCRv5），源语言选“自动识别”时将按页面文字自动分流，全 CUDA 加速且无需额外 Paddle GPU 环境。")
         hint_label.setWordWrap(True)
         hint_label.setStyleSheet("color: #8E8E93; font-size: 11px; padding: 2px 0px;")
         box_layout.addWidget(hint_label)

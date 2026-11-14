@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import math
 try:
@@ -8,7 +9,7 @@ except ImportError:
 import uuid
 import numpy as np
 import cv2
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Sequence
 
 try:
     from app.core.ocr.base import merge_adjacent_boxes, calculate_polygon_angle, classify_ocr_block_type
@@ -429,6 +430,65 @@ def rotate_crop_upright(crop: np.ndarray, angle: float) -> Tuple[np.ndarray, Opt
     return rotated, rot_mat
 
 
+def _count_scripts(text: str) -> Tuple[int, int, int, int]:
+    """Counts (hangul, kana, hanzi, latin) characters in a text sample."""
+    hangul = kana = hanzi = latin = 0
+    for c in text:
+        if ('\uac00' <= c <= '\ud7af') or ('\u1100' <= c <= '\u11ff') or ('\u3130' <= c <= '\u318f'):
+            hangul += 1
+        elif ('\u3040' <= c <= '\u309f') or ('\u30a0' <= c <= '\u30ff'):
+            kana += 1
+        elif '\u4e00' <= c <= '\u9fff':
+            hanzi += 1
+        elif ('a' <= c <= 'z') or ('A' <= c <= 'Z'):
+            latin += 1
+    return hangul, kana, hanzi, latin
+
+
+def _classify_script_language(samples: Sequence[str], default_lang: str = "ja") -> Tuple[bool, str]:
+    """
+    Classifies page or box text samples into ('en' | 'ko' | 'chs' | 'ja').
+    Returns (is_english, canonical_lang_code).
+    """
+    cleaned = [str(s).strip() for s in samples if s and str(s).strip()]
+    if not cleaned:
+        return False, default_lang
+
+    combined = " ".join(cleaned)
+    total_hangul, total_kana, total_hanzi, _ = _count_scripts(combined)
+    total_cjk = total_kana + total_hanzi
+    latin_words = re.findall(r'[a-zA-Z]{2,}', combined)
+    distinct_words = set(w.lower() for w in latin_words)
+    total_latin = sum(len(w) for w in latin_words)
+
+    def _pick_non_en_lang() -> str:
+        if total_hangul >= 2 or (total_hangul >= 1 and total_kana == 0 and total_hanzi == 0):
+            return "ko"
+        if total_kana > 0:
+            return "ja"
+        if total_hanzi >= 3:
+            return "chs"
+        return default_lang
+
+    for s_txt in cleaned:
+        s_hg, s_kn, s_hz, s_lat = _count_scripts(s_txt)
+        s_cjk = s_kn + s_hz
+        if s_hg >= 2 and s_lat == 0:
+            return False, "ko"
+        if s_cjk >= 3 and s_lat == 0:
+            return False, _pick_non_en_lang()
+        if (s_cjk >= 1 or s_hg >= 1) and total_latin < 8:
+            return False, _pick_non_en_lang()
+
+    if total_hangul == 0 and (total_cjk <= 2 or total_latin >= total_cjk * 5) and (
+        (len(distinct_words) >= 3 and total_latin >= 10) or
+        (len(distinct_words) >= 2 and total_latin >= 8 and len(latin_words) >= 3)
+    ):
+        return True, "en"
+
+    return False, _pick_non_en_lang()
+
+
 class OCREngine:
     def __init__(
         self,
@@ -818,17 +878,40 @@ class OCREngine:
 
         return self._maybe_apply_vlm_fallback(crop, txt, conf, norm_lang)
 
+    def _probe_korean_boxes(
+        self,
+        image: np.ndarray,
+        targets: Sequence[Optional[Dict[str, Any]]],
+        min_conf: float = 0.35,
+    ) -> Tuple[List[str], float]:
+        """Lightweight Korean probe via korean_ppocr_v5 when En/CJK probe has no clear non-Hangul script."""
+        try:
+            ko_rec = self._get_transformer_rec("korean_ppocr_v5")
+        except Exception:
+            return [], 0.0
+
+        texts: List[str] = []
+        max_conf = 0.0
+        for box in targets:
+            try:
+                t_ko, c_ko = ko_rec.recognize_box(image, box=box)
+                if t_ko and c_ko >= min_conf:
+                    texts.append(t_ko)
+                    max_conf = max(max_conf, float(c_ko))
+            except Exception:
+                continue
+        return texts, max_conf
+
     def detect_page_language(
         self,
         image: np.ndarray,
         candidate_boxes: Optional[List[Dict[str, Any]]] = None
     ) -> Tuple[bool, str]:
         """
-        Detects whether the image is an English manga page:
-        1. If self.lang explicitly specifies a language (not auto):
+        Detects the primary language of a page in auto mode ('en', 'ko', 'chs', 'ja'):
+        1. If self.is_manual or self.lang explicitly specifies English or another language:
            Strictly respects user configuration!
-           Returns (True, 'en') if English, otherwise (False, norm_lang).
-        2. In auto mode: runs fast sampling on candidate boxes or whole page using EasyOCR.
+        2. In auto mode: runs fast sampling on candidate boxes (or whole page) and classifies script.
         3. Returns (is_english, detected_lang).
         """
         norm_lang = self.normalize_lang(self.lang)
@@ -838,31 +921,53 @@ class OCREngine:
             # Explicit non-English language requested by user; do NOT override!
             return False, norm_lang
 
-        if candidate_boxes:
-            for b in candidate_boxes:
-                b_t = str(b.get("text", "")).strip()
-                b_cjk = sum(1 for c in b_t if ('\u4e00' <= c <= '\u9fff') or ('\u3040' <= c <= '\u309f') or ('\u30a0' <= c <= '\u30ff'))
-                b_lat = sum(1 for c in b_t if ('a' <= c <= 'z' or 'A' <= c <= 'Z'))
-                if b_cjk >= 3 and b_lat == 0:
-                    return False, str(self.lang)
+        box_texts = [str(b.get("text", "")).strip() for b in (candidate_boxes or []) if str(b.get("text", "")).strip()]
+        if box_texts:
+            has_strong_non_latin = any(
+                (hg >= 2 and lat == 0) or ((kn + hz) >= 3 and lat == 0)
+                for hg, kn, hz, lat in (_count_scripts(t) for t in box_texts)
+            )
+            if has_strong_non_latin:
+                return _classify_script_language(box_texts, default_lang="ja")
 
-        sampled_texts = []
+        sampled_texts: List[str] = []
 
         if candidate_boxes and not self._has_mock_easyocr() and self.rec_mode != "easyocr":
             try:
-                probe_rec = self._get_transformer_rec(getattr(self, "en_recognizer", "ppocr_v6") if getattr(self, "en_recognizer", "ppocr_v6") in ("ppocr_v6", "ppocr_v5_server") else "ppocr_v6")
+                en_choice = getattr(self, "en_recognizer", "ppocr_v6")
+                probe_key = en_choice if en_choice in ("ppocr_v6", "ppocr_v5_server") else "ppocr_v6"
+                probe_rec = self._get_transformer_rec(probe_key)
                 sorted_probe = sorted(
                     candidate_boxes,
                     key=lambda b: (b.get("xmax", 0) - b.get("xmin", 0)) * (b.get("ymax", 0) - b.get("ymin", 0)),
                     reverse=True
                 )
-                for b in sorted_probe[:4]:
-                    w_b = b.get("xmax", 0) - b.get("xmin", 0)
-                    h_b = b.get("ymax", 0) - b.get("ymin", 0)
-                    if (w_b >= 25 and h_b >= 10) or (w_b >= 10 and h_b >= 25):
-                        t_probe, c_probe = probe_rec.recognize_box(image, box=b)
-                        if t_probe and c_probe >= 0.25:
-                            sampled_texts.append(t_probe)
+                probe_targets = [
+                    b for b in sorted_probe[:4]
+                    if ((b.get("xmax", 0) - b.get("xmin", 0)) >= 25 and (b.get("ymax", 0) - b.get("ymin", 0)) >= 10)
+                    or ((b.get("xmax", 0) - b.get("xmin", 0)) >= 10 and (b.get("ymax", 0) - b.get("ymin", 0)) >= 25)
+                ]
+                probe_max_conf = 0.0
+                for b in probe_targets:
+                    t_probe, c_probe = probe_rec.recognize_box(image, box=b)
+                    if t_probe and c_probe >= 0.25:
+                        sampled_texts.append(t_probe)
+                        probe_max_conf = max(probe_max_conf, float(c_probe))
+
+                # PP-OCRv6 / PP-OCRv5_server lack Hangul glyphs; probe Korean only when primary output is weak/ambiguous.
+                if probe_targets:
+                    _, p_kn, p_hz, _ = _count_scripts(" ".join(sampled_texts))
+                    p_en_words = re.findall(r'[a-zA-Z]{2,}', " ".join(sampled_texts))
+                    has_clear_primary = (
+                        p_kn >= 2
+                        or (p_hz >= 4 and probe_max_conf >= 0.55)
+                        or (sum(len(w) for w in p_en_words) >= 8 and len(set(w.lower() for w in p_en_words)) >= 2)
+                    )
+                    if not has_clear_primary:
+                        ko_texts, ko_max_conf = self._probe_korean_boxes(image, probe_targets[:2], min_conf=0.35)
+                        ko_hg, _, _, _ = _count_scripts(" ".join(ko_texts))
+                        if ko_hg >= 2 and ko_max_conf >= max(0.45, probe_max_conf):
+                            sampled_texts = ko_texts + sampled_texts
             except Exception:
                 sampled_texts = []
 
@@ -893,8 +998,8 @@ class OCREngine:
                                 if len(r) > 1 and str(r[1]).strip():
                                     txt_r = str(r[1]).strip()
                                     conf_r = float(r[2]) if len(r) > 2 else 1.0
-                                    cjk_r = sum(1 for c in txt_r if ('\u4e00' <= c <= '\u9fff') or ('\u3040' <= c <= '\u309f') or ('\u30a0' <= c <= '\u30ff'))
-                                    lat_r = sum(1 for c in txt_r if ('a' <= c <= 'z' or 'A' <= c <= 'Z'))
+                                    hg_r, kn_r, hz_r, lat_r = _count_scripts(txt_r)
+                                    cjk_r = kn_r + hz_r + hg_r
                                     if cjk_r > 0 and cjk_r >= lat_r and conf_r < 0.25:
                                         continue
                                     if cjk_r >= 2 and conf_r >= 0.25 and lat_r <= cjk_r:
@@ -926,35 +1031,7 @@ class OCREngine:
                     if len(r) > 1 and str(r[1]).strip():
                         sampled_texts.append(str(r[1]).strip())
 
-        box_texts = [str(b.get("text", "")).strip() for b in (candidate_boxes or []) if str(b.get("text", "")).strip()]
-        combined_text = " ".join(sampled_texts + box_texts)
-        import re
-        latin_words = re.findall(r'[a-zA-Z]{2,}', combined_text)
-        distinct_words = set(w.lower() for w in latin_words)
-        cjk_chars = [
-            c for c in combined_text
-            if ('\u4e00' <= c <= '\u9fff') or ('\u3040' <= c <= '\u309f') or ('\u30a0' <= c <= '\u30ff')
-        ]
-        total_latin = sum(len(w) for w in latin_words)
-        total_cjk = len(cjk_chars)
-
-        # Check if any individual text sample or box is an authentic CJK bubble (>= 3 CJK chars with 0 Latin letters)
-        for s_txt in (sampled_texts + box_texts):
-            s_cjk = sum(1 for c in s_txt if ('\u4e00' <= c <= '\u9fff') or ('\u3040' <= c <= '\u309f') or ('\u30a0' <= c <= '\u30ff'))
-            s_lat = sum(1 for c in s_txt if ('a' <= c <= 'z' or 'A' <= c <= 'Z'))
-            if s_cjk >= 3 and s_lat == 0:
-                return False, str(self.lang)
-            if s_cjk >= 1 and total_latin < 8:
-                return False, str(self.lang)
-
-        # Require substantial English evidence (allowing <= 2 stray CJK noise chars from auto detector when Latin dominates)
-        if (total_cjk <= 2 or total_latin >= total_cjk * 5) and (
-            (len(distinct_words) >= 3 and total_latin >= 10) or
-            (len(distinct_words) >= 2 and total_latin >= 8 and len(latin_words) >= 3)
-        ):
-            return True, "en"
-
-        return False, str(self.lang)
+        return _classify_script_language(sampled_texts + box_texts, default_lang="ja")
 
     def _read_block_easyocr(self, crop: np.ndarray, angle: float = 0.0, is_english: bool = True, lang: Optional[str] = None) -> Tuple[str, float]:
         """
@@ -1025,12 +1102,22 @@ class OCREngine:
             except Exception:
                 return self._read_block_easyocr(crop, angle=angle, is_english=False, lang="ja")
         else:
-            # Auto mode
+            # Auto mode: route across English, Chinese, Korean, and Japanese
             txt_en, conf_en = self._recognize_region(crop, norm_lang="en", box=None, angle=angle)
-            latin_cnt = sum(1 for c in txt_en if ('a' <= c <= 'z' or 'A' <= c <= 'Z'))
-            cjk_cnt = sum(1 for c in txt_en if ('\u4e00' <= c <= '\u9fff') or ('\u3040' <= c <= '\u30ff'))
-            if latin_cnt >= 4 and conf_en >= 0.35 and cjk_cnt <= 2:
+            hg_cnt, kn_cnt, hz_cnt, latin_cnt = _count_scripts(txt_en)
+            cjk_cnt = kn_cnt + hz_cnt
+            if latin_cnt >= 4 and conf_en >= 0.35 and cjk_cnt <= 2 and hg_cnt == 0:
                 return txt_en, conf_en
+            if hz_cnt >= 2 and kn_cnt == 0 and hg_cnt == 0 and conf_en >= 0.45:
+                if self._get_recognizer_choice("chs") != self._get_recognizer_choice("en"):
+                    txt_zh, conf_zh = self._recognize_region(crop, norm_lang="chs", box=None, angle=angle)
+                    if txt_zh and conf_zh >= 0.35:
+                        return txt_zh, conf_zh
+                return self._maybe_apply_vlm_fallback(crop, txt_en, conf_en, "chs")
+            if kn_cnt == 0 and hz_cnt < 2 and latin_cnt < 4 and conf_en < 0.45 and not self._has_mock_easyocr():
+                ko_texts, ko_conf = self._probe_korean_boxes(crop, [None], min_conf=0.60)
+                if ko_texts and _count_scripts(ko_texts[0])[0] >= 2:
+                    return self._maybe_apply_vlm_fallback(crop, ko_texts[0], ko_conf, "ko")
             try:
                 if self._manga_ocr is None:
                     from app.core.ocr.manga_ocr_wrapper import get_manga_ocr
@@ -1119,11 +1206,12 @@ class OCREngine:
                     # Strictly follow user's manual source language setting
                     page_is_english = (norm_lang == "en")
                 else:
-                    page_is_english, _ = self.detect_page_language(image, raw_boxes)
+                    page_is_english, detected_auto_lang = self.detect_page_language(image, raw_boxes)
                     if page_is_english:
                         norm_lang = "en"
                     else:
-                        norm_lang = "ja"
+                        detected_norm = self.normalize_lang(detected_auto_lang)
+                        norm_lang = detected_norm if detected_norm in ("ko", "chs", "cht", "ja") else "ja"
 
                 effective_rec_lang = "en" if (page_is_english or norm_lang == "en") else norm_lang
                 ja_uses_custom = (

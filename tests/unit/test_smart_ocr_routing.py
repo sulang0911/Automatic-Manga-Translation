@@ -302,3 +302,143 @@ class TestSettingsDialogSmartOCRPersistence:
         assert reloaded.ocr.paddle_ocr_version == "PP-OCRv3"
         assert reloaded.ocr.vlm_fallback is True
         assert reloaded.ocr.vlm_conf_threshold == pytest.approx(0.65)
+
+    def test_ctd_engine_label_reflects_multilingual_smart_routing(self, qapp):
+        from app.ui.settings.settings_dialog import SettingsDialog
+
+        dlg = SettingsDialog(config=AppConfig())
+        ctd_idx = dlg.ocr_engine_combo.findData("ctd")
+        assert ctd_idx >= 0
+        label = dlg.ocr_engine_combo.itemText(ctd_idx)
+        assert "分语种智能识别" in label
+        assert "Manga-OCR" not in label
+
+
+class TestAutoSourceLangMultiScriptRouting:
+    def _make_ctd_auto_engine(self, probe_v6=None, rec_zh=None, rec_ko=None, manga_ocr=None):
+        eng = OCREngine(
+            engine_type="ctd",
+            use_gpu=False,
+            lang="auto",
+            is_manual=False,
+            en_recognizer="ppocr_v6",
+            zh_recognizer="ppocr_v5_server",
+            ja_recognizer="manga_ocr",
+        )
+        mock_ctd = MagicMock()
+        mock_ctd.detect.return_value = ([
+            {
+                "xmin": 20, "ymin": 20, "xmax": 120, "ymax": 80,
+                "text": "", "conf": 0.94,
+                "polygon": [[20, 20], [120, 20], [120, 80], [20, 80]],
+                "angle": 0.0,
+                "lines": [[[24, 24], [116, 24], [116, 76], [24, 76]]],
+            },
+            {
+                "xmin": 240, "ymin": 220, "xmax": 340, "ymax": 280,
+                "text": "", "conf": 0.93,
+                "polygon": [[240, 220], [340, 220], [340, 280], [240, 280]],
+                "angle": 0.0,
+                "lines": [[[244, 224], [336, 224], [336, 276], [244, 276]]],
+            },
+        ], None)
+        eng._ctd_detector = mock_ctd
+        if probe_v6 is not None:
+            eng._transformer_recognizers["ppocr_v6"] = probe_v6
+        if rec_zh is not None:
+            eng._transformer_recognizers["ppocr_v5_server"] = rec_zh
+        if rec_ko is not None:
+            eng._transformer_recognizers["korean_ppocr_v5"] = rec_ko
+        if manga_ocr is not None:
+            eng._manga_ocr = manga_ocr
+        return eng
+
+    def test_auto_routes_chinese_to_zh_recognizer_without_manga_ocr(self):
+        probe_v6 = MagicMock()
+        probe_v6.recognize_box.side_effect = [("今天天气真不错", 0.89), ("我们走吧", 0.87)]
+        rec_zh = MagicMock()
+        rec_zh.recognize_box.side_effect = [("今天天气真不错！", 0.96), ("我们走吧。", 0.95)]
+        mock_manga = MagicMock()
+
+        eng = self._make_ctd_auto_engine(probe_v6=probe_v6, rec_zh=rec_zh, manga_ocr=mock_manga)
+        img = np.full((320, 380, 3), 255, dtype=np.uint8)
+
+        blocks = eng.detect_and_recognize(img)
+        assert [b["original_text"] for b in blocks] == ["今天天气真不错！", "我们走吧。"]
+        assert rec_zh.recognize_box.call_count == 2
+        assert not mock_manga.recognize_crop.called
+
+    def test_auto_routes_korean_to_korean_recognizer_without_manga_ocr(self):
+        probe_v6 = MagicMock()
+        probe_v6.recognize_box.return_value = ("", 0.0)
+        rec_ko = MagicMock()
+        rec_ko.recognize_box.side_effect = [
+            ("오늘 뭐 해요?", 0.92), ("학교에 가요.", 0.91),
+            ("오늘 뭐 해요?", 0.94), ("학교에 가요.", 0.93),
+        ]
+        mock_manga = MagicMock()
+
+        eng = self._make_ctd_auto_engine(probe_v6=probe_v6, rec_ko=rec_ko, manga_ocr=mock_manga)
+        img = np.full((320, 380, 3), 255, dtype=np.uint8)
+
+        blocks = eng.detect_and_recognize(img)
+        assert [b["original_text"] for b in blocks] == ["오늘 뭐 해요?", "학교에 가요."]
+        assert not mock_manga.recognize_crop.called
+
+    def test_auto_routes_japanese_mixed_kanji_and_kana_to_manga_ocr(self):
+        probe_v6 = MagicMock()
+        probe_v6.recognize_box.side_effect = [("先生", 0.90), ("本当ですか？", 0.91)]
+        mock_manga = MagicMock()
+        mock_manga.recognize_crop.side_effect = ["先生！", "本当ですか？"]
+
+        eng = self._make_ctd_auto_engine(probe_v6=probe_v6, manga_ocr=mock_manga)
+        img = np.full((320, 380, 3), 255, dtype=np.uint8)
+
+        blocks = eng.detect_and_recognize(img)
+        assert mock_manga.recognize_crop.call_count == 2
+        assert set(b["original_text"] for b in blocks) == {"先生！", "本当ですか？"}
+
+    def test_auto_routes_english_to_en_recognizer(self):
+        probe_v6 = MagicMock()
+        probe_v6.recognize_box.side_effect = [
+            ("Wait a minute!", 0.92), ("Are you serious?", 0.93),
+            ("Wait a minute!", 0.95), ("Are you serious?", 0.96),
+        ]
+        mock_manga = MagicMock()
+
+        eng = self._make_ctd_auto_engine(probe_v6=probe_v6, manga_ocr=mock_manga)
+        img = np.full((320, 380, 3), 255, dtype=np.uint8)
+
+        blocks = eng.detect_and_recognize(img)
+        assert [b["original_text"] for b in blocks] == ["Wait a minute!", "Are you serious?"]
+        assert not mock_manga.recognize_crop.called
+
+    def test_recognize_crop_auto_routes_chinese_and_korean(self):
+        rec_v6 = MagicMock()
+        rec_zh = MagicMock()
+        rec_ko = MagicMock()
+        mock_manga = MagicMock()
+
+        eng = OCREngine(
+            engine_type="ctd", use_gpu=False, lang="auto", is_manual=False,
+            en_recognizer="ppocr_v6", zh_recognizer="ppocr_v5_server", ja_recognizer="manga_ocr",
+        )
+        eng._transformer_recognizers["ppocr_v6"] = rec_v6
+        eng._transformer_recognizers["ppocr_v5_server"] = rec_zh
+        eng._transformer_recognizers["korean_ppocr_v5"] = rec_ko
+        eng._manga_ocr = mock_manga
+
+        crop = np.full((40, 120, 3), 255, dtype=np.uint8)
+
+        rec_v6.recognize_box.return_value = ("你好世界", 0.85)
+        rec_zh.recognize_box.return_value = ("你好，世界！", 0.96)
+        txt_zh, conf_zh = eng.recognize_crop(crop)
+        assert txt_zh == "你好，世界！"
+        assert conf_zh == pytest.approx(0.96)
+
+        rec_v6.recognize_box.return_value = ("", 0.0)
+        rec_ko.recognize_box.return_value = ("안녕하세요!", 0.93)
+        txt_ko, conf_ko = eng.recognize_crop(crop)
+        assert txt_ko == "안녕하세요!"
+        assert conf_ko == pytest.approx(0.93)
+        assert not mock_manga.recognize_crop.called

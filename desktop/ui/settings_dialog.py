@@ -275,7 +275,7 @@ class SettingsDialog(QDialog):
         self.ocr_engine_combo = QComboBox()
         _configure_combo_popup(self.ocr_engine_combo)
         self.ocr_engine_combo.addItems([
-            "Comic-Text-Detector + Manga-OCR (纯 PyTorch 漫画专属，强烈推荐)",
+            "Comic-Text-Detector + 分语种智能识别 (纯 PyTorch 漫画专属，强烈推荐)",
             "PaddleOCR 3.x (通用中/日/英，国漫推荐)",
             "PaddleOCR + Manga-OCR (解耦模式)",
             "EasyOCR (PyTorch 通用 GPU 兼容)",
