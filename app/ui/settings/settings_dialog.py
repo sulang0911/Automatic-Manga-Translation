@@ -403,6 +403,7 @@ class SettingsDialog(QDialog):
         rec_layout.addWidget(QLabel("英文识别器 (English Recognizer):"))
         self.en_rec_combo = _build_data_combo([
             ("PP-OCRv6 Medium (PyTorch CUDA，英文对话/CG推荐)", "ppocr_v6"),
+            ("OpenOCR SVTRv2 Server (PyTorch CUDA，备选切换)", "svtrv2"),
             ("PP-OCRv5 Server (PyTorch CUDA)", "ppocr_v5_server"),
             ("EasyOCR (旧版兼容)", "easyocr"),
         ], getattr(self.config.ocr, "en_recognizer", "ppocr_v6"))

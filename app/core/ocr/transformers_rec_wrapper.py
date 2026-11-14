@@ -10,7 +10,7 @@ import gc
 import logging
 import re
 from collections import OrderedDict
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 # Supported lightweight pure-PyTorch text-line recognizers (no PaddlePaddle CUDA needed)
 TRANSFORMER_OCR_MODELS: Dict[str, str] = {
+    "svtrv2": "topdu/OpenOCR",
     "ppocr_v6": "PaddlePaddle/PP-OCRv6_medium_rec_safetensors",
     "ppocr_v5_server": "PaddlePaddle/PP-OCRv5_server_rec_safetensors",
     "korean_ppocr_v5": "PaddlePaddle/korean_PP-OCRv5_mobile_rec_safetensors",
@@ -73,6 +74,57 @@ def join_recognized_lines(lines: Sequence[str]) -> str:
     return out.strip()
 
 
+def expand_condensed_strip(
+    crop_bgr: np.ndarray,
+    scale_x: float = 1.45,
+    min_aspect: float = 6.0,
+    force: bool = False,
+) -> Tuple[np.ndarray, bool]:
+    """Widens condensed/long horizontal dialogue strips so CTC maintains >=1.5 frames per glyph."""
+    h, w = crop_bgr.shape[:2]
+    if h <= 0 or w <= 0 or (not force and (w / float(h)) < min_aspect):
+        return crop_bgr, False
+    new_w = max(w + 1, int(round(w * scale_x)))
+    return cv2.resize(crop_bgr, (new_w, h), interpolation=cv2.INTER_CUBIC), True
+
+
+def refine_condensed_line(
+    orig_crop: np.ndarray,
+    text: str,
+    conf: float,
+    infer_fn: Callable[[np.ndarray], Tuple[str, float]],
+) -> Tuple[str, float]:
+    """Retries CTC recognition with 1.45x horizontal expansion when a strip appears under-sampled."""
+    h, w = orig_crop.shape[:2]
+    if h <= 0 or (w / float(h)) < 3.5:
+        return text, conf
+    stripped = (text or "").strip()
+    if stripped and conf >= 0.78 and len(stripped) >= (w / max(1.0, h * 1.4)):
+        return text, conf
+    wider, _ = expand_condensed_strip(orig_crop, force=True)
+    alt_text, alt_conf = infer_fn(wider)
+    if alt_text and (not stripped or alt_conf > conf + 0.03 or len(alt_text) > len(stripped) * 1.4):
+        return alt_text, alt_conf
+    return text, conf
+
+
+def recognize_box_lines(
+    image_bgr: np.ndarray,
+    box: Optional[Dict[str, Any]],
+    recognize_lines_fn: Callable[[Sequence[np.ndarray]], List[Tuple[str, float]]],
+) -> Tuple[str, float]:
+    """Extracts lines for a speech bubble/box, recognizes them, and merges text + mean confidence."""
+    strips = extract_line_crops_for_box(image_bgr, box=box)
+    if not strips:
+        return "", 0.0
+    line_preds = recognize_lines_fn(strips)
+    texts = [t for t, _ in line_preds if t]
+    confs = [c for t, c in line_preds if t]
+    if not texts:
+        return "", 0.0
+    return join_recognized_lines(texts), float(sum(confs) / len(confs))
+
+
 def _rotate_line_patch(img_bgr: np.ndarray, pts: np.ndarray) -> np.ndarray:
     """Extracts and deskews a text-line polygon crop into an upright horizontal strip."""
     h_img, w_img = img_bgr.shape[:2]
@@ -85,26 +137,34 @@ def _rotate_line_patch(img_bgr: np.ndarray, pts: np.ndarray) -> np.ndarray:
     if x2 <= x1 or y2 <= y1:
         return np.empty((0, 0, 3), dtype=np.uint8)
 
-    patch = img_bgr[y1:y2, x1:x2]
-    ph, pw = patch.shape[:2]
+    pw, ph = x2 - x1, y2 - y1
     # Vertical CJK line strip: rotate 90 deg CCW so SVTR reads left-to-right
     if ph > pw * 1.45 and ph >= 32:
-        return cv2.rotate(patch, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        return cv2.rotate(img_bgr[y1:y2, x1:x2], cv2.ROTATE_90_COUNTERCLOCKWISE)
 
     # Orient along the longest box edge (immune to OpenCV 4.x minAreaRect 0/90-deg axis swaps)
     rect = cv2.minAreaRect(pts.astype(np.float32))
+    (rcx, rcy), _, _ = rect
     bp = cv2.boxPoints(rect)
     e0 = bp[1] - bp[0]
     e1 = bp[2] - bp[1]
-    vec = e0 if float(np.dot(e0, e0)) >= float(np.dot(e1, e1)) else e1
+    if float(np.dot(e0, e0)) >= float(np.dot(e1, e1)):
+        vec, long_len, short_len = e0, float(np.linalg.norm(e0)), float(np.linalg.norm(e1))
+    else:
+        vec, long_len, short_len = e1, float(np.linalg.norm(e1)), float(np.linalg.norm(e0))
     if vec[0] < 0:
         vec = -vec
     angle = float(np.degrees(np.arctan2(vec[1], vec[0])))
 
-    if abs(angle) >= 3.0 and pw >= 16 and ph >= 12:
-        mat = cv2.getRotationMatrix2D((pw / 2.0, ph / 2.0), angle, 1.0)
-        return cv2.warpAffine(patch, mat, (pw, ph), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-    return patch
+    if abs(angle) >= 3.0 and long_len >= 16 and short_len >= 12:
+        # Warp tightly around rotated box center so adjacent stacked tilted lines aren't captured
+        tw = max(16, int(np.ceil(long_len)) + 6)
+        th = max(12, int(np.ceil(short_len)) + 6)
+        mat = cv2.getRotationMatrix2D((float(rcx), float(rcy)), angle, 1.0)
+        mat[0, 2] += (tw / 2.0) - float(rcx)
+        mat[1, 2] += (th / 2.0) - float(rcy)
+        return cv2.warpAffine(img_bgr, mat, (tw, th), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+    return img_bgr[y1:y2, x1:x2]
 
 
 def _split_horizontal_text_lines(crop_bgr: np.ndarray) -> List[np.ndarray]:
@@ -178,9 +238,11 @@ def extract_line_crops_for_box(image_bgr: np.ndarray, box: Optional[Dict[str, An
             lh = float(pts[:, 1].max() - pts[:, 1].min())
             if lh > lw * 1.45:
                 vertical_votes += 1
+            rect_dims = cv2.minAreaRect(pts)[1]
+            thick = float(min(rect_dims)) if min(rect_dims) > 1.0 else lh
             cx = float(pts[:, 0].mean())
             cy = float(pts[:, 1].mean())
-            parsed_lines.append((cx, cy, lw, lh, pts))
+            parsed_lines.append((cx, cy, lw, thick, pts))
 
         if parsed_lines:
             is_vertical_block = vertical_votes > len(parsed_lines) / 2.0
@@ -191,26 +253,38 @@ def extract_line_crops_for_box(image_bgr: np.ndarray, box: Optional[Dict[str, An
                 parsed_lines.sort(key=lambda item: (item[1], item[0]))
                 rows: List[List[Tuple[float, float, float, float, np.ndarray]]] = []
                 for item in parsed_lines:
+                    ix1 = float(item[4][:, 0].min())
+                    ix2 = float(item[4][:, 0].max())
                     placed = False
                     for row in rows:
                         ref_cy = sum(r[1] for r in row) / len(row)
                         ref_h = max(r[3] for r in row)
-                        if abs(item[1] - ref_cy) <= max(6.0, min(item[3], ref_h) * 0.55):
-                            row.append(item)
-                            placed = True
-                            break
+                        if abs(item[1] - ref_cy) > max(6.0, min(item[3], ref_h) * 0.55):
+                            continue
+                        # Stacked lines overlap heavily in X; only co-linear fragments belong on the same row
+                        if any(
+                            (min(ix2, float(r[4][:, 0].max())) - max(ix1, float(r[4][:, 0].min())))
+                            > max(12.0, min(item[2], r[2]) * 0.30)
+                            for r in row
+                        ):
+                            continue
+                        row.append(item)
+                        placed = True
+                        break
                     if not placed:
                         rows.append([item])
 
                 rows.sort(key=lambda r: sum(x[1] for x in r) / len(r))
+                box_w = float(max(0, (box or {}).get("xmax", 0) - (box or {}).get("xmin", 0)))
                 merged_pts_list: List[np.ndarray] = []
                 for row in rows:
                     row.sort(key=lambda x: x[4][:, 0].min())
                     cur_pts = row[0][4]
                     for nxt in row[1:]:
+                        cur_w = float(cur_pts[:, 0].max() - cur_pts[:, 0].min())
                         gap_x = float(nxt[4][:, 0].min() - cur_pts[:, 0].max())
                         row_h = float(max(cur_pts[:, 1].max() - cur_pts[:, 1].min(), nxt[3]))
-                        if gap_x <= max(24.0, row_h * 1.5):
+                        if -max(12.0, min(cur_w, nxt[2]) * 0.25) <= gap_x <= max(48.0, row_h * 8.0, box_w * 0.65):
                             cur_pts = np.vstack([cur_pts, nxt[4]])
                         else:
                             merged_pts_list.append(cur_pts)
@@ -262,57 +336,63 @@ class TransformersOCRRecognizer:
 
         self._device = "cuda" if (self.use_gpu and torch.cuda.is_available()) else "cpu"
         logger.info("Loading Transformers OCR model '%s' on %s...", self.repo_id, self._device)
-        self._processor = AutoImageProcessor.from_pretrained(self.repo_id)
-        self._model = AutoModelForTextRecognition.from_pretrained(self.repo_id).to(self._device).eval()
+        try:
+            self._processor = AutoImageProcessor.from_pretrained(self.repo_id, local_files_only=True)
+            self._model = AutoModelForTextRecognition.from_pretrained(self.repo_id, local_files_only=True).to(self._device).eval()
+        except Exception:
+            self._processor = AutoImageProcessor.from_pretrained(self.repo_id)
+            self._model = AutoModelForTextRecognition.from_pretrained(self.repo_id).to(self._device).eval()
         logger.info("Transformers OCR model '%s' ready.", self.repo_id)
+
+    def _infer_pil(self, batch_pils: Sequence[Any]) -> List[Tuple[str, float]]:
+        import torch
+
+        inputs = self._processor(images=list(batch_pils), return_tensors="pt").to(self._device)
+        with torch.no_grad():
+            outputs = self._model(**inputs)
+        preds = self._processor.post_process_text_recognition(outputs)
+        decoded: List[Tuple[str, float]] = []
+        for item in preds:
+            text = (item.get("text") or "").strip() if isinstance(item, dict) else str(item).strip()
+            score = float(item.get("score", 0.0) or 0.0) if isinstance(item, dict) else 0.0
+            decoded.append((text, score))
+        return decoded
 
     def recognize_lines(self, line_crops_bgr: Sequence[np.ndarray], batch_size: int = 1) -> List[Tuple[str, float]]:
         """Recognizes a sequence of upright single-line BGR crops (batch_size=1 avoids variable-width padding noise)."""
-        valid_indices: List[int] = []
-        pil_images: List[Any] = []
+        valid: List[Tuple[int, np.ndarray, Any, bool]] = []
         from PIL import Image
 
+        use_condensed_fix = (self.model_key == "ppocr_v6")
         for idx, crop in enumerate(line_crops_bgr):
             if crop is None or crop.size == 0 or crop.shape[0] < 4 or crop.shape[1] < 4:
                 continue
-            rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-            pil_images.append(Image.fromarray(rgb))
-            valid_indices.append(idx)
+            prepped, stretched = expand_condensed_strip(crop) if use_condensed_fix else (crop, False)
+            rgb = cv2.cvtColor(prepped, cv2.COLOR_BGR2RGB)
+            valid.append((idx, crop, Image.fromarray(rgb), stretched))
 
         results: List[Tuple[str, float]] = [("", 0.0) for _ in line_crops_bgr]
-        if not pil_images:
+        if not valid:
             return results
 
         self._ensure_loaded()
-        import torch
-
-        decoded: List[Tuple[str, float]] = []
-        for start in range(0, len(pil_images), batch_size):
-            batch_pils = pil_images[start : start + batch_size]
-            inputs = self._processor(images=batch_pils, return_tensors="pt").to(self._device)
-            with torch.no_grad():
-                outputs = self._model(**inputs)
-            preds = self._processor.post_process_text_recognition(outputs)
-            for item in preds:
-                text = (item.get("text") or "").strip() if isinstance(item, dict) else str(item).strip()
-                score = float(item.get("score", 0.0) or 0.0) if isinstance(item, dict) else 0.0
-                decoded.append((text, score))
-
-        for pos, (text, score) in zip(valid_indices, decoded):
-            results[pos] = (text, score)
+        for start in range(0, len(valid), batch_size):
+            chunk = valid[start : start + batch_size]
+            decoded = self._infer_pil([item[2] for item in chunk])
+            for (pos, orig_crop, _, stretched), (text, score) in zip(chunk, decoded):
+                if use_condensed_fix and not stretched:
+                    text, score = refine_condensed_line(
+                        orig_crop,
+                        text,
+                        score,
+                        lambda img: self._infer_pil([Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))])[0],
+                    )
+                results[pos] = (text, score)
         return results
 
     def recognize_box(self, image_bgr: np.ndarray, box: Optional[Dict[str, Any]] = None) -> Tuple[str, float]:
         """Recognizes an entire speech bubble/box by extracting and joining its constituent text lines."""
-        strips = extract_line_crops_for_box(image_bgr, box=box)
-        if not strips:
-            return "", 0.0
-        line_preds = self.recognize_lines(strips)
-        texts = [t for t, _ in line_preds if t]
-        confs = [c for t, c in line_preds if t]
-        if not texts:
-            return "", 0.0
-        return join_recognized_lines(texts), float(sum(confs) / len(confs))
+        return recognize_box_lines(image_bgr, box, self.recognize_lines)
 
     def unload(self):
         if self._model is not None:
@@ -326,8 +406,8 @@ class TransformersOCRRecognizer:
         _release_torch_memory()
 
 
-def get_transformers_ocr(model_key: str = "ppocr_v6", use_gpu: bool = True) -> TransformersOCRRecognizer:
-    """Returns a cached TransformersOCRRecognizer, evicting LRU models to protect 8GB RAM."""
+def get_transformers_ocr(model_key: str = "ppocr_v6", use_gpu: bool = True) -> Any:
+    """Returns a cached pure-PyTorch text-line recognizer, evicting LRU models to protect 8GB RAM."""
     import torch
     resolved_dev = "cuda" if (use_gpu and torch.cuda.is_available()) else "cpu"
     cache_key = (model_key, resolved_dev)
@@ -340,6 +420,10 @@ def get_transformers_ocr(model_key: str = "ppocr_v6", use_gpu: bool = True) -> T
         _, oldest = _GLOBAL_REC_CACHE.popitem(last=False)
         oldest.unload()
 
-    rec = TransformersOCRRecognizer(model_key=model_key, use_gpu=use_gpu)
+    if model_key == "svtrv2":
+        from app.core.ocr.svtrv2_wrapper import SVTRv2OCRRecognizer
+        rec: Any = SVTRv2OCRRecognizer(model_key=model_key, use_gpu=use_gpu)
+    else:
+        rec = TransformersOCRRecognizer(model_key=model_key, use_gpu=use_gpu)
     _GLOBAL_REC_CACHE[cache_key] = rec
     return rec

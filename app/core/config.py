@@ -80,7 +80,7 @@ class OCRConfig:
     ensemble_recognition: bool = True
     recognize_onomatopoeia: bool = False
     rec_mode: str = "smart"  # "smart" (per-language best), "easyocr", "paddle_v5", "manga_ocr"
-    en_recognizer: str = "ppocr_v6"  # "ppocr_v6" | "ppocr_v5_server" | "easyocr"
+    en_recognizer: str = "ppocr_v6"  # "ppocr_v6" | "svtrv2" | "ppocr_v5_server" | "easyocr"
     zh_recognizer: str = "ppocr_v5_server"  # "ppocr_v5_server" | "ppocr_v6" | "easyocr"
     ja_recognizer: str = "manga_ocr"  # "manga_ocr" | "ppocr_v5_server" | "easyocr"
     paddle_ocr_version: str = "PP-OCRv5"  # "PP-OCRv5" | "PP-OCRv3"

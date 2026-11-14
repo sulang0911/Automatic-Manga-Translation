@@ -11,13 +11,16 @@ import numpy as np
 import pytest
 
 from app.core.config import APP_ROOT, AppConfig, OCRConfig, resolve_app_path
+from app.core.ocr.svtrv2_wrapper import SVTRv2OCRRecognizer
 from app.core.ocr.transformers_rec_wrapper import (
     _GLOBAL_REC_CACHE,
     _MAX_CACHED_MODELS,
     TransformersOCRRecognizer,
+    expand_condensed_strip,
     extract_line_crops_for_box,
     get_transformers_ocr,
     join_recognized_lines,
+    refine_condensed_line,
 )
 from app.core.ocr.vlm_ocr import recognize_crop_with_vlm
 from app.core.pipeline.utils import build_ocr_engine_kwargs
@@ -67,6 +70,7 @@ class TestAppRootResolution:
         assert kw["vlm_fallback"] is True
         assert kw["vlm_conf_threshold"] == pytest.approx(0.68)
         assert kw["vlm_llm_config"].model == "gpt-4o"
+        assert build_ocr_engine_kwargs({}, lang="en", is_manual=True)["en_recognizer"] == "ppocr_v6"
 
 
 class TestLineExtractionAndCache:
@@ -118,6 +122,67 @@ class TestLineExtractionAndCache:
         assert strips[0].shape[1] > 500
         assert strips[0].shape[0] < 40
 
+    def test_extract_line_crops_merges_large_inline_row_gap(self):
+        # Regression test for CG wide boxes where CTD emits outer words with a 94px middle gap.
+        img = np.full((60, 420, 3), 255, dtype=np.uint8)
+        box = {
+            "xmin": 0, "ymin": 0, "xmax": 400, "ymax": 28,
+            "lines": [
+                [[168, 4], [369, 4], [369, 22], [168, 22]],
+                [[29, 5], [74, 5], [74, 19], [29, 19]],
+            ],
+        }
+        strips = extract_line_crops_for_box(img, box=box)
+        assert len(strips) == 1
+        assert strips[0].shape[1] >= 340
+
+    def test_extract_line_crops_keeps_stacked_tilted_lines_separate(self):
+        # Regression test for tilted (-17 deg) stacked lines whose X-intervals overlap heavily.
+        img = np.full((600, 800, 3), 255, dtype=np.uint8)
+        box = {
+            "xmin": 75, "ymin": 37, "xmax": 615, "ymax": 423,
+            "lines": [
+                [[79, 142], [486, 45], [516, 209], [109, 302]],
+                [[101, 251], [550, 78], [610, 265], [161, 437]],
+            ],
+        }
+        strips = extract_line_crops_for_box(img, box=box)
+        assert len(strips) == 2
+        assert all(s.shape[0] < s.shape[1] for s in strips)
+        assert all(s.shape[0] < 240 for s in strips)
+
+    def test_qr_filter_high_res_downscale_preserves_coords(self):
+        import cv2
+        from app.core.ocr.qr_filter import QRCodeFilter
+
+        enc = cv2.QRCodeEncoder.create()
+        qr = cv2.cvtColor(cv2.resize(enc.encode("https://example.com/4k"), (240, 240), interpolation=cv2.INTER_NEAREST), cv2.COLOR_GRAY2BGR)
+        canvas = np.full((2160, 3840, 3), 240, dtype=np.uint8)
+        canvas[200:440, 300:540] = qr
+        regions = QRCodeFilter().detect_regions(canvas)
+        assert len(regions) >= 1
+        x1, y1, x2, y2 = regions[0].bbox
+        assert abs(x1 - 300) <= 20 and abs(y1 - 200) <= 20
+        assert abs(x2 - 540) <= 20 and abs(y2 - 440) <= 20
+
+    def test_condensed_strip_expansion_and_retry(self):
+        wide_crop = np.full((23, 369, 3), 255, dtype=np.uint8)
+        prepped, stretched = expand_condensed_strip(wide_crop)
+        assert stretched is True
+        assert prepped.shape[0] == 23 and prepped.shape[1] > 500
+
+        mid_crop = np.full((30, 130, 3), 255, dtype=np.uint8)
+        calls = []
+
+        def fake_infer(img):
+            calls.append(img.shape[1])
+            return ("There is a fine current", 0.94)
+
+        txt, conf = refine_condensed_line(mid_crop, "f", 0.65, fake_infer)
+        assert txt == "There is a fine current"
+        assert conf == pytest.approx(0.94)
+        assert len(calls) == 1 and calls[0] > 180
+
     def test_join_recognized_lines_handles_en_cjk_and_speakers(self):
         assert join_recognized_lines(["Very well.", "Take off everything"]) == "Very well. Take off everything"
         assert join_recognized_lines(["今天天气", "真好啊"]) == "今天天气真好啊"
@@ -127,18 +192,52 @@ class TestLineExtractionAndCache:
         _GLOBAL_REC_CACHE.clear()
         unload_calls = []
 
-        r1 = get_transformers_ocr("ppocr_v6", use_gpu=False)
+        r1 = get_transformers_ocr("svtrv2", use_gpu=False)
+        assert isinstance(r1, SVTRv2OCRRecognizer)
         r2 = get_transformers_ocr("ppocr_v5_server", use_gpu=False)
         r1.unload = lambda: unload_calls.append("r1")
         r2.unload = lambda: unload_calls.append("r2")
 
         # Touch r1 so r2 becomes LRU
-        get_transformers_ocr("ppocr_v6", use_gpu=False)
+        get_transformers_ocr("svtrv2", use_gpu=False)
         r3 = get_transformers_ocr("korean_ppocr_v5", use_gpu=False)
 
         assert len(_GLOBAL_REC_CACHE) == _MAX_CACHED_MODELS
         assert unload_calls == ["r2"]
         _GLOBAL_REC_CACHE.clear()
+
+    def test_svtrv2_loads_weights_filters_gtc_and_decodes_ctc(self, monkeypatch, tmp_path):
+        import torch
+        from app.core.ocr.svtrv2_wrapper import _SVTRv2Server, load_ppocr_keys
+
+        chars = load_ppocr_keys()
+        ckpt_path = tmp_path / "openocr_svtrv2_ch.pth"
+        sd = _SVTRv2Server(out_channels=len(chars)).state_dict()
+        sd["before_gtc.weight"] = torch.zeros(1)
+        sd["gtc_head.bias"] = torch.zeros(1)
+        torch.save({"state_dict": sd}, ckpt_path)
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", lambda *a, **kw: str(ckpt_path))
+        rec = SVTRv2OCRRecognizer(use_gpu=False)
+        rec._ensure_loaded()
+        assert rec._model is not None
+
+        # Verify mod-4 padding and SVTRv2 backbone/neck/head forward on awkward aspect ratio (23x369)
+        prep = rec._preprocess_strip(np.full((23, 369, 3), 240, dtype=np.uint8))
+        assert prep.shape[2] == 48 and prep.shape[3] % 4 == 0
+        with torch.no_grad():
+            out = rec._model(prep)
+        assert out.shape[0] == 1 and out.shape[2] == len(chars)
+
+        # Verify greedy CTC collapse + blank removal using controlled logits
+        idx_h, idx_i = chars.index("H"), chars.index("i")
+        probs = torch.zeros((1, 5, len(chars)))
+        for t, c in enumerate([idx_h, idx_h, 0, idx_i, 0]):
+            probs[0, t, c] = 0.95
+        rec._model = lambda _inp: probs
+        text, conf = rec.recognize_lines([np.full((24, 120, 3), 255, dtype=np.uint8)])[0]
+        assert text == "Hi"
+        assert conf == pytest.approx(0.95)
 
 
 class TestSmartLanguageRoutingAndVLM:
@@ -282,12 +381,14 @@ class TestSettingsDialogSmartOCRPersistence:
         from app.ui.settings.settings_dialog import SettingsDialog
 
         cfg = AppConfig()
+        assert cfg.ocr.en_recognizer == "ppocr_v6"
         saved_path = tmp_path / "desktop_config.json"
         orig_save = cfg.save
         monkeypatch.setattr(cfg, "save", lambda _p: orig_save(str(saved_path)))
 
         dlg = SettingsDialog(config=cfg)
-        dlg.en_rec_combo.setCurrentIndex(dlg.en_rec_combo.findData("ppocr_v6"))
+        assert dlg.en_rec_combo.currentData() == "ppocr_v6"
+        dlg.en_rec_combo.setCurrentIndex(dlg.en_rec_combo.findData("svtrv2"))
         dlg.zh_rec_combo.setCurrentIndex(dlg.zh_rec_combo.findData("ppocr_v6"))
         dlg.ja_rec_combo.setCurrentIndex(dlg.ja_rec_combo.findData("ppocr_v5_server"))
         dlg.paddle_ver_combo.setCurrentIndex(dlg.paddle_ver_combo.findData("PP-OCRv3"))
@@ -296,7 +397,7 @@ class TestSettingsDialogSmartOCRPersistence:
         dlg._save_to_config()
 
         reloaded = AppConfig.load(str(saved_path))
-        assert reloaded.ocr.en_recognizer == "ppocr_v6"
+        assert reloaded.ocr.en_recognizer == "svtrv2"
         assert reloaded.ocr.zh_recognizer == "ppocr_v6"
         assert reloaded.ocr.ja_recognizer == "ppocr_v5_server"
         assert reloaded.ocr.paddle_ocr_version == "PP-OCRv3"
@@ -321,10 +422,8 @@ class TestAutoSourceLangMultiScriptRouting:
             use_gpu=False,
             lang="auto",
             is_manual=False,
-            en_recognizer="ppocr_v6",
-            zh_recognizer="ppocr_v5_server",
-            ja_recognizer="manga_ocr",
         )
+        assert eng.en_recognizer == "ppocr_v6"
         mock_ctd = MagicMock()
         mock_ctd.detect.return_value = ([
             {
@@ -421,7 +520,7 @@ class TestAutoSourceLangMultiScriptRouting:
 
         eng = OCREngine(
             engine_type="ctd", use_gpu=False, lang="auto", is_manual=False,
-            en_recognizer="ppocr_v6", zh_recognizer="ppocr_v5_server", ja_recognizer="manga_ocr",
+            zh_recognizer="ppocr_v5_server", ja_recognizer="manga_ocr",
         )
         eng._transformer_recognizers["ppocr_v6"] = rec_v6
         eng._transformer_recognizers["ppocr_v5_server"] = rec_zh

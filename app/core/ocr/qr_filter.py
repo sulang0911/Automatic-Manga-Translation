@@ -70,26 +70,46 @@ class QRCodeFilter:
             return []
 
         h_img, w_img = image.shape[:2]
+        # Downscale very high-res (e.g. 4K) images for QR/contour scanning so findContours stays fast
+        max_side = max(h_img, w_img)
+        if max_side > 1280:
+            scale = 1280.0 / float(max_side)
+            sw = max(1, int(round(w_img * scale)))
+            sh = max(1, int(round(h_img * scale)))
+            scan_img = cv2.resize(image, (sw, sh), interpolation=cv2.INTER_AREA)
+            inv_sx, inv_sy = w_img / float(sw), h_img / float(sh)
+        else:
+            scan_img = image
+            inv_sx, inv_sy = 1.0, 1.0
+
+        def _scale_pts(pts_arr: np.ndarray) -> np.ndarray:
+            arr = np.asarray(pts_arr, dtype=np.float32).reshape(-1, 2)
+            if inv_sx != 1.0 or inv_sy != 1.0:
+                arr = arr.copy()
+                arr[:, 0] *= inv_sx
+                arr[:, 1] *= inv_sy
+            return arr
+
         regions: List[QRRegion] = []
         detected_boxes: List[Tuple[int, int, int, int]] = []
 
         # 1. Primary: cv2.QRCodeDetector
         try:
-            ok, decoded_info, points, _ = self._qr_detector.detectAndDecodeMulti(image)
+            ok, decoded_info, points, _ = self._qr_detector.detectAndDecodeMulti(scan_img)
             if ok and points is not None and len(points) > 0:
                 for idx, pts in enumerate(points):
                     if pts is not None and len(pts) >= 4:
                         dec = decoded_info[idx] if idx < len(decoded_info) else ""
-                        reg = self._build_region("qrcode", pts, w_img, h_img, dec)
+                        reg = self._build_region("qrcode", _scale_pts(pts), w_img, h_img, dec)
                         if reg:
                             regions.append(reg)
                             detected_boxes.append(reg.bbox)
             else:
                 # Single fallback
-                val, pts, _ = self._qr_detector.detectAndDecode(image)
+                val, pts, _ = self._qr_detector.detectAndDecode(scan_img)
                 if pts is not None and len(pts) > 0:
                     pts_arr = pts[0] if pts.ndim == 3 else pts
-                    reg = self._build_region("qrcode", pts_arr, w_img, h_img, val)
+                    reg = self._build_region("qrcode", _scale_pts(pts_arr), w_img, h_img, val)
                     if reg:
                         regions.append(reg)
                         detected_boxes.append(reg.bbox)
@@ -99,11 +119,11 @@ class QRCodeFilter:
         # 2. ArUco-based QR detector (robust against perspective/rotations)
         if not regions and self._aruco_detector is not None:
             try:
-                ok, decoded_info, points, _ = self._aruco_detector.detectAndDecodeMulti(image)
+                ok, decoded_info, points, _ = self._aruco_detector.detectAndDecodeMulti(scan_img)
                 if ok and points is not None and len(points) > 0:
                     for idx, pts in enumerate(points):
                         dec = decoded_info[idx] if idx < len(decoded_info) else ""
-                        reg = self._build_region("qrcode", pts, w_img, h_img, dec)
+                        reg = self._build_region("qrcode", _scale_pts(pts), w_img, h_img, dec)
                         if reg:
                             regions.append(reg)
                             detected_boxes.append(reg.bbox)
@@ -113,11 +133,11 @@ class QRCodeFilter:
         # 3. 1D Barcode detector
         if self._barcode_detector is not None:
             try:
-                ok, decoded_info, _, points = self._barcode_detector.detectAndDecodeMulti(image)
+                ok, decoded_info, _, points = self._barcode_detector.detectAndDecodeMulti(scan_img)
                 if ok and points is not None and len(points) > 0:
                     for idx, pts in enumerate(points):
                         dec = decoded_info[idx] if idx < len(decoded_info) else ""
-                        reg = self._build_region("barcode", pts, w_img, h_img, dec)
+                        reg = self._build_region("barcode", _scale_pts(pts), w_img, h_img, dec)
                         if reg and not any(self._bbox_overlap(reg.bbox, b) > 0.5 for b in detected_boxes):
                             regions.append(reg)
                             detected_boxes.append(reg.bbox)
@@ -126,7 +146,7 @@ class QRCodeFilter:
 
         # 4. Auxiliary Contour & High-Frequency Texture Heuristic (Fallback for degraded/stylized QR)
         if not regions:
-            heuristic_regs = self._detect_qr_by_contour_heuristic(image)
+            heuristic_regs = self._detect_qr_by_contour_heuristic(scan_img, w_img, h_img, inv_sx, inv_sy)
             regions.extend(heuristic_regs)
 
         return regions
@@ -204,9 +224,18 @@ class QRCodeFilter:
             decoded_text=str(text or "")
         )
 
-    def _detect_qr_by_contour_heuristic(self, image: np.ndarray) -> List[QRRegion]:
+    def _detect_qr_by_contour_heuristic(
+        self,
+        image: np.ndarray,
+        orig_w: Optional[int] = None,
+        orig_h: Optional[int] = None,
+        inv_sx: float = 1.0,
+        inv_sy: float = 1.0,
+    ) -> List[QRRegion]:
         """Detects square nested finder patterns and high-frequency checkerboard grid."""
-        h_img, w_img = image.shape[:2]
+        h_scan, w_scan = image.shape[:2]
+        w_img = orig_w or w_scan
+        h_img = orig_h or h_scan
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
         thresh = cv2.adaptiveThreshold(
             gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
@@ -249,7 +278,12 @@ class QRCodeFilter:
                     if transitions > 25:
                         reg = self._build_region(
                             "qrcode",
-                            np.array([[xmin, ymin], [xmax, ymin], [xmax, ymax], [xmin, ymax]]),
+                            np.array([
+                                [xmin * inv_sx, ymin * inv_sy],
+                                [xmax * inv_sx, ymin * inv_sy],
+                                [xmax * inv_sx, ymax * inv_sy],
+                                [xmin * inv_sx, ymax * inv_sy],
+                            ], dtype=np.float32),
                             w_img,
                             h_img,
                             ""

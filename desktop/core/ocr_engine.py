@@ -935,7 +935,7 @@ class OCREngine:
         if candidate_boxes and not self._has_mock_easyocr() and self.rec_mode != "easyocr":
             try:
                 en_choice = getattr(self, "en_recognizer", "ppocr_v6")
-                probe_key = en_choice if en_choice in ("ppocr_v6", "ppocr_v5_server") else "ppocr_v6"
+                probe_key = en_choice if en_choice in ("svtrv2", "ppocr_v6", "ppocr_v5_server") else "ppocr_v6"
                 probe_rec = self._get_transformer_rec(probe_key)
                 sorted_probe = sorted(
                     candidate_boxes,
