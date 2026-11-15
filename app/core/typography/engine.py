@@ -207,7 +207,7 @@ class TypographyLayoutEvaluator:
             )
 
 
-def _compute_source_dialogue_cap(
+def _estimate_source_dialogue_size(
     block: TranslationBlock,
     w_img: int,
     h_img: int,
@@ -216,34 +216,59 @@ def _compute_source_dialogue_cap(
     is_vertical: bool,
     orig_is_horizontal_script: bool,
     hard_max: float,
-) -> float:
+) -> Tuple[float, float, bool]:
     """
-    Estimates a natural font-size upper cap (at font_size_scale=1.0) so concise
-    translations in oversized or sparse boxes stay proportional to page resolution
-    and original dialogue density instead of inflating to the global ceiling.
+    Returns (capped_est, raw_est, is_anchor) estimating a block's 1.0x source font size.
+    raw_est reflects unclipped box geometry for large display shout / footnote detection;
+    capped_est clamps regular dialogue anchors by a resolution-proportional ceiling.
     """
     if getattr(block, "type", BlockType.BUBBLE.value) == BlockType.ONOMATOPOEIA.value:
-        return hard_max
+        return hard_max, hard_max, False
 
     min_dim = float(max(1, min(w_img, h_img)))
     # Resolution-proportional ceiling: ~32px@720p, ~45px@1000p, ~54px@1200p, 72px@4K
-    cap = min(hard_max, max(24.0, min_dim * 0.045))
+    res_cap = min(hard_max, max(24.0, min_dim * 0.045))
 
     orig_txt = (getattr(block, "original_text", "") or "").strip()
     orig_lines = [ln.strip() for ln in orig_txt.splitlines() if ln.strip()]
     n_lines = max(1, int(getattr(block, "line_count", 1) or 1), len(orig_lines))
+    non_space_chars = len(re.sub(r"\s+", "", orig_txt))
+    char_count = sum(len(ln) for ln in orig_lines) if orig_lines else len(orig_txt)
 
-    if not is_vertical and orig_is_horizontal_script and len(orig_txt) >= 24:
-        # Estimate Latin/Hangul line pitch from box area vs average glyph footprint
-        char_count = sum(len(ln) for ln in orig_lines) if orig_lines else len(orig_txt)
-        est_pitch = math.sqrt((max(1.0, box_w) * max(1.0, box_h)) / max(1.0, char_count * 0.625))
-        cap = min(cap, max(12.0, est_pitch * 1.15))
-    elif is_vertical and n_lines >= 2:
-        cap = min(cap, max(12.0, (max(1.0, box_w) / float(n_lines)) * 1.15))
-    elif not is_vertical and n_lines >= 2 and len(orig_txt) >= 8:
-        cap = min(cap, max(12.0, (max(1.0, box_h) / float(n_lines)) * 1.05))
+    candidates = []
+    bw = max(1.0, float(box_w))
+    bh = max(1.0, float(box_h))
 
-    return max(8.0, cap)
+    if not is_vertical and orig_is_horizontal_script:
+        if n_lines >= 2:
+            candidates.append(max(12.0, (bh / float(n_lines)) * 0.78))
+        elif n_lines == 1 and non_space_chars >= 4:
+            candidates.append(max(12.0, bh * (0.85 if bw >= bh * 2.2 else 0.72)))
+        if char_count >= 16:
+            est_area = math.sqrt((bw * bh) / max(1.0, char_count * 0.68))
+            candidates.append(max(12.0, est_area))
+        is_anchor = (non_space_chars >= 8) or (n_lines >= 2 and non_space_chars >= 4) or (bw >= bh * 2.2 and non_space_chars >= 4)
+    elif is_vertical:
+        if n_lines >= 2:
+            candidates.append(max(12.0, (bw / float(n_lines)) * 0.92))
+        elif n_lines == 1 and non_space_chars >= 2:
+            candidates.append(max(12.0, bw * (0.85 if bh >= bw * 2.2 else 0.72)))
+        if non_space_chars >= 4:
+            est_area_v = math.sqrt((bw * bh) / max(1.0, non_space_chars * 1.25))
+            candidates.append(max(12.0, est_area_v))
+        is_anchor = (n_lines >= 2 and non_space_chars >= 4) or (non_space_chars >= 6) or (bh >= bw * 2.2 and non_space_chars >= 3)
+    else:
+        if n_lines >= 2 and non_space_chars >= 4:
+            candidates.append(max(12.0, (bh / float(n_lines)) * 0.85))
+        elif n_lines == 1 and non_space_chars >= 2:
+            candidates.append(max(12.0, bh * (0.85 if bw >= bh * 2.2 else 0.72)))
+        if non_space_chars >= 6:
+            est_area_h = math.sqrt((bw * bh) / max(1.0, non_space_chars * 1.25))
+            candidates.append(max(12.0, est_area_h))
+        is_anchor = (n_lines >= 2 and non_space_chars >= 4) or (non_space_chars >= 6) or (bw >= bh * 2.2 and non_space_chars >= 3)
+
+    raw_est = max(8.0, min(candidates)) if candidates else res_cap
+    return min(res_cap, raw_est), raw_est, is_anchor
 
 
 class TypographyEngine:
@@ -621,16 +646,18 @@ class TypographyEngine:
 
         speaker_color_map = self._build_page_speaker_color_map(blocks)
 
-        total_blocks = len(blocks)
-        for idx, block in enumerate(blocks):
-            if progress_callback:
-                progress_callback(int((idx / total_blocks) * 100), f"渲染气泡文字 ({idx+1}/{total_blocks})...")
+        from app.core.pipeline.utils import is_block_ignored_onomatopoeia
+        scale_val = max(0.1, float(cfg.font_size_scale))
+        eff_min = float(cfg.min_font_size)
+        hard_max = max(eff_min, float(getattr(cfg, "max_font_size", 72) or 72))
+        auto_ls = getattr(cfg, "auto_line_spacing", True)
 
+        prepared_items: List[Dict[str, Any]] = []
+        for block in blocks:
             text = block.translated_text or block.original_text
             if not text or not text.strip():
                 continue
 
-            from app.core.pipeline.utils import is_block_ignored_onomatopoeia
             if is_block_ignored_onomatopoeia(block, cfg.onomatopoeia_mode):
                 continue
 
@@ -750,8 +777,7 @@ class TypographyEngine:
 
             font_family = block.font_family_override or cfg.font_family
             is_bold = bool(block.font_bold_override if block.font_bold_override is not None else cfg.font_bold)
-            font_loader = lambda fs: self.get_font(font_family, fs)
-            auto_ls = getattr(cfg, "auto_line_spacing", True)
+            font_loader = lambda fs, ff=font_family: self.get_font(ff, fs)
 
             evaluator = TypographyLayoutEvaluator(
                 font_loader,
@@ -765,38 +791,128 @@ class TypographyEngine:
 
             is_speaker_dialogue = (speaker_turn_count >= 2) or bool(SPEAKER_LINE_RE.match(render_text))
             eff_bubble_shape = "caption" if is_speaker_dialogue else "rect"
-
-            if block.font_size_override is not None:
-                font_size = float(block.font_size_override)
-            elif cfg.auto_fit_font_size:
-                hard_max = float(getattr(cfg, "max_font_size", 72) or 72)
-                base_cap = _compute_source_dialogue_cap(
-                    block=block,
-                    w_img=w_img,
-                    h_img=h_img,
-                    box_w=float(box_w_eff),
-                    box_h=float(box_h_eff),
+            is_sfx = getattr(block, "type", BlockType.BUBBLE.value) == BlockType.ONOMATOPOEIA.value
+            needs_auto_fit = (block.font_size_override is None) and bool(cfg.auto_fit_font_size)
+            est_src_fs, raw_src_fs, is_anchor = (
+                _estimate_source_dialogue_size(
+                    block=block, w_img=w_img, h_img=h_img,
+                    box_w=float(box_w_eff), box_h=float(box_h_eff),
                     is_vertical=is_vertical,
                     orig_is_horizontal_script=orig_is_horizontal_script,
                     hard_max=hard_max,
                 )
-                scale_val = max(0.1, float(cfg.font_size_scale))
-                eff_max = min(hard_max, base_cap * max(1.0, scale_val))
+                if needs_auto_fit else (hard_max, hard_max, False)
+            )
+
+            prepared_items.append({
+                "block": block,
+                "x": x, "y": y, "w": w, "h": h, "cx": cx, "cy": cy,
+                "box_w_eff": box_w_eff, "box_h_eff": box_h_eff,
+                "is_rotated": is_rotated, "effective_angle": effective_angle,
+                "is_vertical": is_vertical, "render_text": render_text,
+                "speaker_turn_count": speaker_turn_count, "orig_txt": orig_txt,
+                "font_family": font_family, "is_bold": is_bold,
+                "font_loader": font_loader, "evaluator": evaluator,
+                "eff_bubble_shape": eff_bubble_shape, "is_sfx": is_sfx,
+                "needs_auto_fit": needs_auto_fit,
+                "est_src_fs": est_src_fs, "raw_src_fs": raw_src_fs, "is_anchor": is_anchor,
+                "is_body_tier": False, "font_size": eff_min,
+            })
+
+        # Page-level dialogue baseline harmonization: keep uniform dialogue blocks on the same page consistent
+        # instead of letting loose/short blocks inflate while tighter blocks double-shrink by font_scale.
+        anchor_vals = [
+            it["est_src_fs"] for it in prepared_items
+            if it["is_anchor"] and not it["is_sfx"] and it["needs_auto_fit"]
+        ]
+        has_page_baseline = len(anchor_vals) >= 2
+        if has_page_baseline:
+            page_baseline_1x = float(np.median(anchor_vals))
+            page_target_fs = max(eff_min, min(hard_max, page_baseline_1x * scale_val))
+
+        for it in prepared_items:
+            block = it["block"]
+            if block.font_size_override is not None:
+                it["font_size"] = float(block.font_size_override)
+            elif not cfg.auto_fit_font_size:
+                base_dim = min(it["box_w_eff"], it["box_h_eff"])
+                it["font_size"] = max(eff_min, min(hard_max, base_dim * 0.22 * cfg.font_size_scale))
+            elif it["is_sfx"] or not has_page_baseline:
+                eff_max = hard_max if it["is_sfx"] else min(hard_max, it["est_src_fs"] * max(1.0, scale_val))
                 fit_res = self.auto_fit_engine.fit_text(
-                    text=render_text,
-                    box_w=float(box_w_eff),
-                    box_h=float(box_h_eff),
-                    is_vertical=is_vertical,
-                    evaluator=evaluator,
+                    text=it["render_text"],
+                    box_w=float(it["box_w_eff"]),
+                    box_h=float(it["box_h_eff"]),
+                    is_vertical=it["is_vertical"],
+                    evaluator=it["evaluator"],
                     font_scale=scale_val,
-                    bubble_shape=eff_bubble_shape,
-                    min_font_size=float(cfg.min_font_size),
+                    bubble_shape=it["eff_bubble_shape"],
+                    min_font_size=eff_min,
                     max_font_size=eff_max,
                 )
-                font_size = fit_res.optimal_font_size
+                it["font_size"] = fit_res.optimal_font_size
             else:
-                base_dim = min(box_w_eff, box_h_eff)
-                font_size = max(float(cfg.min_font_size), min(float(cfg.max_font_size), base_dim * 0.22 * cfg.font_size_scale))
+                non_sp = len(re.sub(r"\s+", "", it["orig_txt"]))
+                is_large_display = (it["raw_src_fs"] > page_baseline_1x * 1.65) and (non_sp >= 4)
+                is_tiny_footnote = (it["raw_src_fs"] < page_baseline_1x * 0.55) and (non_sp >= 4)
+                it["is_body_tier"] = not (is_large_display or is_tiny_footnote)
+                block_target = (
+                    page_target_fs if it["is_body_tier"]
+                    else min(hard_max, max(eff_min, it["raw_src_fs"] * scale_val))
+                )
+                fit_res = self.auto_fit_engine.fit_text(
+                    text=it["render_text"],
+                    box_w=float(it["box_w_eff"]),
+                    box_h=float(it["box_h_eff"]),
+                    is_vertical=it["is_vertical"],
+                    evaluator=it["evaluator"],
+                    font_scale=1.0,
+                    bubble_shape=it["eff_bubble_shape"],
+                    min_font_size=eff_min,
+                    max_font_size=block_target,
+                )
+                it["font_size"] = fit_res.optimal_font_size
+
+        if has_page_baseline:
+            body_items = [it for it in prepared_items if it["is_body_tier"]]
+            if len(body_items) >= 2:
+                body_sizes = [it["font_size"] for it in body_items]
+                med_body = float(np.median(body_sizes))
+                body_cap = med_body * 1.08
+                if max(body_sizes) > body_cap + 0.5:
+                    re_cap = max(eff_min, body_cap)
+                    for it in body_items:
+                        if it["font_size"] > re_cap + 0.5:
+                            re_fit = self.auto_fit_engine.fit_text(
+                                text=it["render_text"],
+                                box_w=float(it["box_w_eff"]),
+                                box_h=float(it["box_h_eff"]),
+                                is_vertical=it["is_vertical"],
+                                evaluator=it["evaluator"],
+                                font_scale=1.0,
+                                bubble_shape=it["eff_bubble_shape"],
+                                min_font_size=eff_min,
+                                max_font_size=re_cap,
+                            )
+                            it["font_size"] = re_fit.optimal_font_size
+
+        total_blocks = len(prepared_items)
+        for idx, it in enumerate(prepared_items):
+            if progress_callback:
+                progress_callback(int((idx / max(1, total_blocks)) * 100), f"渲染气泡文字 ({idx+1}/{total_blocks})...")
+
+            block = it["block"]
+            x, y, w, h = it["x"], it["y"], it["w"], it["h"]
+            cx, cy = it["cx"], it["cy"]
+            box_w_eff, box_h_eff = it["box_w_eff"], it["box_h_eff"]
+            is_rotated, effective_angle = it["is_rotated"], it["effective_angle"]
+            is_vertical = it["is_vertical"]
+            render_text = it["render_text"]
+            speaker_turn_count = it["speaker_turn_count"]
+            font_family, is_bold = it["font_family"], it["is_bold"]
+            font_loader = it["font_loader"]
+            eff_bubble_shape = it["eff_bubble_shape"]
+            font_size = it["font_size"]
 
             font = self.get_font(font_family, font_size)
 

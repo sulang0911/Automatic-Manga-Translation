@@ -63,6 +63,22 @@ def test_merge_adjacent_boxes():
     assert merged[0]["ymax"] >= 155 or merged[1]["ymax"] >= 155
 
 
+def test_merge_adjacent_boxes_preserves_multiline_ctd_line_count():
+    # A multi-line CTD block joined with spaces on one OCR item must keep line_count=4,
+    # and merging two multi-line strips must sum their line counts instead of collapsing to len(rows).
+    boxes = [
+        {"xmin": 100, "ymin": 100, "xmax": 400, "ymax": 220, "text": "Row 1a Row 1b", "conf": 0.95, "line_count": 2},
+        {"xmin": 100, "ymin": 225, "xmax": 400, "ymax": 345, "text": "Row 2a Row 2b", "conf": 0.94, "line_count": 2},
+        {"xmin": 600, "ymin": 100, "xmax": 950, "ymax": 400, "text": "Standalone five line block", "conf": 0.96, "line_count": 5},
+    ]
+
+    merged = merge_adjacent_boxes(boxes, img_w=2000, img_h=2000)
+    assert len(merged) == 2
+    by_x = sorted(merged, key=lambda b: b["xmin"])
+    assert by_x[0]["line_count"] == 4
+    assert by_x[1]["line_count"] == 5
+
+
 def test_merge_user_sample_vertically_adjacent_independent_bubbles():
     """
     Verifies that two vertically adjacent independent rectangular dialogue boxes
@@ -853,3 +869,40 @@ def test_halftone_screentone_stroked_text_mask_preserves_dots():
     assert np.count_nonzero(m) < m.size * 0.45
     # Clean corner screentone away from text must stay unmasked
     assert np.count_nonzero(m[0:20, 0:20]) == 0
+
+
+
+def test_4k_multiline_stroked_text_mask_preserves_interline_background():
+    """On 4K pages (img_max_dim=4096), get_stroked_text_mask must cover black strokes and white outer
+    glow completely without over-dilating into 90-100% rectangular blobs across textured inter-line background."""
+    from app.core.inpaint.color_analyzer import get_stroked_text_mask
+
+    h, w = 220, 520
+    yy, xx = np.mgrid[0:h, 0:w]
+    # Mid-tone textured background (wall/curtain ripples ~96..122 gray)
+    ripple = (110 + 10 * np.sin(xx * 0.09) + 6 * np.cos(yy * 0.14)).astype(np.uint8)
+    canvas = np.stack([ripple, ripple, np.clip(ripple.astype(np.int16) + 2, 0, 255).astype(np.uint8)], axis=-1)
+
+    glow_src = np.zeros((h, w), dtype=np.float32)
+    text_ref = np.zeros((h, w), dtype=np.uint8)
+    lines = [("First dialogue line.", (28, 72)), ("Second dialogue line.", (28, 152))]
+    for txt, org in lines:
+        cv2.putText(glow_src, txt, org, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 255.0, 6, cv2.LINE_AA)
+    glow_blur = cv2.GaussianBlur(glow_src, (13, 13), 3.2)
+    # Blend white outer glow around text over textured background
+    alpha = np.clip(glow_blur / 180.0, 0.0, 1.0)[..., None]
+    canvas = np.clip(canvas.astype(np.float32) * (1.0 - alpha) + 255.0 * alpha, 0, 255).astype(np.uint8)
+    for txt, org in lines:
+        cv2.putText(canvas, txt, org, cv2.FONT_HERSHEY_SIMPLEX, 1.0, (2, 2, 2), 3, cv2.LINE_AA)
+        cv2.putText(text_ref, txt, org, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 255, 3, cv2.LINE_AA)
+
+    m = get_stroked_text_mask(canvas, img_max_dim=4096)
+    assert m is not None
+    gray = cv2.cvtColor(canvas, cv2.COLOR_BGR2GRAY)
+    # All black strokes and visible white glow (>145) must be masked
+    assert np.count_nonzero((text_ref > 0) & (m == 0)) == 0
+    assert np.count_nonzero((gray > 145) & (m == 0)) == 0
+    # Must not saturate into a 90-100% solid rectangular blob on 4K pages
+    assert np.count_nonzero(m) < m.size * 0.65
+    # Textured band midway between the two lines (y ~ 104..116) must stay unmasked
+    assert np.count_nonzero(m[104:116, 40:480] == 0) > (12 * 440) * 0.5

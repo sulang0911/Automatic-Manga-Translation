@@ -435,3 +435,196 @@ def test_japanese_oval_bubble_multicolumn_auto_vertical_vs_english_korean():
 
 
 
+
+
+def _collect_fitted_sizes(engine, img, blocks, style):
+    from unittest.mock import patch
+    recorded = {}
+    orig_fit = engine.auto_fit_engine.fit_text
+
+    def spy_fit(*args, **kwargs):
+        res = orig_fit(*args, **kwargs)
+        recorded[kwargs.get("text", "")] = float(res.optimal_font_size)
+        return res
+
+    with patch.object(engine.auto_fit_engine, "fit_text", side_effect=spy_fit):
+        engine.render_page(img, blocks, style)
+    return recorded
+
+
+def test_page_level_dialogue_font_size_harmonization():
+    from app.core.models import StyleConfig, TranslationBlock
+    from app.core.typography.engine import TypographyEngine
+
+    img = np.zeros((2160, 4165, 3), dtype=np.uint8)
+    raw = [
+        {
+            "id": "b0", "type": "bubble", "line_count": 4,
+            "xmin": 2.0, "ymin": 2.0, "xmax": 30.5, "ymax": 13.8,
+            "original_text": "A naked woman in front of me. Her face covered in tears, saliva, and snot. Sweating profusely, trembling in fear of me.",
+            "translated_text": "眼前是一个赤身裸体的女人，满脸泪水与汗水，正因恐惧而瑟瑟发抖。",
+        },
+        {
+            "id": "b1", "type": "bubble", "line_count": 1,
+            "xmin": 5.0, "ymin": 17.0, "xmax": 16.2, "ymax": 19.6,
+            "original_text": "going to whip her again,",
+            "translated_text": "正要再抽她一鞭，",
+        },
+        {
+            "id": "b2", "type": "bubble", "line_count": 2,
+            "xmin": 1.5, "ymin": 24.0, "xmax": 20.0, "ymax": 29.8,
+            "original_text": "Suddenly... I felt somewhat confused about the woman in front of me.",
+            "translated_text": "突然……我对眼前这个女人感到有些困惑。",
+        },
+        {
+            "id": "b3", "type": "bubble", "line_count": 2,
+            "xmin": 2.0, "ymin": 63.0, "xmax": 17.2, "ymax": 69.2,
+            "original_text": "And yet, she was there not as my doctor, as my... plaything.",
+            "translated_text": "然而，她此刻并不是以医生的身份在我面前，而是作为我的……玩物。",
+        },
+        {
+            "id": "b4", "type": "bubble", "line_count": 5,
+            "xmin": 43.0, "ymin": 80.0, "xmax": 60.8, "ymax": 94.8,
+            "original_text": "What's wrong, are you embarrassed? I guess there's still some shame left in a pervert like you, haha. At first I thought she was disgusting, now I think she's cute.",
+            "translated_text": "怎么了，害羞了吗？看来你这种变态也还剩下一点羞耻心嘛，哈哈。起初觉得她恶心，现在却觉得有点可爱。",
+        },
+    ]
+    blocks = [TranslationBlock.from_dict(b) for b in raw]
+    engine = TypographyEngine()
+
+    sizes_08 = _collect_fitted_sizes(engine, img, blocks, StyleConfig(font_size_scale=0.8, auto_fit_font_size=True))
+    vals_08 = [sizes_08[b["translated_text"]] for b in raw]
+    assert max(vals_08) - min(vals_08) <= 1.5
+
+    sizes_10 = _collect_fitted_sizes(engine, img, blocks, StyleConfig(font_size_scale=1.0, auto_fit_font_size=True))
+    vals_10 = [sizes_10[b["translated_text"]] for b in raw]
+    ratio = sum(vals_08) / max(1e-6, sum(vals_10))
+    assert 0.75 <= ratio <= 0.85
+
+
+def test_page_harmonization_preserves_display_shouts_and_sfx():
+    from app.core.models import StyleConfig, TranslationBlock
+    from app.core.typography.engine import TypographyEngine
+
+    img = np.full((2000, 2000, 3), 255, dtype=np.uint8)
+    raw = [
+        {
+            "id": "d1", "type": "bubble", "line_count": 3,
+            "xmin": 5.0, "ymin": 5.0, "xmax": 25.0, "ymax": 14.0,
+            "original_text": "First normal line here\nSecond line in bubble\nThird line text",
+            "translated_text": "第一句普通对白内容。",
+        },
+        {
+            "id": "d2", "type": "bubble", "line_count": 3,
+            "xmin": 30.0, "ymin": 5.0, "xmax": 50.0, "ymax": 14.0,
+            "original_text": "Another normal box\nWith three lines too\nUniform lettering",
+            "translated_text": "第二句对白内容稍微更长一些以便验证排版字号。",
+        },
+        {
+            "id": "d3", "type": "bubble", "line_count": 2,
+            "xmin": 55.0, "ymin": 5.0, "xmax": 75.0, "ymax": 11.0,
+            "original_text": "Normal two line\ndialogue sample",
+            "translated_text": "第三句普通对白。",
+        },
+        {
+            "id": "shout", "type": "bubble", "line_count": 1,
+            "xmin": 10.0, "ymin": 40.0, "xmax": 45.0, "ymax": 52.0,
+            "original_text": "STOP RIGHT THERE!",
+            "translated_text": "给我站住！",
+        },
+        {
+            "id": "sfx", "type": "onomatopoeia", "line_count": 1,
+            "xmin": 60.0, "ymin": 45.0, "xmax": 85.0, "ymax": 60.0,
+            "original_text": "BOOM",
+            "translated_text": "轰隆！",
+        },
+    ]
+    blocks = [TranslationBlock.from_dict(b) for b in raw]
+    engine = TypographyEngine()
+    sizes = _collect_fitted_sizes(engine, img, blocks, StyleConfig(font_size_scale=0.8, auto_fit_font_size=True))
+
+    reg = [sizes[b["translated_text"]] for b in raw[:3]]
+    assert max(reg) - min(reg) <= 2.0
+    assert sizes["给我站住！"] > (sum(reg) / len(reg)) * 1.35
+    assert sizes["轰隆！"] > (sum(reg) / len(reg)) * 1.25
+
+
+def test_page_harmonization_pulls_down_oversized_short_block_when_body_constrained():
+    from app.core.models import StyleConfig, TranslationBlock
+    from app.core.typography.engine import TypographyEngine
+
+    img = np.full((1600, 1200, 3), 255, dtype=np.uint8)
+    long_zh = "这是一段必须换行挤进紧凑气泡里的比较长的解释性对白台词内容，而且后面还有很长一串补充说明。"
+    raw = [
+        {
+            "id": "c1", "type": "bubble", "line_count": 2,
+            "xmin": 5.0, "ymin": 5.0, "xmax": 35.0, "ymax": 12.0,
+            "original_text": "I think so too,\nyou know right?",
+            "translated_text": long_zh + "一",
+        },
+        {
+            "id": "c2", "type": "bubble", "line_count": 2,
+            "xmin": 40.0, "ymin": 5.0, "xmax": 70.0, "ymax": 12.0,
+            "original_text": "I think so too,\nyou know right?",
+            "translated_text": long_zh + "二",
+        },
+        {
+            "id": "c3", "type": "bubble", "line_count": 2,
+            "xmin": 5.0, "ymin": 15.0, "xmax": 35.0, "ymax": 22.0,
+            "original_text": "I think so too,\nyou know right?",
+            "translated_text": long_zh + "三",
+        },
+        {
+            "id": "short", "type": "bubble", "line_count": 1,
+            "xmin": 45.0, "ymin": 25.0, "xmax": 61.0, "ymax": 28.8,
+            "original_text": "Okay.",
+            "translated_text": "好。",
+        },
+    ]
+    blocks = [TranslationBlock.from_dict(b) for b in raw]
+    engine = TypographyEngine()
+    sizes = _collect_fitted_sizes(engine, img, blocks, StyleConfig(font_size_scale=1.0, auto_fit_font_size=True))
+
+    body_med = sorted([sizes[long_zh + "一"], sizes[long_zh + "二"], sizes[long_zh + "三"]])[1]
+    assert sizes["好。"] <= body_med * 1.15
+
+
+def test_page_harmonization_vertical_japanese_multi_bubble():
+    from app.core.models import StyleConfig, TranslationBlock
+    from app.core.typography.engine import TypographyEngine
+
+    img = np.full((1800, 1200, 3), 255, dtype=np.uint8)
+    raw = [
+        {
+            "id": "v1", "type": "bubble", "line_count": 2,
+            "xmin": 80.0, "ymin": 8.0, "xmax": 88.0, "ymax": 32.0,
+            "original_text": "これは\nテスト",
+            "translated_text": "这是一个测试",
+        },
+        {
+            "id": "v2", "type": "bubble", "line_count": 2,
+            "xmin": 55.0, "ymin": 10.0, "xmax": 63.0, "ymax": 36.0,
+            "original_text": "縦書き\nの会話",
+            "translated_text": "竖排对话也保持一致",
+        },
+        {
+            "id": "v3", "type": "bubble", "line_count": 2,
+            "xmin": 25.0, "ymin": 12.0, "xmax": 33.0, "ymax": 34.0,
+            "original_text": "そうだ\nね",
+            "translated_text": "是的呀",
+        },
+    ]
+    blocks = [TranslationBlock.from_dict(b) for b in raw]
+    engine = TypographyEngine()
+    sizes = _collect_fitted_sizes(engine, img, blocks, StyleConfig(font_size_scale=0.8, auto_fit_font_size=True))
+    vals = list(sizes.values())
+    assert len(vals) == 3
+    assert max(vals) - min(vals) <= 2.0
+
+
+def test_calculate_padding_wide_multiline_horizontal_box():
+    from app.core.typography.auto_fit import AutoFitEngine
+
+    pad_x, pad_y = AutoFitEngine().calculate_padding(741, 320, bubble_shape="auto")
+    assert pad_x <= 14
+    assert pad_y <= 14

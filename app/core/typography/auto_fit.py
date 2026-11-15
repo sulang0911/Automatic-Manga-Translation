@@ -57,7 +57,7 @@ class AutoFitEngine:
         For unboxed/caption dialogue blocks, padding stays compact on small boxes while
         preserving modest breathing room on large multi-speaker blocks.
         """
-        if bubble_shape == "caption" or (bubble_shape != "ellipse" and (box_w > box_h * 2.5 or box_h < 65)):
+        if bubble_shape == "caption" or (bubble_shape != "ellipse" and (box_w >= box_h * 1.75 or box_h < 65)):
             px = max(2.0, min(12.0, box_w * 0.03))
             py = max(1.0, min(12.0, box_h * 0.035))
             return px, py

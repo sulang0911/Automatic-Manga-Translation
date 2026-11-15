@@ -1198,14 +1198,18 @@ def merge_adjacent_boxes(
             columns.sort(key=lambda col: -max(max(b["xmin"], b["xmax"]) for b in col))
 
             column_texts = []
+            col_line_counts = []
             for col in columns:
                 col_sorted = sorted(col, key=lambda b: min(b["ymin"], b["ymax"]))
                 col_text = _join_line_texts([str(b.get("text", "")).strip() for b in col_sorted])
                 if col_text:
                     column_texts.append(col_text)
+                    col_line_counts.append(max([1] + [int(b.get("line_count", 1) or 1) for b in col_sorted]))
 
             final_text = "\n".join(column_texts)
-            line_count = len(column_texts) if column_texts else 1
+            line_count = max(len(column_texts), sum(col_line_counts)) if column_texts else max(
+                [1] + [int(b.get("line_count", 1) or 1) for b in comp_boxes]
+            )
         else:
             # Group into horizontal lines/rows (Top to Bottom)
             sorted_boxes = sorted(
@@ -1235,6 +1239,7 @@ def merge_adjacent_boxes(
             rows.sort(key=lambda row: min(min(b["ymin"], b["ymax"]) for b in row))
 
             row_texts = []
+            row_line_counts = []
             for row in rows:
                 row_sorted = sorted(row, key=lambda b: min(b["xmin"], b["xmax"]))
                 # Deduplicate identical or heavily overlapping 2D boxes within the same row
@@ -1269,9 +1274,10 @@ def merge_adjacent_boxes(
                 row_text = _join_line_texts([str(b.get("text", "")).strip() for b in deduped_row])
                 if row_text:
                     row_texts.append(row_text)
+                    row_line_counts.append(max([1] + [int(b.get("line_count", 1) or 1) for b in deduped_row]))
 
             final_text = "\n".join(row_texts)
-            line_count = max(len(row_texts), len(final_text.splitlines())) if row_texts else max(
+            line_count = max(len(row_texts), len(final_text.splitlines()), sum(row_line_counts)) if row_texts else max(
                 [1] + [int(b.get("line_count", 1) or 1) for b in comp_boxes]
             )
 
