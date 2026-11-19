@@ -617,3 +617,131 @@ def dilate_mask(mask: np.ndarray, dilation_pixels: int = 3) -> np.ndarray:
     kernel_size = dilation_pixels * 2 + 1
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_size, kernel_size))
     return cv2.dilate(mask, kernel, iterations=1)
+
+
+def _strip_exterior_bubble_border_arcs(
+    image: np.ndarray,
+    tm: np.ndarray,
+    px_min: int,
+    py_min: int,
+    px_max: int,
+    py_max: int,
+    eff_bgr: np.ndarray,
+) -> np.ndarray:
+    """Removes border-clipping bubble outline arcs whose outer edge lies outside the bubble fill."""
+    h_img, w_img = image.shape[:2]
+    ch_c, cw_c = tm.shape[:2]
+    n_cc, labels, stats, _ = cv2.connectedComponentsWithStats(tm)
+    if n_cc <= 1:
+        return tm
+
+    border_strip = np.zeros((ch_c, cw_c), dtype=bool)
+    m = 2
+    border_strip[:m, :] = True
+    border_strip[-m:, :] = True
+    border_strip[:, :m] = True
+    border_strip[:, -m:] = True
+
+    cleaned = tm.copy()
+    max_span_lim = max(ch_c, cw_c) * 0.42
+    for cid in range(1, n_cc):
+        cx, cy, cw, ch, area = [int(v) for v in stats[cid]]
+        t_left = (cx == 0)
+        t_right = (cx + cw >= cw_c)
+        t_top = (cy == 0)
+        t_bot = (cy + ch >= ch_c)
+        if not (t_left or t_right or t_top or t_bot):
+            continue
+        touches_2adj = (t_left or t_right) and (t_top or t_bot)
+        comp = (labels == cid)
+        bfrac = float(np.count_nonzero(comp & border_strip)) / max(1, area)
+        if not ((touches_2adj and max(cw, ch) <= max_span_lim) or bfrac >= 0.85):
+            continue
+
+        # Confirm the neighboring exterior pixels outside this touched edge differ from bubble fill
+        # so real glyphs touching a tight box edge inside the bubble are never stripped.
+        ext_samples = []
+        gx1, gy1 = px_min + cx, py_min + cy
+        gx2, gy2 = gx1 + cw, gy1 + ch
+        if t_top and py_min > 0:
+            ext_samples.append(image[max(0, py_min - 3):py_min, max(0, gx1):min(w_img, gx2)].reshape(-1, 3))
+        if t_bot and py_max < h_img:
+            ext_samples.append(image[py_max:min(h_img, py_max + 3), max(0, gx1):min(w_img, gx2)].reshape(-1, 3))
+        if t_left and px_min > 0:
+            ext_samples.append(image[max(0, gy1):min(h_img, gy2), max(0, px_min - 3):px_min].reshape(-1, 3))
+        if t_right and px_max < w_img:
+            ext_samples.append(image[max(0, gy1):min(h_img, gy2), px_max:min(w_img, px_max + 3)].reshape(-1, 3))
+        non_empty = [s for s in ext_samples if len(s) > 0]
+        if not non_empty:
+            continue
+        ext_med = np.median(np.concatenate(non_empty, axis=0), axis=0).astype(np.float32)
+        if float(np.max(np.abs(ext_med - eff_bgr))) > 35.0:
+            cleaned[comp] = 0
+    return cleaned
+
+
+def extract_coherent_bubble_text_mask(
+    image: np.ndarray,
+    crop: np.ndarray,
+    px_min: int,
+    py_min: int,
+    px_max: int,
+    py_max: int,
+    perim_bgr: Tuple[int, int, int],
+    poly_mask: Optional[np.ndarray] = None,
+    stroked_mask_in_crop: Optional[np.ndarray] = None,
+    threshold: int = 20,
+) -> Optional[np.ndarray]:
+    """
+    Returns an interior high-contrast text mask for non-uniform/border-grazed coherent bubbles
+    when stroked_mask is None, false-triggered only on the bubble outline, or flooded the bubble fill.
+    Returns None when the crop is a true stroked/3D scene so stroked_mask remains active.
+    """
+    if crop is None or crop.size == 0 or crop.ndim != 3:
+        return None
+    h, w = crop.shape[:2]
+    c_f = crop.astype(np.float32)
+    perim_arr = np.array(perim_bgr, dtype=np.float32)
+    eff_bgr = perim_arr
+    eff_dom = float(np.mean(np.max(np.abs(c_f - perim_arr), axis=2) < 32.0))
+
+    if h >= 10 and w >= 10:
+        iy1, iy2 = max(1, h // 5), min(h - 1, (h * 4) // 5)
+        ix1, ix2 = max(1, w // 5), min(w - 1, (w * 4) // 5)
+        inner_bgr = np.median(crop[iy1:iy2, ix1:ix2].reshape(-1, 3), axis=0).astype(np.float32)
+        inner_dom = float(np.mean(np.max(np.abs(c_f - inner_bgr), axis=2) < 32.0))
+        perim_exact = float(np.mean(np.max(np.abs(c_f - perim_arr), axis=2) < 12.0))
+        inner_exact = float(np.mean(np.max(np.abs(c_f - inner_bgr), axis=2) < 12.0))
+        if inner_dom >= 0.55 and ((eff_dom < 0.55 and inner_dom > eff_dom + 0.12) or (inner_exact > perim_exact + 0.15)):
+            eff_bgr, eff_dom = inner_bgr, inner_dom
+
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    eff_lum = float(0.299 * eff_bgr[2] + 0.587 * eff_bgr[1] + 0.114 * eff_bgr[0])
+    bg_mask = np.abs(gray.astype(np.float32) - eff_lum) < 35.0
+    bg_std = float(np.std(gray[bg_mask])) if np.count_nonzero(bg_mask) > 20 else 99.0
+    if eff_dom < 0.58 or bg_std >= 12.0:
+        return None
+
+    bgr_tuple = (int(round(eff_bgr[0])), int(round(eff_bgr[1])), int(round(eff_bgr[2])))
+    tm = get_text_mask(crop, bgr_tuple, threshold=threshold)
+    if poly_mask is not None:
+        tm = cv2.bitwise_and(tm, poly_mask)
+    tm_clean = _strip_exterior_bubble_border_arcs(image, tm, px_min, py_min, px_max, py_max, eff_bgr)
+
+    # Strong foreground glyphs inside the bubble (excludes subtle translucent texture ripples)
+    strong_diff = np.max(np.abs(crop.astype(np.int32) - np.array(bgr_tuple, dtype=np.int32)), axis=2) > 42
+    fg_clean = (tm_clean > 0) & strong_diff
+    fg_count = int(np.count_nonzero(fg_clean))
+    if fg_count < 8:
+        return None
+
+    if stroked_mask_in_crop is None:
+        return tm_clean
+
+    sm_cov = float(np.count_nonzero(fg_clean & (stroked_mask_in_crop > 0))) / float(fg_count)
+    bg_masked = float(np.count_nonzero(bg_mask & (stroked_mask_in_crop > 0))) / float(max(1, int(np.count_nonzero(bg_mask))))
+    dark_core_px = int(np.count_nonzero(gray < max(2.0, eff_lum - 10.0)))
+    flooded_mono_bubble = (bg_masked > 0.55) and ((eff_lum < 68.0 and dark_core_px < 10) or eff_lum > 185.0)
+    if sm_cov < 0.50 or flooded_mono_bubble:
+        return tm_clean
+    return None

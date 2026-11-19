@@ -906,3 +906,93 @@ def test_4k_multiline_stroked_text_mask_preserves_interline_background():
     assert np.count_nonzero(m) < m.size * 0.65
     # Textured band midway between the two lines (y ~ 104..116) must stay unmasked
     assert np.count_nonzero(m[104:116, 40:480] == 0) > (12 * 440) * 0.5
+
+
+
+def test_bordered_dark_and_translucent_oval_bubbles_clean_erasure():
+    """
+    Regression test for dark/translucent/light oval bubbles with contrasting thin borders and un-stroked
+    interior text whose OCR bounding boxes clip the oval outline:
+    1. Must NOT be hijacked by false border-only get_stroked_text_mask hits (which left 100% text unerased).
+    2. Must erase 100% of interior letters via InpaintEngine while preserving the crisp bubble border.
+    """
+    from desktop.core.inpaint_engine import InpaintEngine
+    from app.core.inpaint.color_analyzer import get_stroked_text_mask, extract_coherent_bubble_text_mask
+
+    # 1. Translucent dark gray-brown (#4F4840) oval with white border + un-stroked white text
+    bg_page = np.full((200, 180, 3), (125, 155, 190), dtype=np.float32)
+    yy, xx = np.mgrid[0:200, 0:180]
+    bg_page += ((np.sin(xx * 0.5) + np.cos(yy * 0.5)) * 10.0)[..., None]
+    canvas = np.clip(bg_page, 0, 255).astype(np.uint8)
+    oval_fill = ((xx - 90) / 48.0) ** 2 + ((yy - 100) / 62.0) ** 2 <= 1.0
+    canvas[oval_fill] = np.clip(
+        canvas[oval_fill].astype(np.float32) * 0.15 + np.array([64, 72, 79]) * 0.85, 0, 255
+    ).astype(np.uint8)
+    cv2.ellipse(canvas, (90, 100), (48, 62), 0, 0, 360, (248, 248, 248), 2, cv2.LINE_AA)
+    cv2.putText(canvas, "NON", (58, 86), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (250, 250, 250), 2, cv2.LINE_AA)
+    cv2.putText(canvas, "HO", (64, 118), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (250, 250, 250), 2, cv2.LINE_AA)
+
+    # Corner-grazed OCR bounding box overlapping the white oval ring
+    x1, y1, x2, y2 = 50, 44, 130, 156
+    block = {
+        "id": "b_dark_oval",
+        "type": "bubble",
+        "polygon": [[x1, y1], [x2, y1], [x2, y2], [x1, y2]],
+        "xmin": x1 / 180 * 100.0,
+        "ymin": y1 / 200 * 100.0,
+        "xmax": x2 / 180 * 100.0,
+        "ymax": y2 / 200 * 100.0,
+        "bg_color": "#4F4840",
+        "text_color": "#FFFFFF",
+        "translated_text": "test",
+    }
+    for mode in ("opencv_telea", "auto"):
+        erased = InpaintEngine(mode=mode).inpaint(canvas, [block])
+        interior_gray = cv2.cvtColor(erased[66:132, 60:120], cv2.COLOR_BGR2GRAY)
+        assert np.count_nonzero(interior_gray > 140) == 0, f"Mode {mode} left un-erased white text inside dark oval"
+        # Top white oval outline peak (90, 38) must remain intact
+        assert int(np.min(erased[38, 90])) > 200
+
+    # 2. Solid dark (#1E1E1E) oval with white border + un-stroked white text: must preserve white ring
+    dark_oval = np.full((200, 180, 3), (130, 160, 195), dtype=np.uint8)
+    cv2.ellipse(dark_oval, (90, 100), (48, 62), 0, 0, 360, (30, 30, 30), -1)
+    cv2.ellipse(dark_oval, (90, 100), (48, 62), 0, 0, 360, (248, 248, 248), 2, cv2.LINE_AA)
+    cv2.putText(dark_oval, "NON", (58, 86), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (252, 252, 252), 2, cv2.LINE_AA)
+    cv2.putText(dark_oval, "HO", (64, 118), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (252, 252, 252), 2, cv2.LINE_AA)
+    erased_blk = InpaintEngine(mode="opencv_telea").inpaint(dark_oval, [block])
+    assert np.count_nonzero(cv2.cvtColor(erased_blk[66:132, 60:120], cv2.COLOR_BGR2GRAY) > 140) == 0
+    assert int(np.min(erased_blk[38, 90])) > 200
+
+    # 3. White oval with black outline grazed at corners: must erase interior black text cleanly
+    white_oval = np.full((200, 180, 3), (85, 70, 60), dtype=np.uint8)
+    cv2.ellipse(white_oval, (90, 100), (50, 60), 0, 0, 360, (252, 252, 252), -1)
+    cv2.ellipse(white_oval, (90, 100), (50, 60), 0, 0, 360, (12, 12, 12), 3, cv2.LINE_AA)
+    cv2.putText(white_oval, "YES", (60, 92), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (10, 10, 10), 2, cv2.LINE_AA)
+    cv2.putText(white_oval, "OK", (66, 122), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (10, 10, 10), 2, cv2.LINE_AA)
+    wx1, wy1, wx2, wy2 = 46, 45, 134, 155
+    w_block = {
+        "id": "b_white_oval",
+        "type": "bubble",
+        "polygon": [[wx1, wy1], [wx2, wy1], [wx2, wy2], [wx1, wy2]],
+        "xmin": wx1 / 180 * 100.0,
+        "ymin": wy1 / 200 * 100.0,
+        "xmax": wx2 / 180 * 100.0,
+        "ymax": wy2 / 200 * 100.0,
+    }
+    erased_wh = InpaintEngine(mode="opencv_telea").inpaint(white_oval, [w_block])
+    assert np.count_nonzero(cv2.cvtColor(erased_wh[65:135, 58:122], cv2.COLOR_BGR2GRAY) < 150) == 0
+    assert int(np.max(erased_wh[40, 90])) < 40
+
+    # 4. Guardrail: true stroked text with white outer glow on dark leather must keep using stroked_mask
+    bg_d = np.full((160, 360, 3), (18, 20, 26), dtype=np.uint8)
+    g_src = np.zeros((160, 360), dtype=np.float32)
+    cv2.putText(g_src, "Stroked", (45, 95), cv2.FONT_HERSHEY_SIMPLEX, 1.1, 255.0, 7, cv2.LINE_AA)
+    g_blur = cv2.GaussianBlur(g_src, (13, 13), 2.5)
+    dark_stroked = np.clip(bg_d.astype(np.float32) + np.expand_dims(g_blur * 1.3, 2), 0, 255).astype(np.uint8)
+    cv2.putText(dark_stroked, "Stroked", (45, 95), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (6, 6, 6), 3, cv2.LINE_AA)
+    sx1, sy1, sx2, sy2 = 30, 40, 280, 125
+    sm_s = get_stroked_text_mask(dark_stroked[sy1:sy2, sx1:sx2], img_max_dim=1024)
+    assert sm_s is not None
+    assert extract_coherent_bubble_text_mask(
+        dark_stroked, dark_stroked[sy1:sy2, sx1:sx2], sx1, sy1, sx2, sy2, (20, 20, 20), stroked_mask_in_crop=sm_s
+    ) is None

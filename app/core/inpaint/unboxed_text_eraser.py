@@ -244,17 +244,31 @@ def erase_unboxed_text_block(
         crop = image[exp_y_min:exp_y_max, exp_x_min:exp_x_max].copy()
         crop_gray = gray_full[exp_y_min:exp_y_max, exp_x_min:exp_x_max]
 
-    from app.core.inpaint.color_analyzer import get_stroked_text_mask, get_text_mask
+    from app.core.inpaint.color_analyzer import (
+        get_stroked_text_mask,
+        get_text_mask,
+        extract_coherent_bubble_text_mask,
+    )
     stroked_mask = (
         get_stroked_text_mask(crop, img_max_dim=max(h_img, w_img))
         if (not is_uniform and crop.ndim == 3)
         else None
     )
+    coherent_mask = (
+        extract_coherent_bubble_text_mask(
+            image, crop, exp_x_min, exp_y_min, exp_x_max, exp_y_max,
+            tuple(bg_color), stroked_mask_in_crop=stroked_mask, threshold=25,
+        )
+        if (not is_uniform and crop.ndim == 3)
+        else None
+    )
 
-    if stroked_mask is not None:
+    if stroked_mask is not None and coherent_mask is None:
         dilated_mask = stroked_mask
     else:
-        if crop.ndim == 3:
+        if coherent_mask is not None:
+            thresh = coherent_mask
+        elif crop.ndim == 3:
             thresh = get_text_mask(crop, tuple(bg_color), threshold=18 if is_uniform else 25)
         else:
             bg_gray_val = int(round(bg_lum))

@@ -223,7 +223,11 @@ class InpaintEngine:
 
             text_mask = cv2.bitwise_and(text_mask, poly_mask)
 
-            from app.core.inpaint.color_analyzer import is_background_uniform, get_stroked_text_mask
+            from app.core.inpaint.color_analyzer import (
+                is_background_uniform,
+                get_stroked_text_mask,
+                extract_coherent_bubble_text_mask,
+            )
             is_uniform = is_background_uniform(crop, std_thresh=16.0)
 
             qr_mask_crop = qr_mask[py_min:py_max, px_min:px_max]
@@ -284,7 +288,23 @@ class InpaintEngine:
                 exp_crop = erased_img[epy_min:epy_max, epx_min:epx_max]
                 eff_max_dim = max(h_img, w_img) if h_img <= w_img * 2.2 else max(w_img, int(round(w_img * 1.6)))
                 stroked_mask = get_stroked_text_mask(exp_crop, img_max_dim=eff_max_dim)
-                if stroked_mask is not None:
+                stroked_in_crop = (
+                    stroked_mask[(py_min - epy_min):(py_max - epy_min), (px_min - epx_min):(px_max - epx_min)]
+                    if stroked_mask is not None
+                    else None
+                )
+                coherent_mask = extract_coherent_bubble_text_mask(
+                    erased_img, crop, px_min, py_min, px_max, py_max,
+                    tuple(int(c) for c in bg_color),
+                    poly_mask=poly_mask,
+                    stroked_mask_in_crop=stroked_in_crop,
+                )
+                if coherent_mask is not None:
+                    dilated = dilate_mask(coherent_mask, min(adaptive_dil, 3))
+                    inpaint_mask[py_min:py_max, px_min:px_max] = cv2.bitwise_or(
+                        inpaint_mask[py_min:py_max, px_min:px_max], dilated
+                    )
+                elif stroked_mask is not None:
                     qr_exp = qr_mask[epy_min:epy_max, epx_min:epx_max]
                     stroked_mask[qr_exp > 0] = 0
                     inpaint_mask[epy_min:epy_max, epx_min:epx_max] = cv2.bitwise_or(
